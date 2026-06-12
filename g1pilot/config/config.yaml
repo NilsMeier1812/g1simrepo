@@ -1,0 +1,128 @@
+general:
+  use_sim_time: false
+  use_robot: true
+  publish_joint_states: true
+  interface: eth0
+  sim_rate_hz: 50.0
+  arm_controlled: both
+  enable_arm_ui: true
+  use_waist: false
+  frame_link: pelvis
+  use_mola: true
+  use_livox: true
+
+nodes:
+  livox_launcher_enabled: true
+  mola_launcher_enabled: true
+  navigation_launcher_enabled: true
+  robot_state_launcher_enabled: true
+  teleoperation_launcher_enabled: true
+
+inverse_kinematics:
+  alpha: 0.2
+  max_dq_step: 0.05
+  velocity_limit: 5.0
+  kp_high: 300
+  kd_high: 3.0
+  kp_low: 150
+  kd_low: 4.0
+  kp_wrist: 40.0
+  kd_wrist: 1.5
+
+home:
+  right:
+    motor_1: 0.6604386568069458
+    motor_2: -0.09250623732805252
+    motor_3: 0.022230736911296844
+    motor_4: -0.839135468006134
+    motor_5: 0.10722286254167557
+    motor_6: 0.2716066539287567
+    motor_7: 0.06743379682302475
+  left:
+    motor_1: 0.9230489730834961
+    motor_2: -0.06001700088381767
+    motor_3: 0.03733086213469505
+    motor_4: -0.7793461680412292
+    motor_5: -0.06614094227552414
+    motor_6: -0.11401312798261642
+    motor_7: -0.29750025272369385
+
+workspace:
+  frame: pelvis
+  left_arm:
+    left_bottom_front: [0.33, 0.24, 0.02]
+    right_bottom_front: [0.33, 0.07,  0.02]
+    left_bottom_back:   [0.16, 0.24,  0.02]
+    right_bottom_back:  [0.16, 0.07,  0.02]
+    right_top_back:    [0.07, 0.20,  0.20]
+    left_top_back:     [0.07, 0.47,  0.20]
+    right_top_front:  [0.45, 0.11,  0.20]
+    left_top_front:   [0.41, 0.30,  0.20]
+  right_arm:
+    left_bottom_front: [0.33, -0.24, 0.02]
+    right_bottom_front: [0.33, -0.07,  0.02]
+    left_bottom_back:   [0.16, -0.24,  0.02]
+    right_bottom_back:  [0.16, -0.07,  0.02]
+    right_top_back:    [0.07, -0.20,  0.20]
+    left_top_back:     [0.07, -0.47,  0.20]
+    right_top_front:  [0.45, -0.11,  0.20]
+    left_top_front:   [0.41, -0.30,  0.20]
+
+robot:
+  model: 29dof #29dof_dex3
+  left_eff_topic: /g1pilot/left_hand_goal
+  left_tf_frame: left_hand_point_contact
+  right_eff_topic: /g1pilot/right_hand_goal
+  right_tf_frame: right_hand_point_contact
+  start_topic: /g1pilot/start
+  balance_topic: /g1pilot/balance
+  emergency_stop_topic: /g1pilot/emergency_stop
+
+state:
+  imu_topic: /g1pilot/imu
+  imu_link: imu_link
+  motors_topic: /g1pilot/motor_state
+  odom_topic: /g1pilot/odom
+  voice_topic: /g1pilot/voice
+
+dex3:
+  total_dofs: 7
+  right_gripper:
+    close_values: [-0.10, 0.63, -1.74, 1.06, 0.95, 0.91, 1.22]
+    open_values: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  left_values:
+    close_values: [0.04,  -0.04,  1.51, -1.10, -1.47, -1.13, -1.23]
+    open_values: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  send_commands: true
+  right_cmd_topic: rt/dex3/right/cmd
+  right_state_topic: rt/dex3/right/state
+  right_hand_topic: /g1pilot/dx3/right/hand_action
+  left_cmd_topic: rt/dex3/left/cmd
+  left_state_topic: rt/dex3/left/state
+  left_hand_topic: /g1pilot/dx3/left/hand_action
+
+manipulation:
+  right_point_topic: /g1pilot/right_point_goal
+  right_point_received_topic: /g1pilot/right_point/received
+  right_point_reached_topic: /g1pilot/right_point/reached
+  left_point_topic: /g1pilot/left_point_goal
+  left_point_received_topic: /g1pilot/left_point/received
+  left_point_reached_topic: /g1pilot/left_point/reached
+
+navigation:
+  joystick_type: Wireless Controller
+  map_topic: /map
+  odom_topic: /lidar_odometry/pose_fixed
+  goal_topic: /g1pilot/goal
+  goal_marker_topic: /g1pilot/goal/marker
+  goal_received_topic: /g1pilot/goal/received
+  goal_reached_topic: /g1pilot/goal/reached
+  goal_start_topic: /g1pilot/goal/start
+  path_topic: /g1pilot/path
+  manual_topic: /g1pilot/joy_manual
+  autonomous_topic: /g1pilot/joy_autonomous
+  autonomous_enabled_topic: /g1pilot/auto_enable
+  vx_limit: 0.6
+  vy_limit: 0.6
+  wz_limit: 0.5
+  #TODO: See Dijkstra - Nav2Goal - JoyMux

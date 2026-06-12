@@ -1,0 +1,87 @@
+# ══════════════════════════════════════════════════════════════════════
+# G1Pilot Universal Docker-Compose
+# Sim:  G1_SIM_MODE=true docker compose --profile sim up
+# Real: G1_SIM_MODE=false docker compose --profile real up
+# ══════════════════════════════════════════════════════════════════════
+
+version: '3.8'
+
+# ── Gemeinsame Basis-Konfiguration für G1Pilot Container ────────────
+x-g1pilot-base: &g1pilot-base
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  image: g1pilot:v1.1.0
+  network_mode: host         # KRITISCH: DDS braucht Host-Netzwerk!
+  volumes:
+    - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    - .:/workspace/g1pilot:ro
+  stdin_open: true
+  tty: true
+  restart: unless-stopped
+
+services:
+
+  # ══════════════════════════════════════════════════════════════════
+  # SIMULATION SERVICES (nur bei --profile sim)
+  # ══════════════════════════════════════════════════════════════════
+
+  mujoco-sim:
+    # ── MuJoCo G1 Simulator ────────────────────────────────────────
+    profiles: ["sim"]
+    build:
+      context: ..
+      dockerfile: g1pilot/docker/Dockerfile.mujoco
+    image: g1pilot-mujoco:v1.0
+    network_mode: host
+    environment:
+      - DISPLAY=${DISPLAY}
+      - MUJOCO_GL=glfw
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ../unitree_mujoco:/unitree_mujoco:ro   # Mountet dein lokales Repo!
+    command: >
+      bash -c "cd /unitree_mujoco/simulate_python &&
+               python3 unitree_mujoco.py"
+    restart: unless-stopped
+    tty: true
+
+  g1pilot-sim:
+    # ── G1Pilot im Simulations-Modus ───────────────────────────────
+    profiles: ["sim"]
+    <<: *g1pilot-base
+    environment:
+      - DISPLAY=${DISPLAY}
+      - G1_SIM_MODE=true          # ← Aktiviert Simulation in Python-Code
+      - ROS_DOMAIN_ID=1
+    command: >
+      bash -c "source /ros2_ws/install/setup.bash &&
+               colcon build --packages-select g1pilot &&
+               source install/setup.bash &&
+               ros2 launch g1pilot robot_state_launcher.launch.py
+                 use_robot:=true
+                 interface:=lo
+                 publish_joint_states:=true"
+    depends_on:
+      - mujoco-sim
+
+  # ══════════════════════════════════════════════════════════════════
+  # REAL HARDWARE SERVICES (nur bei --profile real)
+  # ══════════════════════════════════════════════════════════════════
+
+  g1pilot-real:
+    # ── G1Pilot mit echtem G1 Roboter ──────────────────────────────
+    profiles: ["real"]
+    <<: *g1pilot-base
+    environment:
+      - DISPLAY=${DISPLAY}
+      - G1_SIM_MODE=false         # ← Echter Roboter
+      - ROS_DOMAIN_ID=0
+      - ROBOT_INTERFACE=${ROBOT_INTERFACE:-eth0}
+    command: >
+      bash -c "source /ros2_ws/install/setup.bash &&
+               colcon build --packages-select g1pilot &&
+               source install/setup.bash &&
+               ros2 launch g1pilot bringup_launcher.launch.py
+                 use_robot:=true
+                 interface:=${ROBOT_INTERFACE:-eth0}"

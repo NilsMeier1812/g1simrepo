@@ -1,0 +1,1 @@
+/workspace/g1pilot/build/g1pilot/launch/manipulation_launcher.launch.py

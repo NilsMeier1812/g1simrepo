@@ -1,0 +1,9 @@
+source;share/g1pilot/hook/pythonpath.ps1
+source;share/g1pilot/hook/pythonpath.dsv
+source;share/g1pilot/hook/pythonpath.sh
+source;share/g1pilot/hook/ament_prefix_path.ps1
+source;share/g1pilot/hook/ament_prefix_path.dsv
+source;share/g1pilot/hook/ament_prefix_path.sh
+source;../../build/g1pilot/share/g1pilot/hook/pythonpath_develop.ps1
+source;../../build/g1pilot/share/g1pilot/hook/pythonpath_develop.dsv
+source;../../build/g1pilot/share/g1pilot/hook/pythonpath_develop.sh

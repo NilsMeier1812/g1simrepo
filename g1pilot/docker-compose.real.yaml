@@ -1,0 +1,29 @@
+# ~/g1_pilot_sim/g1pilot/docker-compose.real.yaml
+services:
+  g1pilot_real:
+    image: g1pilot-real:v1.1.0
+    container_name: g1pilot_real
+    network_mode: host
+    privileged: true                  # für Hardware-Zugriff
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+      - ROS_DOMAIN_ID=0
+      - UNITREE_DOMAIN_ID=0           # Domain 0 für echten Roboter
+      - INTERFACE=${ROBOT_INTERFACE:-enp0s31f6}
+      - CYCLONEDDS_URI=file:///etc/cyclonedds.xml
+      # KEIN G1_SIM_MODE → Code läuft in Real-Modus
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ./:/workspace/g1pilot
+      - /dev:/dev                     # USB für Livox/Gamepad
+    working_dir: /workspace/g1pilot
+    command: >
+      bash -c "
+        source /opt/ros/humble/setup.bash &&
+        source /ros2_ws/install/setup.bash &&
+        colcon build --symlink-install 2>&1 | tail -5 &&
+        source install/setup.bash &&
+        ros2 launch g1pilot bringup_launcher.launch.py
+      "
+    restart: unless-stopped
+    tty: true

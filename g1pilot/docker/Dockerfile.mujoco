@@ -1,0 +1,31 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+
+RUN apt-get update && apt-get install -y \
+    python3 python3-pip git \
+    libgl1-mesa-glx libglib2.0-0 \
+    libxkbcommon-x11-0 libxcb-xinerama0 \
+    libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+    libxcb-render-util0 libxcb-cursor0 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install mujoco pygame numpy
+
+RUN git clone https://github.com/lnotspotl/unitree_sdk2_python.git \
+ && cd unitree_sdk2_python \
+ && git checkout 7c661d27f4ae064ffd0dd633fd9d5b518ef0b508 \
+ && pip3 install -e .
+
+# Dateien in Container kopieren (Build-Context ist g1_pilot_sim/)
+COPY g1pilot/docker/cyclonedds.xml /etc/cyclonedds.xml
+COPY unitree_mujoco/simulate_python/ /unitree_mujoco/simulate_python/
+COPY unitree_mujoco/unitree_robots/  /unitree_mujoco/unitree_robots/
+
+ENV CYCLONEDDS_URI=file:///etc/cyclonedds.xml
+ENV DISPLAY=:0
+ENV MUJOCO_GL=glfw
+
+WORKDIR /unitree_mujoco/simulate_python
+CMD ["python3", "unitree_mujoco.py"]

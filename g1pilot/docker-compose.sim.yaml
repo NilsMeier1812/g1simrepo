@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+
+  mujoco_sim:
+    image: g1pilot-mujoco:v1.0
+    container_name: g1_mujoco_sim
+    network_mode: host
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    restart: unless-stopped
+    tty: true
+
+  g1pilot_sim:
+    image: g1pilot-sim:v1.1.0
+    container_name: g1pilot_sim
+    network_mode: host
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+      - ROS_DOMAIN_ID=0
+      - UNITREE_DOMAIN_ID=1
+      - G1_SIM_MODE=true
+      - INTERFACE=lo
+      - CYCLONEDDS_URI=file:///etc/cyclonedds.xml
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ./:/workspace/g1pilot
+    working_dir: /workspace/g1pilot
+    command: >
+          bash -c "
+            source /opt/ros/humble/setup.bash &&
+            source /ros2_ws/install/setup.bash &&
+            colcon build --symlink-install 2>&1 | tail -5 &&
+            source install/setup.bash &&
+            ros2 launch g1pilot bringup_sim.launch.py
+          "
+    depends_on:
+      - mujoco_sim
+    restart: unless-stopped
+    tty: true
