@@ -4,7 +4,6 @@
 import time, threading, math
 import numpy as np
 import rclpy
-import os
 from rclpy.node import Node
 from rclpy.duration import Duration
 from rclpy.time import Time

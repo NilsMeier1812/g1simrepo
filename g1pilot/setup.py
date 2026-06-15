@@ -79,6 +79,10 @@ setup(
             'nav2point = g1pilot.navigation.nav2point:main',
             'create_map = g1pilot.navigation.create_map:main',
             'mola_fixed = g1pilot.navigation.fix_mola_odometry:main',
+
+            # Diagnostics / sim tools
+            'sim_dds_check = g1pilot.tools.sim_dds_check:main',
+            'sim_arm_wiggle = g1pilot.tools.sim_arm_wiggle:main',
         ],
     },
 )
