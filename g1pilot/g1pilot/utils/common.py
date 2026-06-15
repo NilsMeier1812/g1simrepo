@@ -1,5 +1,47 @@
 from enum import IntEnum
+import os
 import threading
+
+
+# DDS domain convention (single source of truth for sim vs. real):
+#   Simulation (MuJoCo) : domain 1, loopback interface "lo"
+#   Real robot          : domain 0, the physical network interface
+SIM_DDS_DOMAIN = 1
+REAL_DDS_DOMAIN = 0
+SIM_DDS_INTERFACE = "lo"
+
+
+def is_sim_mode() -> bool:
+    """True if the G1_SIM_MODE environment variable selects simulation."""
+    return os.getenv("G1_SIM_MODE", "false").lower() == "true"
+
+
+def resolve_dds(interface: str):
+    """
+    Return the (domain_id, interface) pair to use for DDS, based on G1_SIM_MODE.
+
+    In simulation the loopback interface and domain 1 are forced so that
+    g1pilot talks to the MuJoCo bridge regardless of the configured interface.
+    """
+    if is_sim_mode():
+        return SIM_DDS_DOMAIN, SIM_DDS_INTERFACE
+    return REAL_DDS_DOMAIN, interface
+
+
+def init_dds(interface: str, logger=None):
+    """
+    Initialise the Unitree DDS ChannelFactory for the current mode and return
+    the (domain_id, interface) actually used. Centralises the sim/real switch
+    so every node behaves identically.
+    """
+    from unitree_sdk2py.core.channel import ChannelFactoryInitialize
+
+    domain_id, dds_iface = resolve_dds(interface)
+    if logger is not None:
+        logger.info(f"[DDS] sim_mode={is_sim_mode()} domain={domain_id} iface={dds_iface}")
+    ChannelFactoryInitialize(domain_id, dds_iface)
+    return domain_id, dds_iface
+
 
 class MotorState:
     def __init__(self):

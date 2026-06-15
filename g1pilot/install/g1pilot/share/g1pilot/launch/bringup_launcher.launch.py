@@ -1,1 +1,0 @@
-/workspace/g1pilot/build/g1pilot/launch/bringup_launcher.launch.py

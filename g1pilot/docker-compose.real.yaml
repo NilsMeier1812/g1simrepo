@@ -1,4 +1,6 @@
-# ~/g1_pilot_sim/g1pilot/docker-compose.real.yaml
+# DEPRECATED: Bevorzugt die konsolidierte Variante:
+#   G1_SIM_MODE=false ROBOT_INTERFACE=<iface> docker compose --profile real up
+# Diese Datei bleibt als eigenständiger Real-Stack erhalten.
 services:
   g1pilot_real:
     image: g1pilot-real:v1.1.0

@@ -112,6 +112,37 @@ You can launch the bringup robot with the following command:
 ros2 launch g1pilot bringup_launcher.launch.py
 ```
 
+### Simulation (MuJoCo) vs. real robot
+
+The sim/real switch is driven by a single environment variable, `G1_SIM_MODE`
+(see `g1pilot/utils/common.py`):
+
+| Mode | `G1_SIM_MODE` | DDS domain | Interface | Entry point |
+|------|---------------|------------|-----------|-------------|
+| Simulation | `true`  | 1 | `lo` | `bringup_sim.launch.py` |
+| Real robot | `false` | 0 | `${ROBOT_INTERFACE}` | `bringup_launcher.launch.py` |
+
+Recommended (consolidated) Docker entry point:
+
+```bash
+# Simulation: starts the MuJoCo G1 sim + g1pilot (robot_state, arms, RViz, teleop)
+G1_SIM_MODE=true docker compose --profile sim up
+
+# Real robot
+G1_SIM_MODE=false ROBOT_INTERFACE=<iface> docker compose --profile real up
+```
+
+To move the arms in simulation: enable the arms and drag the interactive end-effector
+markers in RViz (or publish a `PoseStamped` to `/g1pilot/hand_goal/{left,right}`):
+
+```bash
+ros2 topic pub -1 /g1pilot/arms/enabled std_msgs/Bool "{data: true}"
+```
+
+> Balancing/locomotion is provided by the G1 high-level controller on real hardware and is
+> not available in sim yet; the MuJoCo `HOLD_BASE` flag (in `unitree_mujoco/simulate_python/config.py`)
+> pins the pelvis so the arms can be tested standalone.
+
 Or you can run each node separately according to your needs.
 
 1.- To run the Livox LiDAR, you can run the following command:

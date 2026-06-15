@@ -3,7 +3,7 @@
 <package format="3">
   <name>g1pilot</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>ROS 2 package to control the Unitree G1 robot (arms, navigation, teleoperation) on real hardware and in MuJoCo simulation.</description>
   <maintainer email="clemente.donoso@inria.fr">cdonoso</maintainer>
   <license>BSD 3</license>
 

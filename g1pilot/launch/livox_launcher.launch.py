@@ -14,7 +14,9 @@ frame_id      = 'livox_frame'
 lvx_file_path = '/home/livox/livox_test.lvx'
 cmdline_bd_code = 'livox0000000001'
 
-cur_config_path = '/ros2_ws/src/livox_ros_driver2/config'
+cur_config_path = os.path.join(
+    get_package_share_directory('livox_ros_driver2'), 'config'
+)
 user_config_path = os.path.join(cur_config_path, 'MID360_config.json')
 ################### user configure parameters for ros2 end #####################
 

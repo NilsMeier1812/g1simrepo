@@ -12,8 +12,10 @@ from tf2_ros import TransformBroadcaster
 
 from astroviz_interfaces.msg import MotorState, MotorStateList
 
-from unitree_sdk2py.core.channel import ChannelSubscriber, ChannelFactoryInitialize
+from unitree_sdk2py.core.channel import ChannelSubscriber
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_
+
+from g1pilot.utils.common import init_dds
 
 
 class G1JointIndex:
@@ -106,11 +108,7 @@ class RobotState(Node):
         self.joint_state_msg.name = self.joint_names
 
         if self.use_robot:
-            import os
-            sim_mode = os.getenv('G1_SIM_MODE', 'false').lower() == 'true'
-            domain_id = 1 if sim_mode else 0
-            dds_iface = 'lo' if sim_mode else interface
-            ChannelFactoryInitialize(domain_id, dds_iface)
+            init_dds(interface, self.get_logger())
             self.subscriber_low_state = ChannelSubscriber("rt/lowstate", LowState_)
             self.subscriber_low_state.Init(self.callback_lowstate)
         else:

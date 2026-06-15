@@ -43,12 +43,13 @@ setup(
             'description_files/meshes/**/*.STL',
          ])),
 
-        # Configuration Files
+        # Configuration Files (YAML + RViz both live in config/)
         (f'share/{package_name}/config',
-            expand(['config/*.yaml'])),
+            expand(['config/*.yaml', 'config/*.rviz'])),
 
-        # RViz
-        (f'share/{package_name}/rviz', expand(['rviz/*.rviz'])),
+        # MOLA LiDAR-odometry pipeline (used by mola_launcher.launch.py)
+        (f'share/{package_name}/pipelines',
+            expand(['pipelines/*.yaml'])),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

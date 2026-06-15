@@ -22,11 +22,6 @@ else:
     from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowState_
     from unitree_sdk2py.idl.default import unitree_go_msg_dds__LowState_ as LowState_default
 
-# Shared ctrl array (Workaround falls bridge.mj_data != sim.mj_data)
-import numpy as _np
-_g_ctrl = None
-_g_ctrl_ready = False
-
 TOPIC_LOWCMD = "rt/lowcmd"
 TOPIC_LOWSTATE = "rt/lowstate"
 TOPIC_HIGHSTATE = "rt/sportmodestate"
@@ -119,23 +114,17 @@ class UnitreeSdk2Bridge:
         }
 
     def LowCmdHandler(self, msg: LowCmd_):
-        global _g_ctrl, _g_ctrl_ready
+        # Wird für rt/lowcmd UND rt/arm_sdk aufgerufen. Rechnet den PD-Befehl
+        # pro Motor und schreibt ihn direkt in mj_data.ctrl (Torque-Aktuatoren).
+        # Gelenke, die der Sender nicht stellt (kp=kd=0), erhalten 0 Nm.
         if self.mj_data is None:
             return
-        if _g_ctrl is None:
-            _g_ctrl = _np.zeros(self.num_motor, dtype=_np.float64)
         for i in range(self.num_motor):
-            _g_ctrl[i] = (
+            self.mj_data.ctrl[i] = (
                 msg.motor_cmd[i].tau
                 + msg.motor_cmd[i].kp * (msg.motor_cmd[i].q - self.mj_data.sensordata[i])
                 + msg.motor_cmd[i].kd * (msg.motor_cmd[i].dq - self.mj_data.sensordata[i + self.num_motor])
             )
-        _g_ctrl_ready = True
-        import threading as _t
-        print(f'[CMD] tid={_t.get_ident()} ctrl22={_g_ctrl[22]:.3f} mj_data_id={id(self.mj_data)} ctrl_ptr={self.mj_data.ctrl.ctypes.data}', flush=True)
-        # Direkt-Schreib-Test:
-        self.mj_data.ctrl[22] = _g_ctrl[22]
-        print(f'[CMD2] nach direkt-schreib: mj_data.ctrl[22]={self.mj_data.ctrl[22]:.3f}', flush=True)
 
     def PublishLowState(self):
         if self.mj_data != None:

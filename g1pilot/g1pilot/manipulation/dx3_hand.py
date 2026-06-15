@@ -5,10 +5,12 @@ import rclpy
 from rclpy.qos import QoSProfile
 from rclpy.node import Node
 from std_msgs.msg import String
-from unitree_sdk2py.core.channel import ChannelPublisher, ChannelSubscriber, ChannelFactoryInitialize
+from unitree_sdk2py.core.channel import ChannelPublisher, ChannelSubscriber
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import HandCmd_, HandState_
 from unitree_sdk2py.idl.default import unitree_hg_msg_dds__HandCmd_
 from astroviz_interfaces.msg import MotorState, MotorStateList
+
+from g1pilot.utils.common import init_dds
 
 CLOSE_RIGHT_VALUES = [-0.10, 0.63, -1.74, 1.06, 0.95, 0.91, 1.22]
 CLOSE_LEFT_VALUES  = [0.04,  -0.04,  1.51, -1.10, -1.47, -1.13, -1.23]
@@ -31,7 +33,7 @@ class DX3Controller(Node):
         self.total_motors = 7
         self.send_commands = True
 
-        ChannelFactoryInitialize(0, interface)
+        init_dds(interface, self.get_logger())
 
         if arm_controlled in ["right", "both"]:
             self.right_pub = ChannelPublisher("rt/dex3/right/cmd", HandCmd_)

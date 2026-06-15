@@ -44,15 +44,6 @@ def SimulationThread():
 
     ChannelFactoryInitialize(config.DOMAIN_ID, config.INTERFACE)
     unitree = UnitreeSdk2Bridge(mj_model, mj_data)
-    import threading as _t
-    print(f'[DIAG] tid_sim={_t.get_ident()}', flush=True)
-    print(f'[DIAG] SAME_OBJECT={mj_data is unitree.mj_data}', flush=True)
-    print(f'[DIAG] outer_id={id(mj_data)} bridge_id={id(unitree.mj_data)}', flush=True)
-    print(f'[DIAG] outer_ctrl_ptr={mj_data.ctrl.ctypes.data}', flush=True)
-    print(f'[DIAG] bridge_ctrl_ptr={unitree.mj_data.ctrl.ctypes.data}', flush=True)
-    print(f'[DIAG] num_motor={mj_model.nu} ctrl_len={len(mj_data.ctrl)}', flush=True)
-    print(f'[DIAG] actuator_gaintype={list(mj_model.actuator_gaintype[:5])}...', flush=True)
-    print(f'[DIAG] actuator_biastype={list(mj_model.actuator_biastype[:5])}...', flush=True)
 
     if config.USE_JOYSTICK:
         unitree.SetupJoystick(device_id=0, js_type=config.JOYSTICK_TYPE)
@@ -69,18 +60,8 @@ def SimulationThread():
                 mj_data.xfrc_applied[band_attached_link, :3] = elastic_band.Advance(
                     mj_data.qpos[:3], mj_data.qvel[:3]
                 )
-        _ctrl22_before = float(mj_data.ctrl[22])
-        # Print 1x pro Sekunde damit wir Pointer + tid sehen
-        import threading as _tt
-        if not hasattr(SimulationThread, '_last_diag') or (time.time() - SimulationThread._last_diag) > 1.0:
-            SimulationThread._last_diag = time.time()
-            print(f'[SIM] tid={_tt.get_ident()} mj_data_id={id(mj_data)} ctrl_ptr={mj_data.ctrl.ctypes.data} ctrl22={_ctrl22_before:.3f}', flush=True)
-        try:
-            from unitree_sdk2py_bridge import _g_ctrl, _g_ctrl_ready
-            if _g_ctrl_ready and _g_ctrl is not None:
-                mj_data.ctrl[:len(_g_ctrl)] = _g_ctrl
-        except ImportError:
-            pass
+        # Steuerbefehle werden von UnitreeSdk2Bridge.LowCmdHandler direkt in
+        # mj_data.ctrl geschrieben (rt/lowcmd + rt/arm_sdk).
         mujoco.mj_step(mj_model, mj_data)
 
         # === HOLD_BASE HOOK START ===
@@ -118,18 +99,11 @@ def SimulationThread():
                 _mj.mj_forward(mj_model, mj_data)
                 _hold_base_initial_pose = mj_data.qpos[0:7].copy()
                 mj_data.qvel[:] = 0
-                print(f'[HOLD_BASE] Standing pose geladen:', flush=True)
-                print(f'  pelvis z={mj_data.qpos[2]:.4f}', flush=True)
-                print(f'  left foot z={mj_data.xpos[mj_model.body("left_ankle_roll_link").id][2]:.4f}', flush=True)
-                print(f'  right foot z={mj_data.xpos[mj_model.body("right_ankle_roll_link").id][2]:.4f}', flush=True)
+                print(f'[HOLD_BASE] Standing pose geladen (pelvis z={mj_data.qpos[2]:.4f}).', flush=True)
             # Nur Pelvis pose + velocity fixieren — Arme/Beine frei!
             mj_data.qpos[0:7] = _hold_base_initial_pose
             mj_data.qvel[0:6] = 0
         # === HOLD_BASE HOOK END ===
-
-        _ctrl22_after = float(mj_data.ctrl[22])
-        if abs(_ctrl22_before) > 0.001:
-            print(f'[SIM] before={_ctrl22_before:.3f} after={_ctrl22_after:.3f} sensor={mj_data.sensordata[22]:.4f}', flush=True)
 
         locker.release()
 

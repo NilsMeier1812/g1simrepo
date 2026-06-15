@@ -28,8 +28,8 @@ from g1pilot.utils.joints_names import (
 
 from g1pilot.utils.ik_solver import G1IKSolver
 
-from unitree_sdk2py.core.channel import ChannelPublisher, ChannelSubscriber, ChannelFactoryInitialize
-from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_ , LowState_ 
+from unitree_sdk2py.core.channel import ChannelPublisher, ChannelSubscriber
+from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_ , LowState_
 from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_
 from unitree_sdk2py.utils.crc import CRC
 
@@ -40,6 +40,7 @@ from g1pilot.utils.common import (
     G1_29_JointWeakIndex,
     G1_29_JointIndex,
     DataBuffer,
+    init_dds,
 )
 
 WORKSPACE = {
@@ -450,12 +451,7 @@ class ArmController(Node):
     def _init_robot_interface(self):
         """Initialize DDS interface for robot communication."""
 
-        import os
-        sim_mode = os.getenv('G1_SIM_MODE', 'false').lower() == 'true'
-        domain_id = 1 if sim_mode else 0
-        dds_iface = 'lo' if sim_mode else self.interface
-        self.get_logger().info(f'[arm_controller] DDS domain={domain_id}, iface={dds_iface}')
-        ChannelFactoryInitialize(domain_id, dds_iface)
+        init_dds(self.interface, self.get_logger())
 
         self.lowstate_subscriber = ChannelSubscriber('rt/lowstate', LowState_)
         self.lowstate_subscriber.Init()
@@ -841,186 +837,6 @@ class ArmController(Node):
         else:
             self.right_workspace_publisher.publish(marker)
 
-    def main_loop(self):
-        """
-        Main control loop executed at `rate_hz` frequency.
-
-        Core Responsibilities
-        ---------------------
-        - Update LowState data from DDS.
-        - Hold non-arm joints when arms are disabled.
-        - Execute homing sequence if active.
-        - Update IK solver configuration and compute joint targets.
-        - Apply velocity and smoothing limits.
-        - Publish joint targets via DDS or /joint_states (simulation).
-
-        Notes
-        -----
-        - The loop manages both autonomous IK motion and homing control.
-        - It automatically synchronizes the IK goals when returning to home.
-        """
-
-        self._publish_workspace("left_arm")
-        self._publish_workspace("right_arm")
-
-        if not getattr(self, "_initialized", False):
-            return
-
-        if self.use_robot:
-            robot_data = self.lowstate_subscriber.Read()
-            if robot_data is not None:
-                self.lowstate_buffer.SetData(robot_data)
-                for i in range(len(self.motor_state)):
-                    self.motor_state[i].q  = robot_data.motor_state[i].q
-                    self.motor_state[i].dq = robot_data.motor_state[i].dq
-
-        if not self.arms_enabled:
-            return
-
-        if self._reset_after_home:
-            self._reset_after_home = False
-            self.homing_reached = False
-            try:
-                cur = self.get_current_motor_q()
-                left  = [cur[j] for j in LEFT_JOINT_INDICES_LIST]
-                right = [cur[j] for j in RIGHT_JOINT_INDICES_LIST]
-                self._last_q_target = np.array(left + right, dtype=float)
-            except Exception:
-                self._last_q_target = np.concatenate((self.home_left, self.home_right)).copy()
-
-            self._goal_left_filt  = None
-            self._goal_right_filt = None
-
-            self.ik_solver.set_current_configuration({
-                "left":  self._last_q_target[0:7].copy(),
-                "right": self._last_q_target[7:14].copy()
-            })
-
-        msg_tf = self._transform_pose_to_world(msg)
-        o, p = msg_tf.pose.orientation, msg_tf.pose.position
-        q = pin.Quaternion(o.w, o.x, o.y, o.z)
-        T_goal_in = SE3(q.matrix(), np.array([p.x, p.y, p.z]))
-
-        self._last_right_goal_raw = T_goal_in
-        T_goal_use = self._apply_offsets_and_filters('right', T_goal_in)
-        if T_goal_use is not None:
-            self.ik_solver.set_goal("right", T_goal_use)
-
-
-    def _left_goal_callback(self, msg: PoseStamped):
-        """
-        ROS 2 callback for the left-hand end-effector goal.
-
-        Parameters
-        ----------
-        msg : geometry_msgs.msg.PoseStamped
-            Desired left-hand pose (can be in any TF frame).
-
-        Behavior
-        --------
-        - Applies TF transformation to the world frame.
-        - Handles homing reset alignment if needed.
-        - Applies static and auto-calibration offsets.
-        - Updates the IK solver's left-hand goal.
-        """
-
-        if self.homing_active:
-            return
-        
-        if not self.arms_enabled:
-            return
-
-        if self._reset_after_home:
-            self._reset_after_home = False
-            self.homing_reached = False
-            try:
-                cur = self.get_current_motor_q()
-                left  = [cur[j] for j in LEFT_JOINT_INDICES_LIST]
-                right = [cur[j] for j in RIGHT_JOINT_INDICES_LIST]
-                self._last_q_target = np.array(left + right, dtype=float)
-            except Exception:
-                self._last_q_target = np.concatenate((self.home_left, self.home_right)).copy()
-
-            self._goal_left_filt  = None
-            self._goal_right_filt = None
-
-            self.ik_solver.set_current_configuration({
-                "left":  self._last_q_target[0:7].copy(),
-                "right": self._last_q_target[7:14].copy()
-            })
-
-        msg_tf = self._transform_pose_to_world(msg)
-        o, p = msg_tf.pose.orientation, msg_tf.pose.position
-        q = pin.Quaternion(o.w, o.x, o.y, o.z)
-        T_goal_in = SE3(q.matrix(), np.array([p.x, p.y, p.z]))
-
-        self._last_left_goal_raw = T_goal_in
-        T_goal_use = self._apply_offsets_and_filters('left', T_goal_in)
-        if T_goal_use is not None:
-            self.ik_solver.set_goal("left", T_goal_use)
-
-
-    def _compute_dt(self) -> float:
-        """
-        Compute the elapsed time (Δt) between consecutive main loop cycles.
-
-        Returns
-        -------
-        float
-            Time difference in seconds (clamped to [1e-4, 0.1]).
-        """
-
-        now = time.time()
-        if self._last_tick_time is None:
-            dt = 1.0 / self.rate_hz
-        else:
-            dt = max(1e-4, min(0.1, now - self._last_tick_time))
-        self._last_tick_time = now
-        return dt
-    
-    def _publish_workspace(self, arm):
-        marker = Marker()
-        marker.header.frame_id = WORKSPACE["frame"]
-        marker.header.stamp = self.get_clock().now().to_msg()
-        marker.ns = "workspace"
-        marker.id = 0
-        marker.type = Marker.LINE_LIST
-        marker.action = Marker.ADD
-        marker.scale.x = 0.005  
-        marker.color = ColorRGBA(r=0.1, g=1.0, b=0.3, a=0.9)
-
-        points = WORKSPACE[arm]
-
-        pts = {k: Point(x=v[0], y=v[1], z=v[2]) for k, v in points.items()}
-
-        edges = [
-            # Bottom rectangle
-            ("left_bottom_front", "right_bottom_front"),
-            ("right_bottom_front", "right_bottom_back"),
-            ("right_bottom_back", "left_bottom_back"),
-            ("left_bottom_back", "left_bottom_front"),
-
-            # Top rectangle
-            ("left_top_front", "right_top_front"),
-            ("right_top_front", "right_top_back"),
-            ("right_top_back", "left_top_back"),
-            ("left_top_back", "left_top_front"),
-
-            # Vertical edges
-            ("left_bottom_front", "left_top_front"),
-            ("right_bottom_front", "right_top_front"),
-            ("left_bottom_back", "left_top_back"),
-            ("right_bottom_back", "right_top_back"),
-        ]
-
-        for a, b in edges:
-            marker.points.append(pts[a])
-            marker.points.append(pts[b])
-
-        if arm == "left_arm":
-            self.left_workspace_publisher.publish(marker)
-        else:
-            self.right_workspace_publisher.publish(marker)
 
     def main_loop(self):
         """

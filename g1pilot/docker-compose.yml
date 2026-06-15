@@ -58,10 +58,7 @@ services:
       bash -c "source /ros2_ws/install/setup.bash &&
                colcon build --packages-select g1pilot &&
                source install/setup.bash &&
-               ros2 launch g1pilot robot_state_launcher.launch.py
-                 use_robot:=true
-                 interface:=lo
-                 publish_joint_states:=true"
+               ros2 launch g1pilot bringup_sim.launch.py"
     depends_on:
       - mujoco-sim
 

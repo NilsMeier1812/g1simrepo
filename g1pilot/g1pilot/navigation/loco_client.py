@@ -10,11 +10,12 @@ from std_msgs.msg import Bool, String
 from sensor_msgs.msg import Joy
 
 from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
-from unitree_sdk2py.core.channel import ChannelFactoryInitialize
 from unitree_sdk2py.g1.loco.g1_loco_api import (
     ROBOT_API_ID_LOCO_GET_FSM_ID,
     ROBOT_API_ID_LOCO_GET_FSM_MODE,
 )
+
+from g1pilot.utils.common import init_dds
 
 
 def _rpc_get_int(client, api_id):
@@ -57,14 +58,7 @@ class G1LocoClient(Node):
         arm_vel_lim = float(self.get_parameter('arm_velocity_limit').value)
 
         if self.use_robot:
-            import os
-            sim_mode = os.getenv('G1_SIM_MODE', 'false').lower() == 'true'
-            _domain   = 1    if sim_mode else 0
-            _iface    = 'lo' if sim_mode else interface
-            self.get_logger().info(
-                f"[loco_client] DDS Init: domain={_domain}, interface='{_iface}'"
-            )
-            ChannelFactoryInitialize(_domain, _iface)
+            init_dds(interface, self.get_logger())
             self.robot = LocoClient()
             self.robot.SetTimeout(10.0)
             self.robot.SetFsmId(4)

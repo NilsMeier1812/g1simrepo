@@ -182,20 +182,20 @@ class G1IKSolver:
         collision_detected = False
 
         for res in self.collision_data.collisionResults:
-            print(res, flush=True)
             if not res.isCollision():
                 continue
 
             d = res.distance
+            # Ignore far-away pairs and degenerate near-zero distances.
             if d <= 1e-1 or d > self.collision_distance_thresh:
-                print(f"Skipping collision with distance {d:.4f} m", flush=True)
+                continue
 
             collision_detected = True
-            print("\nCollision detected:", flush=True)
-            print(f"  → distance: {d:.4f} m", flush=True)
-            print(f"  → normal: {np.array(res.normal)}", flush=True)
-            print(f"  → geom A: {self.collision_model.geometryObjects[res.firstGeomIdx].name}", flush=True)
-            print(f"  → geom B: {self.collision_model.geometryObjects[res.secondGeomIdx].name}", flush=True)
+            if self.debug:
+                print("\nCollision detected:", flush=True)
+                print(f"  → distance: {d:.4f} m", flush=True)
+                print(f"  → geom A: {self.collision_model.geometryObjects[res.firstGeomIdx].name}", flush=True)
+                print(f"  → geom B: {self.collision_model.geometryObjects[res.secondGeomIdx].name}", flush=True)
 
             weight = math.exp(-4.0 * d / self.collision_distance_thresh)
             n = np.array(res.normal)
@@ -215,10 +215,11 @@ class G1IKSolver:
             dq_repulse += dq_local
             total_weight += 1.0
 
-            print(f"  → joint: {joint_name}, dq_local norm: {np.linalg.norm(dq_local):.5f}")
+            if self.debug:
+                print(f"  → joint: {joint_name}, dq_local norm: {np.linalg.norm(dq_local):.5f}")
 
-        if collision_detected:
-            print(f"✅ Total {int(total_weight)} collision(s) considered for repulsion.\n")
+        if collision_detected and self.debug:
+            print(f"Total {int(total_weight)} collision(s) considered for repulsion.")
 
         if total_weight > 0:
             dq_repulse /= total_weight
