@@ -1,6 +1,4 @@
-# DEPRECATED: Bevorzugt die konsolidierte Variante:
-#   G1_SIM_MODE=false ROBOT_INTERFACE=<iface> docker compose --profile real up
-# Diese Datei bleibt als eigenständiger Real-Stack erhalten.
+# Eigenständiger Real-Stack (Alternative zu: docker compose --profile real up).
 services:
   g1pilot_real:
     image: g1pilot-real:v1.1.0

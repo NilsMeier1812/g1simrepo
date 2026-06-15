@@ -15,7 +15,7 @@ x-g1pilot-base: &g1pilot-base
   network_mode: host         # KRITISCH: DDS braucht Host-Netzwerk!
   volumes:
     - /tmp/.X11-unix:/tmp/.X11-unix:rw
-    - .:/workspace/g1pilot:ro
+    - .:/ros2_ws/src/g1pilot:rw   # Live-Code in den colcon-Workspace mounten
   stdin_open: true
   tty: true
   restart: unless-stopped
@@ -55,9 +55,11 @@ services:
       - G1_SIM_MODE=true          # ← Aktiviert Simulation in Python-Code
       - ROS_DOMAIN_ID=1
     command: >
-      bash -c "source /ros2_ws/install/setup.bash &&
-               colcon build --packages-select g1pilot &&
-               source install/setup.bash &&
+      bash -c "cd /ros2_ws &&
+               source /opt/ros/humble/setup.bash &&
+               source /ros2_ws/install/setup.bash &&
+               colcon build --packages-select g1pilot --symlink-install &&
+               source /ros2_ws/install/setup.bash &&
                ros2 launch g1pilot bringup_sim.launch.py"
     depends_on:
       - mujoco-sim
@@ -76,9 +78,11 @@ services:
       - ROS_DOMAIN_ID=0
       - ROBOT_INTERFACE=${ROBOT_INTERFACE:-eth0}
     command: >
-      bash -c "source /ros2_ws/install/setup.bash &&
-               colcon build --packages-select g1pilot &&
-               source install/setup.bash &&
+      bash -c "cd /ros2_ws &&
+               source /opt/ros/humble/setup.bash &&
+               source /ros2_ws/install/setup.bash &&
+               colcon build --packages-select g1pilot --symlink-install &&
+               source /ros2_ws/install/setup.bash &&
                ros2 launch g1pilot bringup_launcher.launch.py
                  use_robot:=true
                  interface:=${ROBOT_INTERFACE:-eth0}"
