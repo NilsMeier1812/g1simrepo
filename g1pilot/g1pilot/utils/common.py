@@ -6,6 +6,12 @@ import threading
 # DDS domain convention (single source of truth for sim vs. real):
 #   Simulation (MuJoCo) : domain 1, loopback interface "lo"
 #   Real robot          : domain 0, the physical network interface
+#
+# IMPORTANT: this is the *Unitree* DDS domain used by unitree_sdk2py. It must
+# differ from ROS_DOMAIN_ID (the rmw_cyclonedds domain), otherwise a node that
+# uses both ROS (rclpy) and the Unitree SDK opens domain N twice in the same
+# process and CycloneDDS fails with "create domain error". In sim we therefore
+# run ROS on ROS_DOMAIN_ID=0 and the Unitree DDS on domain 1.
 SIM_DDS_DOMAIN = 1
 REAL_DDS_DOMAIN = 0
 SIM_DDS_INTERFACE = "lo"

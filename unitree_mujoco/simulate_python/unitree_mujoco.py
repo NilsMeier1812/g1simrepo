@@ -97,12 +97,15 @@ def SimulationThread():
                 # Pelvis anheben sodass Füsse knapp über Boden schweben (~2cm)
                 mj_data.qpos[2] += (0.02 - min_foot_z)
                 _mj.mj_forward(mj_model, mj_data)
-                _hold_base_initial_pose = mj_data.qpos[0:7].copy()
+                # qpos 0:7 = freie Basis, 7:22 = Beine(12) + Taille(3),
+                # 22:36 = Arme(14). Wir frieren Basis + Beine + Taille ein,
+                # damit der Roboter ohne Loco-Controller ruhig steht.
+                _hold_base_initial_pose = mj_data.qpos[0:22].copy()
                 mj_data.qvel[:] = 0
                 print(f'[HOLD_BASE] Standing pose geladen (pelvis z={mj_data.qpos[2]:.4f}).', flush=True)
-            # Nur Pelvis pose + velocity fixieren — Arme/Beine frei!
-            mj_data.qpos[0:7] = _hold_base_initial_pose
-            mj_data.qvel[0:6] = 0
+            # Basis + Beine + Taille fixieren — nur die Arme (qpos 22:36) bleiben frei.
+            mj_data.qpos[0:22] = _hold_base_initial_pose
+            mj_data.qvel[0:21] = 0
         # === HOLD_BASE HOOK END ===
 
         locker.release()

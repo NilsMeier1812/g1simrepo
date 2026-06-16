@@ -117,10 +117,15 @@ ros2 launch g1pilot bringup_launcher.launch.py
 The sim/real switch is driven by a single environment variable, `G1_SIM_MODE`
 (see `g1pilot/utils/common.py`):
 
-| Mode | `G1_SIM_MODE` | DDS domain | Interface | Entry point |
-|------|---------------|------------|-----------|-------------|
-| Simulation | `true`  | 1 | `lo` | `bringup_sim.launch.py` |
-| Real robot | `false` | 0 | `${ROBOT_INTERFACE}` | `bringup_launcher.launch.py` |
+| Mode | `G1_SIM_MODE` | Unitree DDS domain | `ROS_DOMAIN_ID` | Interface | Entry point |
+|------|---------------|--------------------|-----------------|-----------|-------------|
+| Simulation | `true`  | 1 | 0 | `lo` | `bringup_sim.launch.py` |
+| Real robot | `false` | 0 | 0 | `${ROBOT_INTERFACE}` | `bringup_launcher.launch.py` |
+
+> The Unitree DDS domain (used by `unitree_sdk2py`) and `ROS_DOMAIN_ID` (the
+> rmw/ROS graph) must be **different** values. In sim that means Unitree=1 and
+> `ROS_DOMAIN_ID=0`; using the same number makes nodes that use both ROS and the
+> Unitree SDK crash with a CycloneDDS "create domain error".
 
 Recommended (consolidated) Docker entry point:
 

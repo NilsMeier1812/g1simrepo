@@ -58,7 +58,10 @@ services:
     environment:
       - DISPLAY=${DISPLAY}
       - G1_SIM_MODE=true          # ← Aktiviert Simulation in Python-Code
-      - ROS_DOMAIN_ID=1
+      # ROS-Graph-Domain MUSS sich von der Unitree-DDS-Domain (1 im Sim)
+      # unterscheiden, sonst kollidieren rmw_cyclonedds und unitree_sdk2py
+      # im selben Prozess (robot_state crasht: "create domain error").
+      - ROS_DOMAIN_ID=0
     command: >
       bash -c "cd /ros2_ws &&
                source /opt/ros/humble/setup.bash &&
