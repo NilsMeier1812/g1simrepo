@@ -46,6 +46,11 @@ class UnitreeSdk2Bridge:
 
         self.joystick = None
 
+        # Letzter empfangener Steuerbefehl (rt/lowcmd ODER rt/arm_sdk).
+        # Der PD-Torque wird NICHT hier, sondern pro Sim-Schritt (ApplyLowCmd)
+        # gerechnet, damit die Regelrate nicht an der Publish-Rate haengt.
+        self.low_cmd = None
+
         # Check sensor
         for i in range(self.dim_motor_sensor, self.mj_model.nsensor):
             name = mujoco.mj_id2name(
@@ -114,16 +119,26 @@ class UnitreeSdk2Bridge:
         }
 
     def LowCmdHandler(self, msg: LowCmd_):
-        # Wird für rt/lowcmd UND rt/arm_sdk aufgerufen. Rechnet den PD-Befehl
-        # pro Motor und schreibt ihn direkt in mj_data.ctrl (Torque-Aktuatoren).
-        # Gelenke, die der Sender nicht stellt (kp=kd=0), erhalten 0 Nm.
-        if self.mj_data is None:
+        # Wird für rt/lowcmd UND rt/arm_sdk aufgerufen. Speichert nur den
+        # letzten Befehl; der PD-Torque wird in ApplyLowCmd() pro Sim-Schritt
+        # gerechnet. Wichtig: wuerde man hier (im DDS-Callback) ctrl schreiben,
+        # bliebe der Torque zwischen zwei Nachrichten KONSTANT. Faellt die
+        # Publish-Rate (z.B. weil die IK den arm_controller bremst), wirkt ein
+        # fixer Open-Loop-Torque ueber viele Steps -> Aufschwingen/Divergenz.
+        self.low_cmd = msg
+
+    def ApplyLowCmd(self):
+        # Pro Sim-Schritt aufgerufen: rechnet den PD-Befehl pro Motor mit den
+        # AKTUELLEN Sensorwerten -> Regelrate = Sim-Rate, unabhaengig von der
+        # Publish-Rate des Senders. Gelenke ohne Befehl (kp=kd=0) -> 0 Nm.
+        if self.mj_data is None or self.low_cmd is None:
             return
+        cmd = self.low_cmd
         for i in range(self.num_motor):
             self.mj_data.ctrl[i] = (
-                msg.motor_cmd[i].tau
-                + msg.motor_cmd[i].kp * (msg.motor_cmd[i].q - self.mj_data.sensordata[i])
-                + msg.motor_cmd[i].kd * (msg.motor_cmd[i].dq - self.mj_data.sensordata[i + self.num_motor])
+                cmd.motor_cmd[i].tau
+                + cmd.motor_cmd[i].kp * (cmd.motor_cmd[i].q - self.mj_data.sensordata[i])
+                + cmd.motor_cmd[i].kd * (cmd.motor_cmd[i].dq - self.mj_data.sensordata[i + self.num_motor])
             )
 
     def PublishLowState(self):

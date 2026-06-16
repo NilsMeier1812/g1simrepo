@@ -60,8 +60,11 @@ def SimulationThread():
                 mj_data.xfrc_applied[band_attached_link, :3] = elastic_band.Advance(
                     mj_data.qpos[:3], mj_data.qvel[:3]
                 )
-        # Steuerbefehle werden von UnitreeSdk2Bridge.LowCmdHandler direkt in
-        # mj_data.ctrl geschrieben (rt/lowcmd + rt/arm_sdk).
+        # PD-Torque JEDEN Schritt mit aktuellen Sensoren neu rechnen, damit die
+        # Regelrate = Sim-Rate ist und nicht an der (evtl. langsamen) Publish-
+        # Rate von rt/lowcmd / rt/arm_sdk haengt (sonst Open-Loop-Torque zwischen
+        # Nachrichten -> Aufschwingen der Arme).
+        unitree.ApplyLowCmd()
         mujoco.mj_step(mj_model, mj_data)
 
         # === HOLD_BASE HOOK START ===
