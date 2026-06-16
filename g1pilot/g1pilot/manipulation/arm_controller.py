@@ -921,7 +921,20 @@ class ArmController(Node):
             q_target = np.concatenate((self.home_left, self.home_right))
 
         else:
-            current_all = self.get_current_motor_q() if self.use_robot else self._assemble_full_from_last()
+            # IK-Seed: Arm-Gelenke aus dem LETZTEN ZIEL (deterministisch), nicht
+            # aus der Messung. Wuerde man aus der Messung seeden, fuehrt Mess-/
+            # Sim-Rauschen zu leicht anderen IK-Loesungen -> minimal anderes
+            # Kommando -> Arm zittert dauerhaft, ohne je einzurasten. Die Nicht-
+            # Arm-Gelenke (Taille) bleiben aus der Messung, damit die FK-Basis
+            # stimmt.
+            if self.use_robot:
+                current_all = self.get_current_motor_q()
+                for i, jidx in enumerate(LEFT_JOINT_INDICES_LIST):
+                    current_all[jidx] = self._last_q_target[i]
+                for i, jidx in enumerate(RIGHT_JOINT_INDICES_LIST):
+                    current_all[jidx] = self._last_q_target[7 + i]
+            else:
+                current_all = self._assemble_full_from_last()
 
             try:
                 self.ik_solver.set_current_configuration({
