@@ -15,8 +15,19 @@ VIEWER_DT = 0.02  # 50 fps for viewer
 
 
 # === HOLD_BASE FEATURE ===
-# Hält das Pelvis an initialer Pose fest. Erlaubt Arm-Tests ohne
-# Balance-Controller. Auf False setzen für realen Sim-Betrieb.
-# Komplett entfernen: diese Zeilen + den hook in unitree_mujoco.py löschen.
+# Hält den Oberkörper ruhig, damit die Arme ohne Balance-Controller getestet
+# werden können. HOLD_BASE_MODE waehlt WIE:
+#   "weld"     : torso_link (Basis beider Arme) per Weld-Constraint starr an die
+#                Welt + Beine/Taille als steife Federn. Impulserhaltend, KEIN
+#                Teleport -> sauberste, jitterfreie Basis fuer die Arme. (Default)
+#   "teleport" : Legacy. Becken/Beine/Taille werden jeden Sim-Schritt hart auf
+#                qpos0 gesetzt (Weld aus). Kann Zittern in die Arme pumpen.
+#   "off"      : Basis voellig frei (Weld aus) - fuer echten Loco-Controller.
+# HOLD_BASE (bool) bleibt aus Rueckwaerts-Kompatibilitaet: True -> nutzt
+# HOLD_BASE_MODE, False -> erzwingt "off".
 HOLD_BASE = True
+HOLD_BASE_MODE = "weld"
+# Federwerte fuer Beine/Taille im "weld"-Modus (nur dort genutzt).
+HOLD_BASE_STIFFNESS = 2000.0
+HOLD_BASE_DAMPING = 80.0
 # === HOLD_BASE END ===

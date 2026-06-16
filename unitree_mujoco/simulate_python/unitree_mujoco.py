@@ -8,28 +8,18 @@ from unitree_sdk2py.core.channel import ChannelFactoryInitialize
 from unitree_sdk2py_bridge import UnitreeSdk2Bridge, ElasticBand
 
 import config
+from hold_base import HoldBase
 
 
 locker = threading.Lock()
 
-# === HOLD_BASE STATE START ===
-_hold_base_initial_pose = None
-# === HOLD_BASE STATE END ===
-
 mj_model = mujoco.MjModel.from_xml_path(config.ROBOT_SCENE)
 mj_data = mujoco.MjData(mj_model)
 
-# Der HOLD_BASE-Weld (torso_link, in scene.xml) ist per Default aktiv. Wenn
-# HOLD_BASE aus ist (echter Loco-Controller uebernimmt), deaktivieren wir ihn,
-# damit die Basis frei ist.
-if not getattr(config, 'HOLD_BASE', False):
-    try:
-        _wid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_EQUALITY, 'hold_base_weld')
-        if _wid >= 0:
-            mj_model.eq_active0[_wid] = 0
-    except Exception as _e:
-        print(f'[HOLD_BASE] Konnte Weld nicht deaktivieren: {_e}', flush=True)
-
+# HOLD_BASE: Oberkoerper fuer Arm-Tests ruhig halten (bis ein Loco-Controller
+# existiert). Modus/Tuning kommen aus config.py. Richtet Weld/Steifigkeit einmal
+# ein; im teleport-Modus liefert step() einen per-Step-Hook.
+hold_base = HoldBase(mj_model, config)
 
 if config.ENABLE_ELASTIC_BAND:
     elastic_band = ElasticBand()
@@ -78,21 +68,8 @@ def SimulationThread():
         unitree.ApplyLowCmd()
         mujoco.mj_step(mj_model, mj_data)
 
-        # === HOLD_BASE HOOK START ===
-        # Untere Koerperhaelfte (Basis + Beine + Taille, qpos 0:22) auf die
-        # Referenz-Standpose qpos0 einfrieren. qpos0 ist zugleich der Anker des
-        # torso_link-Weld (scene.xml) -> beide sind konsistent, nichts arbeitet
-        # gegeneinander. Die Arme (qpos 22:36) bleiben frei und werden vom
-        # arm_controller geregelt; ihre starre Basis liefert der Weld.
-        if getattr(config, 'HOLD_BASE', False):
-            global _hold_base_initial_pose
-            if _hold_base_initial_pose is None:
-                _hold_base_initial_pose = mj_model.qpos0[0:22].copy()
-                print('[HOLD_BASE] Unterkoerper auf Standpose (qpos0) eingefroren; '
-                      'torso_link per Weld starr.', flush=True)
-            mj_data.qpos[0:22] = _hold_base_initial_pose
-            mj_data.qvel[0:21] = 0
-        # === HOLD_BASE HOOK END ===
+        # Nur im teleport-Modus: Unterkoerper jeden Schritt zuruecksetzen.
+        hold_base.after_step(mj_data)
 
         locker.release()
 
