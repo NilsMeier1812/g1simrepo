@@ -2,7 +2,6 @@
 # Konsistent zu docker-compose.yml (Domain 1, lo, G1_SIM_MODE=true).
 # HINWEIS: mujoco_sim nutzt das gebaute Image g1pilot-mujoco:v1.0 ohne Live-Mount
 # von unitree_mujoco -> nach Änderungen an der MuJoCo-Bridge das Image neu bauen.
-version: '3.8'
 
 services:
 

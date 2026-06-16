@@ -4,7 +4,6 @@
 # Real: G1_SIM_MODE=false docker compose --profile real up
 # ══════════════════════════════════════════════════════════════════════
 
-version: '3.8'
 
 # ── Gemeinsame Basis-Konfiguration für G1Pilot Container ────────────
 x-g1pilot-base: &g1pilot-base
@@ -50,6 +49,12 @@ services:
     # ── G1Pilot im Simulations-Modus ───────────────────────────────
     profiles: ["sim"]
     <<: *g1pilot-base
+    # Schlankes Sim-Image: KEIN livox/MOLA (die braucht nur der echte Roboter
+    # und ihr Build schlägt sonst fehl). Nur rviz2/pin/tf2/cyclonedds/sdk.
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.sim
+    image: g1pilot-sim:v1.1.0
     environment:
       - DISPLAY=${DISPLAY}
       - G1_SIM_MODE=true          # ← Aktiviert Simulation in Python-Code

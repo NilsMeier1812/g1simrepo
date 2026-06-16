@@ -16,6 +16,8 @@ RUN apt-get update && apt-get install -yy \
     ros-${ROS_DISTRO}-rosidl-default-generators \
     ros-${ROS_DISTRO}-tf2-ros \
     ros-${ROS_DISTRO}-tf2-geometry-msgs \
+    ros-${ROS_DISTRO}-robot-state-publisher \
+    ros-${ROS_DISTRO}-interactive-markers \
     libxkbcommon-x11-0 \
     libxcb-cursor0 \
     libxcb-icccm4 \
