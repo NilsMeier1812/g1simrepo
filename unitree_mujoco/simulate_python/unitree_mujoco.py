@@ -19,6 +19,17 @@ _hold_base_initial_pose = None
 mj_model = mujoco.MjModel.from_xml_path(config.ROBOT_SCENE)
 mj_data = mujoco.MjData(mj_model)
 
+# Der HOLD_BASE-Weld (torso_link, in scene.xml) ist per Default aktiv. Wenn
+# HOLD_BASE aus ist (echter Loco-Controller uebernimmt), deaktivieren wir ihn,
+# damit die Basis frei ist.
+if not getattr(config, 'HOLD_BASE', False):
+    try:
+        _wid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_EQUALITY, 'hold_base_weld')
+        if _wid >= 0:
+            mj_model.eq_active0[_wid] = 0
+    except Exception as _e:
+        print(f'[HOLD_BASE] Konnte Weld nicht deaktivieren: {_e}', flush=True)
+
 
 if config.ENABLE_ELASTIC_BAND:
     elastic_band = ElasticBand()
@@ -68,45 +79,17 @@ def SimulationThread():
         mujoco.mj_step(mj_model, mj_data)
 
         # === HOLD_BASE HOOK START ===
+        # Untere Koerperhaelfte (Basis + Beine + Taille, qpos 0:22) auf die
+        # Referenz-Standpose qpos0 einfrieren. qpos0 ist zugleich der Anker des
+        # torso_link-Weld (scene.xml) -> beide sind konsistent, nichts arbeitet
+        # gegeneinander. Die Arme (qpos 22:36) bleiben frei und werden vom
+        # arm_controller geregelt; ihre starre Basis liefert der Weld.
         if getattr(config, 'HOLD_BASE', False):
             global _hold_base_initial_pose
             if _hold_base_initial_pose is None:
-                # G1 Standing Pose (qpos indices from joint query)
-                # Base: pos=[0, 0, z_stand], quat=[1,0,0,0]
-                mj_data.qpos[0:3] = [0.0, 0.0, 0.75]
-                mj_data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
-                # Legs: slight knee bend for natural stance
-                #   hip_pitch(7,13) knee(10,16) ankle_pitch(11,17)
-                mj_data.qpos[7]  = -0.15   # left_hip_pitch
-                mj_data.qpos[10] =  0.30   # left_knee
-                mj_data.qpos[11] = -0.15   # left_ankle_pitch
-                mj_data.qpos[13] = -0.15   # right_hip_pitch
-                mj_data.qpos[16] =  0.30   # right_knee
-                mj_data.qpos[17] = -0.15   # right_ankle_pitch
-                # Arms: natural at sides
-                mj_data.qpos[22] =  0.3    # left_shoulder_pitch (leicht vor)
-                mj_data.qpos[23] =  0.15   # left_shoulder_roll (leicht seitlich)
-                mj_data.qpos[25] =  0.5    # left_elbow (leicht gebeugt)
-                mj_data.qpos[29] =  0.3    # right_shoulder_pitch
-                mj_data.qpos[30] = -0.15   # right_shoulder_roll (seitlich, gespiegelt)
-                mj_data.qpos[32] =  0.5    # right_elbow
-                # Vorwärts-Kinematik berechnen damit Sensoren stimmen
-                import mujoco as _mj
-                _mj.mj_forward(mj_model, mj_data)
-                # Fuss-Höhe prüfen und Pelvis anpassen
-                left_foot_z = mj_data.xpos[mj_model.body('left_ankle_roll_link').id][2]
-                right_foot_z = mj_data.xpos[mj_model.body('right_ankle_roll_link').id][2]
-                min_foot_z = min(left_foot_z, right_foot_z)
-                # Pelvis anheben sodass Füsse knapp über Boden schweben (~2cm)
-                mj_data.qpos[2] += (0.02 - min_foot_z)
-                _mj.mj_forward(mj_model, mj_data)
-                # qpos 0:7 = freie Basis, 7:22 = Beine(12) + Taille(3),
-                # 22:36 = Arme(14). Wir frieren Basis + Beine + Taille ein,
-                # damit der Roboter ohne Loco-Controller ruhig steht.
-                _hold_base_initial_pose = mj_data.qpos[0:22].copy()
-                mj_data.qvel[:] = 0
-                print(f'[HOLD_BASE] Standing pose geladen (pelvis z={mj_data.qpos[2]:.4f}).', flush=True)
-            # Basis + Beine + Taille fixieren — nur die Arme (qpos 22:36) bleiben frei.
+                _hold_base_initial_pose = mj_model.qpos0[0:22].copy()
+                print('[HOLD_BASE] Unterkoerper auf Standpose (qpos0) eingefroren; '
+                      'torso_link per Weld starr.', flush=True)
             mj_data.qpos[0:22] = _hold_base_initial_pose
             mj_data.qvel[0:21] = 0
         # === HOLD_BASE HOOK END ===
