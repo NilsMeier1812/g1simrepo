@@ -937,7 +937,12 @@ class ArmController(Node):
                 self.ik_solver.set_goal("right", self._goal_right_filt)
 
             q_dict = self.ik_solver.get_joint_targets(current_all)
-            q_target = np.zeros(14, dtype=float)
+            # Default: HALTEN. Ohne gesetztes IK-Ziel (kein Marker gezogen)
+            # liefert get_joint_targets ein leeres Dict – dann muss der Arm in
+            # seiner letzten Position bleiben. Frueher stand hier zeros(14), was
+            # beide Arme beim Enable mit voller Geschwindigkeit in die
+            # Null-Konfiguration (Gelenklimits/Selbstkollision) trieb -> Zappeln.
+            q_target = self._last_q_target.copy()
             if "left" in q_dict:
                 q_target[0:7] = q_dict["left"]
             if "right" in q_dict:
