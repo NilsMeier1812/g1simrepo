@@ -473,9 +473,19 @@ class ArmController(Node):
         self.msg.mode_machine = self.get_mode_machine()
         self.all_motor_q = self.get_current_motor_q()
 
-        self.kp_high = 300.0; self.kd_high = 3.0
-        self.kp_low  = 150.0; self.kd_low  = 4.0
-        self.kp_wrist= 40.0;  self.kd_wrist= 1.5
+        # PD-Gains. kp wie auf dem echten Roboter; kd in der Sim deutlich
+        # hoeher, weil die MuJoCo-Gelenke (anders als echte Motoren mit
+        # Getriebereibung) sonst unterdaempft um die Sollpose schwingen
+        # (Dauerzittern). Als ROS-Parameter ausgelegt -> real kann via Launch
+        # niedrigere kd setzen, ohne den Code zu aendern.
+        def _gain(name, default):
+            if not self.has_parameter(name):
+                self.declare_parameter(name, default)
+            return float(self.get_parameter(name).value)
+
+        self.kp_high  = _gain("kp_high",  300.0); self.kd_high  = _gain("kd_high",  12.0)
+        self.kp_low   = _gain("kp_low",   150.0); self.kd_low   = _gain("kd_low",   12.0)
+        self.kp_wrist = _gain("kp_wrist",  40.0); self.kd_wrist = _gain("kd_wrist",  4.0)
 
         wrist_vals = {m.value for m in G1_29_JointWristIndex}
         for jid in G1_29_JointArmIndex:
