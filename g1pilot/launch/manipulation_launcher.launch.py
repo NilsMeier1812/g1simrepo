@@ -23,6 +23,11 @@ def generate_launch_description():
         DeclareLaunchArgument("ik_alpha", default_value="0.2"),
         DeclareLaunchArgument("ik_max_dq_step", default_value="0.05"),
         DeclareLaunchArgument("arm_velocity_limit", default_value="2.0"),
+        # Marker senden ihr Ziel sofort beim Ziehen (gruener Wuerfel). Steht das
+        # auf false, sind die Wuerfel grau und stumm, bis man sie per Rechtsklick-
+        # Menue "Enable publishing" aktiviert. Der Arm bewegt sich ohnehin nur,
+        # wenn /g1pilot/arms/enabled true ist -> das bleibt die Sicherheitsschranke.
+        DeclareLaunchArgument("marker_publish_default", default_value="true"),
 
         Node(
             package='g1pilot',
@@ -53,6 +58,8 @@ def generate_launch_description():
             parameters=[{
                 'interface': interface,
                 'use_robot': ParameterValue(use_robot, value_type=bool),
+                'publish_enabled_default': ParameterValue(
+                    LaunchConfiguration("marker_publish_default"), value_type=bool),
             }],
             output='screen'
         ),

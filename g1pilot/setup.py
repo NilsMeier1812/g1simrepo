@@ -83,6 +83,7 @@ setup(
             # Diagnostics / sim tools
             'sim_dds_check = g1pilot.tools.sim_dds_check:main',
             'sim_arm_wiggle = g1pilot.tools.sim_arm_wiggle:main',
+            'sim_goal_probe = g1pilot.tools.sim_goal_probe:main',
         ],
     },
 )
