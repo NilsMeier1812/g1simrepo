@@ -94,8 +94,21 @@ class InteractiveMarkerEFF(Node):
             self.follow_ee = bool(msg.data)
             self.get_logger().info(f"[marker] follow_ee -> {self.follow_ee}")
 
+    @staticmethod
+    def _pose_close(a: Pose, b: Pose, pos_tol=0.004, ori_tol=0.999):
+        """True, wenn zwei Posen praktisch gleich sind (Position + Orientierung)."""
+        dx = a.position.x - b.position.x
+        dy = a.position.y - b.position.y
+        dz = a.position.z - b.position.z
+        if (dx * dx + dy * dy + dz * dz) ** 0.5 > pos_tol:
+            return False
+        dot = (a.orientation.x * b.orientation.x + a.orientation.y * b.orientation.y +
+               a.orientation.z * b.orientation.z + a.orientation.w * b.orientation.w)
+        return abs(dot) >= ori_tol
+
     def _follow_update(self):
-        """Solange nicht gezogen: Marker auf die aktuelle Hand-TF nachfuehren."""
+        """Solange nicht gezogen: Marker auf die aktuelle Hand-TF nachfuehren.
+        Nur bei MERKLICHER Aenderung setPose -> kein Dauer-Flackern im Stillstand."""
         if not self.follow_ee:
             return
         changed = False
@@ -112,6 +125,9 @@ class InteractiveMarkerEFF(Node):
             pose.position.y = trans.transform.translation.y
             pose.position.z = trans.transform.translation.z
             pose.orientation = trans.transform.rotation
+            cur = self.current_pose.get(side)
+            if cur is not None and self._pose_close(cur, pose):
+                continue  # Hand steht praktisch still -> nichts tun
             self.current_pose[side] = pose
             self.server.setPose(f"{side}_hand_goal", pose)
             changed = True
@@ -216,28 +232,29 @@ class InteractiveMarkerEFF(Node):
                 int_marker.controls.append(c)
 
     def _feedback_cb(self, feedback, ee_name: str):
-        # Drag-Status verfolgen, damit der Follow-Update waehrend des Ziehens
-        # pausiert (sonst wuerde er die Maus-Eingabe ueberschreiben).
-        if feedback.event_type == InteractiveMarkerFeedback.MOUSE_DOWN:
+        et = feedback.event_type
+        if et == InteractiveMarkerFeedback.MOUSE_DOWN:
             self.dragging[ee_name] = True
-        elif feedback.event_type == InteractiveMarkerFeedback.MOUSE_UP:
-            self.dragging[ee_name] = False
 
         self.current_pose[ee_name] = feedback.pose
 
-        if not self.publish_enabled.get(ee_name, True):
-            return
+        # NUR waehrend aktivem Ziehen (bzw. beim Loslassen die finale Pose)
+        # publizieren. Sonst wuerde das Follow-Update (setPose) ueber das
+        # Feedback ein Ziel ausloesen -> Rueckkopplung (Arm faehrt -> Hand bewegt
+        # sich -> Marker folgt -> Feedback -> ...) = Flackern/Springen.
+        is_drag = self.dragging.get(ee_name, False) or et == InteractiveMarkerFeedback.MOUSE_UP
+        if self.publish_enabled.get(ee_name, True) and is_drag:
+            pub = self.ee_publishers.get(ee_name)
+            if pub is not None:
+                pose = PoseStamped()
+                pose.header = feedback.header
+                pose.header.frame_id = self.fixed_frame
+                pose.header.stamp = self.get_clock().now().to_msg()
+                pose.pose = feedback.pose
+                pub.publish(pose)
 
-        pub = self.ee_publishers.get(ee_name)
-        if pub is None:
-            return
-
-        pose = PoseStamped()
-        pose.header = feedback.header
-        pose.header.frame_id = self.fixed_frame
-        pose.header.stamp = self.get_clock().now().to_msg()
-        pose.pose = feedback.pose
-        pub.publish(pose)
+        if et == InteractiveMarkerFeedback.MOUSE_UP:
+            self.dragging[ee_name] = False
 
     def _menu_cb(self, feedback):
         marker_name = feedback.marker_name or ""
