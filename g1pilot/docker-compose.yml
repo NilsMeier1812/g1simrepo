@@ -17,7 +17,7 @@ x-g1pilot-base: &g1pilot-base
     - .:/ros2_ws/src/g1pilot:rw   # Live-Code in den colcon-Workspace mounten
   stdin_open: true
   tty: true
-  restart: unless-stopped
+  restart: "no"          # interaktiv: bei Fehler NICHT endlos im Hintergrund neustarten
 
 services:
 
@@ -42,7 +42,7 @@ services:
     command: >
       bash -c "cd /unitree_mujoco/simulate_python &&
                python3 unitree_mujoco.py"
-    restart: unless-stopped
+    restart: "no"          # bei X11-/GLFW-Fehler nicht endlos neustarten
     tty: true
 
   g1pilot-sim:
