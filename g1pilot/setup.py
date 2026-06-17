@@ -50,6 +50,10 @@ setup(
         # MOLA LiDAR-odometry pipeline (used by mola_launcher.launch.py)
         (f'share/{package_name}/pipelines',
             expand(['pipelines/*.yaml'])),
+
+        # RL-Loco-Policy-Assets (motion.pt + g1.yaml) fuer loco_sim.
+        (f'share/{package_name}/policies/g1',
+            expand(['policies/g1/*.yaml', 'policies/g1/*.pt'])),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -75,6 +79,7 @@ setup(
 
             # Navigation Nodes
             'loco_client = g1pilot.navigation.loco_client:main',
+            'loco_sim = g1pilot.navigation.loco_sim:main',
             'dijkstra_planner = g1pilot.navigation.dijkstra_planner:main',
             'nav2point = g1pilot.navigation.nav2point:main',
             'create_map = g1pilot.navigation.create_map:main',

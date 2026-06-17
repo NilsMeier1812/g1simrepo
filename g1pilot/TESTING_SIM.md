@@ -214,3 +214,65 @@ ros2 launch ... manipulation_launcher.launch.py marker_publish_default:=true
 Sammle die relevanten Logs aus `~/g1simrepo/g1pilot/logs/` (z. B. `L0_hold_test.log`,
 `L4_monitor.log`) plus das MuJoCo-Startlog (Zeile `[HOLD_BASE] Modus=...`). Damit
 lässt sich die fehlerhafte Schicht eindeutig bestimmen.
+
+---
+
+## 7. Loco-/Balance-Controller (freies Stehen, MuJoCo)
+
+Die Arm-Manipulation oben läuft mit fixierter Basis (`HOLD_BASE_MODE=weld`). Der
+**Loco-Controller** (`loco_sim`) lässt den Roboter **frei stehen und balancieren** —
+ohne Weld. Eine vortrainierte RL-Policy (unitree_rl_gym G1, `policies/g1/motion.pt`)
+regelt die Beine; Taille/Arme werden gehalten, bis der `arm_controller` die Arme via
+`rt/arm_sdk` (Weight-Blend) übernimmt.
+
+> Branch: `loco`. Erfordert das **neu gebaute Sim-Image** (PyTorch im
+> `Dockerfile.sim`) — beim ersten Mal `docker compose ... build g1pilot-sim`.
+
+### Architektur (kurz)
+```
+loco_sim   : rt/lowstate (IMU+Gelenke) → Policy(LSTM) → rt/lowcmd (Beine 0–11, Taille/Arme gehalten)
+arm_ctrl   : rt/arm_sdk (Arme 15–28, Weight@29)   ← überschreibt Arme gewichtet
+Bridge     : merged beide Quellen pro Motor → mj_data.ctrl (PD je Sim-Schritt)
+FSM        : HOLD (steifer Stand) → [START BALANCING] → RUN (Policy) ; [EMERGENCY] → DAMP
+```
+
+### Start (freie Basis)
+```bash
+cd ~/g1simrepo/g1pilot && git checkout loco && git pull
+./run_sim_loco.sh        # setzt HOLD_BASE_MODE=off → Basis FREI
+```
+MuJoCo-Startlog muss `[HOLD_BASE] Modus=off: Basis frei (Weld aus).` zeigen.
+`loco_sim` meldet `loco_sim bereit (HOLD = steifer Stand)` und
+`Policy geladen: ... recurrent=True`. Im HOLD steht der Roboter steif (balanciert
+noch nicht aktiv).
+
+### Ablauf
+1. **START BALANCING** (Streamdeck-Button, publisht `/g1pilot/start_balancing`) →
+   `loco_sim` rampt in die Default-Pose und aktiviert die Policy → Roboter steht
+   **frei und balanciert** (sollte ≥30 s stehen, auch bei kleinem Maus-Schubs).
+   Manuell ohne Streamdeck:
+   ```bash
+   ros2 topic pub -1 /g1pilot/start_balancing std_msgs/Bool "{data: true}"
+   ```
+2. **Arme + Loco gleichzeitig:** Arme an + Marker ziehen (wie L6). Beine balancieren
+   weiter, Arme folgen — keiner geht limp (beweist den Bridge-Merge):
+   ```bash
+   ros2 topic pub -1 /g1pilot/arms/enabled std_msgs/Bool "{data: true}"
+   ```
+3. **EMERGENCY STOP** (`/g1pilot/emergency_stop`) → `loco_sim` dampt (weich, sanftes
+   Hinsetzen) **und** schaltet die Arme aus:
+   ```bash
+   ros2 topic pub -1 /g1pilot/emergency_stop std_msgs/Bool "{data: true}"
+   ```
+
+### Fehlersuche
+- **Roboter sackt sofort zusammen, sobald `run_sim_loco.sh` startet** (vor START):
+  HOLD greift nicht — prüfe, ob `loco_sim` `rt/lowstate` bekommt (sonst bleibt es im
+  Wartezustand). `ros2 node list` muss `loco_sim` zeigen.
+- **`Policy geladen` fehlt / ImportError torch** → Sim-Image nicht neu gebaut
+  (`docker compose --profile sim build g1pilot-sim`).
+- **Steht im HOLD, kippt aber nach START BALANCING** → Policy-Mapping/Sim-Realismus.
+  Erst `recurrent=True` und `[HOLD_BASE] Modus=off` verifizieren; dann ggf.
+  Reibung/Trägheit im Modell vs. Trainings-Setup prüfen.
+- **Arme gehen beim Balancieren limp** → Merge/Weight: `arm_controller` muss
+  `rt/arm_sdk` mit Weight@29=1 publishen (Arme aktiviert).

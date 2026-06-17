@@ -41,6 +41,10 @@ RUN git clone https://github.com/lnotspotl/unitree_sdk2_python.git \
 # Python-Pakete (arm_controller braucht pin/pinocchio, joystick braucht evdev)
 RUN pip3 install pyqt6 "pin>=2.6" meshcat evdev numpy
 
+# PyTorch (CPU-only) fuer die RL-Loco-Policy (loco_sim laedt motion.pt via
+# torch.jit). CPU-Wheel -> kein CUDA noetig, schlank.
+RUN pip3 install --index-url https://download.pytorch.org/whl/cpu torch
+
 # astroviz_interfaces (PFLICHT: robot_state.py importiert MotorState daraus)
 RUN mkdir -p /ros2_ws/src
 WORKDIR /ros2_ws/src

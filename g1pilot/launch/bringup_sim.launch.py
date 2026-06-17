@@ -5,8 +5,8 @@ Startet G1Pilot für MuJoCo-Simulation.
 Unterschied zu bringup_launcher.launch.py:
   - robot_state + arm_controller: use_robot=true, interface=lo
     → kommunizieren über DDS Loopback mit MuJoCo
-  - loco_client: use_robot=false
-    → kein Loco-Controller im Sim (zeigt Warnung)
+  - loco_sim: RL-Policy-Loco-/Balance-Controller (ersetzt das Unitree-Onboard-
+    High-Level, das es in MuJoCo nicht gibt) → rt/lowstate→Policy→rt/lowcmd
   - KEIN livox, KEIN mola (nicht nötig im Sim)
 """
 from launch import LaunchDescription
@@ -60,15 +60,16 @@ def generate_launch_description():
             ),
         ),
 
-        # ── 4. loco_client: use_robot=false → kein DDS, nur Warnung ─────
-        #    Walking/Balancing ist im Sim nicht verfügbar (Hardware-only)
+        # ── 4. loco_sim: RL-Loco-/Balance-Controller (ersetzt das Onboard-
+        #    High-Level, das es in MuJoCo nicht gibt). Liest rt/lowstate,
+        #    schreibt rt/lowcmd (Beine). START BALANCING -> Stehen/Balancieren.
+        #    Real-Bringup nutzt weiter loco_client (Unitree-High-Level).
         Node(
             package='g1pilot',
-            executable='loco_client',
-            name='loco_client',
+            executable='loco_sim',
+            name='loco_sim',
             output='screen',
             parameters=[{
-                'use_robot': False,
                 'interface': 'lo',
             }]
         ),
