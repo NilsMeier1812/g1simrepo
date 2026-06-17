@@ -21,6 +21,7 @@ class StreamDeck(Node):
         self.pub_start_balancing = self.create_publisher(Bool, '/g1pilot/start_balancing', 10)
         self.pub_arms_enabled = self.create_publisher(Bool, '/g1pilot/arms/enabled', 10)
         self.pub_arms_home = self.create_publisher(Bool, '/g1pilot/arms/home', 10)
+        self.pub_marker_follow = self.create_publisher(Bool, '/g1pilot/marker_follow_ee', 10)
         self.pub_left_hand = self.create_publisher(String, '/g1pilot/dx3/hand_action/left', 10)
         self.pub_right_hand = self.create_publisher(String, '/g1pilot/dx3/hand_action/right', 10)
         self.pub_emergency_stop = self.create_publisher(Bool, '/g1pilot/emergency_stop', 10)
@@ -65,6 +66,9 @@ class ButtonGUI(QWidget):
             (1, 1): ("HOMING\nARMS", lambda: self.flash_button((1, 1), self.node.pub_arms_home)),
 
             (1, 0): ("ENABLE\nMANIPULATION", lambda: self.toggle_button((1, 0), self.node.pub_arms_enabled)),
+
+            # Oben rechts: Marker-Follow (Leader-Follower) an/aus.
+            (0, 4): ("MARKER\nFOLLOW", lambda: self.toggle_button((0, 4), self.node.pub_marker_follow)),
 
             (2, 0): ("OPEN\nLEFT\nHAND", lambda: self.toggle_hand("left", "open", self.node.pub_left_hand)),
             (2, 1): ("CLOSE\nLEFT\nHAND", lambda: self.toggle_hand("left", "close", self.node.pub_left_hand)),
@@ -112,6 +116,10 @@ class ButtonGUI(QWidget):
                 grid.addWidget(btn, r, c)
                 self.buttons[(r, c)] = btn
                 self.button_states[(r, c)] = False
+
+        # Marker-Follow ist per Default aktiv -> Button gruen anzeigen, damit der
+        # angezeigte Zustand zum Default des interactive_marker-Node passt.
+        self.set_button_active((0, 4), True)
 
         main_layout.addLayout(grid)
         self.setLayout(main_layout)

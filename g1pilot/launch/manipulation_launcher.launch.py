@@ -28,6 +28,8 @@ def generate_launch_description():
         # Menue "Enable publishing" aktiviert. Der Arm bewegt sich ohnehin nur,
         # wenn /g1pilot/arms/enabled true ist -> das bleibt die Sicherheitsschranke.
         DeclareLaunchArgument("marker_publish_default", default_value="true"),
+        # Leader-Follower: Marker folgt der Hand im Idle (per Streamdeck/Topic schaltbar).
+        DeclareLaunchArgument("marker_follow_ee", default_value="true"),
 
         Node(
             package='g1pilot',
@@ -60,6 +62,8 @@ def generate_launch_description():
                 'use_robot': ParameterValue(use_robot, value_type=bool),
                 'publish_enabled_default': ParameterValue(
                     LaunchConfiguration("marker_publish_default"), value_type=bool),
+                'marker_follow_ee': ParameterValue(
+                    LaunchConfiguration("marker_follow_ee"), value_type=bool),
             }],
             output='screen'
         ),

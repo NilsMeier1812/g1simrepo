@@ -6,9 +6,12 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
 from geometry_msgs.msg import PoseStamped, Pose
+from std_msgs.msg import Bool
 from interactive_markers.interactive_marker_server import InteractiveMarkerServer
 from interactive_markers.menu_handler import MenuHandler
-from visualization_msgs.msg import InteractiveMarker, InteractiveMarkerControl, Marker
+from visualization_msgs.msg import (
+    InteractiveMarker, InteractiveMarkerControl, Marker, InteractiveMarkerFeedback,
+)
 from tf2_ros import Buffer, TransformListener, LookupException, ConnectivityException, ExtrapolationException
 
 
@@ -28,6 +31,12 @@ class InteractiveMarkerEFF(Node):
         self.declare_parameter('left_scale', 0.05)
 
         self.declare_parameter('publish_enabled_default', False)
+        # Leader-Follower: solange ein Marker NICHT gezogen wird, folgt er der
+        # echten Hand (TF). So bleibt er nach externen Befehlen (Homing etc.)
+        # synchron und ein Antippen erzeugt nur eine kleine relative Bewegung
+        # statt eines Sprungs. Schaltbar per Param und per Topic.
+        self.declare_parameter('marker_follow_ee', True)
+        self.declare_parameter('follow_rate_hz', 20.0)
 
         self.fixed_frame = self.get_parameter('fixed_frame').get_parameter_value().string_value
         self.spawn_dt = 1.0 / float(self.get_parameter('spawn_rate_hz').value)
@@ -41,6 +50,12 @@ class InteractiveMarkerEFF(Node):
         self.left_scale = float(self.get_parameter('left_scale').value)
 
         self.publish_default = bool(self.get_parameter('publish_enabled_default').value)
+        self.follow_ee = bool(self.get_parameter('marker_follow_ee').value)
+        self.follow_dt = 1.0 / float(self.get_parameter('follow_rate_hz').value)
+
+        # Pro Seite merken, ob der Marker gerade mit der Maus gezogen wird, damit
+        # der Follow-Update das Ziehen nicht ueberschreibt.
+        self.dragging = {"right": False, "left": False}
 
         self.server = InteractiveMarkerServer(self, "g1_ee_goal_markers")
         self.tf_buffer = Buffer()
@@ -68,6 +83,40 @@ class InteractiveMarkerEFF(Node):
 
         self.marker_spawned = {"right": False, "left": False}
         self.timer = self.create_timer(self.spawn_dt, self._try_spawn_missing)
+
+        # Laufzeit-Umschalten des Follow-Verhaltens (z.B. vom Streamdeck-Button).
+        self.create_subscription(Bool, '/g1pilot/marker_follow_ee', self._set_follow, 10)
+        self.follow_timer = self.create_timer(self.follow_dt, self._follow_update)
+        self.get_logger().info(f"[marker] follow_ee={self.follow_ee} (Leader-Follower)")
+
+    def _set_follow(self, msg: Bool):
+        if bool(msg.data) != self.follow_ee:
+            self.follow_ee = bool(msg.data)
+            self.get_logger().info(f"[marker] follow_ee -> {self.follow_ee}")
+
+    def _follow_update(self):
+        """Solange nicht gezogen: Marker auf die aktuelle Hand-TF nachfuehren."""
+        if not self.follow_ee:
+            return
+        changed = False
+        for side, tf_frame in (("right", self.right_tf), ("left", self.left_tf)):
+            if not self.marker_spawned[side] or self.dragging.get(side, False):
+                continue
+            try:
+                trans = self.tf_buffer.lookup_transform(
+                    self.fixed_frame, tf_frame, rclpy.time.Time())
+            except (LookupException, ConnectivityException, ExtrapolationException):
+                continue
+            pose = Pose()
+            pose.position.x = trans.transform.translation.x
+            pose.position.y = trans.transform.translation.y
+            pose.position.z = trans.transform.translation.z
+            pose.orientation = trans.transform.rotation
+            self.current_pose[side] = pose
+            self.server.setPose(f"{side}_hand_goal", pose)
+            changed = True
+        if changed:
+            self.server.applyChanges()
 
     def _build_menu_handler(self) -> MenuHandler:
         mh = MenuHandler()
@@ -167,6 +216,13 @@ class InteractiveMarkerEFF(Node):
                 int_marker.controls.append(c)
 
     def _feedback_cb(self, feedback, ee_name: str):
+        # Drag-Status verfolgen, damit der Follow-Update waehrend des Ziehens
+        # pausiert (sonst wuerde er die Maus-Eingabe ueberschreiben).
+        if feedback.event_type == InteractiveMarkerFeedback.MOUSE_DOWN:
+            self.dragging[ee_name] = True
+        elif feedback.event_type == InteractiveMarkerFeedback.MOUSE_UP:
+            self.dragging[ee_name] = False
+
         self.current_pose[ee_name] = feedback.pose
 
         if not self.publish_enabled.get(ee_name, True):
