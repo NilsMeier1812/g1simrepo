@@ -50,10 +50,14 @@ class UnitreeSdk2Bridge:
 
         self.joystick = None
 
-        # Letzter empfangener Steuerbefehl (rt/lowcmd ODER rt/arm_sdk).
-        # Der PD-Torque wird NICHT hier, sondern pro Sim-Schritt (ApplyLowCmd)
-        # gerechnet, damit die Regelrate nicht an der Publish-Rate haengt.
-        self.low_cmd = None
+        # Zwei getrennte Befehls-Quellen, damit Loco (Beine/Taille via rt/lowcmd)
+        # und Manipulation (Arme via rt/arm_sdk) GLEICHZEITIG laufen koennen.
+        # Frueher gab es nur self.low_cmd -> letzte Nachricht gewann -> die jeweils
+        # andere Koerperhaelfte ging limp. Der PD-Torque wird pro Sim-Schritt in
+        # ApplyLowCmd() gerechnet (nicht im DDS-Callback), damit die Regelrate
+        # nicht an der Publish-Rate haengt.
+        self.low_cmd_legs = None   # rt/lowcmd  -> Beine+Taille (0..14), ggf. Arme wenn kein arm_sdk
+        self.low_cmd_arm = None    # rt/arm_sdk -> Arme (15..28), Weight @ index 29
 
         # Check sensor
         for i in range(self.dim_motor_sensor, self.mj_model.nsensor):
@@ -61,9 +65,9 @@ class UnitreeSdk2Bridge:
                 self.mj_model, mujoco._enums.mjtObj.mjOBJ_SENSOR, i
             )
             if name == "imu_quat":
-                self.have_imu_ = True
+                self.have_imu = True
             if name == "frame_pos":
-                self.have_frame_sensor_ = True
+                self.have_frame_sensor = True
 
         # Unitree sdk2 message
         self.low_state = LowState_default()
@@ -94,13 +98,14 @@ class UnitreeSdk2Bridge:
         )
         self.WirelessControllerThread.Start()
 
+        # rt/lowcmd -> Beine/Taille (Loco-Controller). rt/arm_sdk -> Arme
+        # (arm_controller). Getrennte Handler -> getrennte Puffer -> Merge in
+        # ApplyLowCmd, statt sich gegenseitig zu ueberschreiben.
         self.low_cmd_suber = ChannelSubscriber(TOPIC_LOWCMD, LowCmd_)
         self.low_cmd_suber.Init(self.LowCmdHandler, 10)
 
-        # G1Pilot arm_controller schreibt zu "rt/arm_sdk" (nicht rt/lowcmd!)
-        # MuJoCo subscribed beide Channels damit Arm-Befehle ankommen.
         self.arm_sdk_suber = ChannelSubscriber("rt/arm_sdk", LowCmd_)
-        self.arm_sdk_suber.Init(self.LowCmdHandler, 10)
+        self.arm_sdk_suber.Init(self.ArmSdkHandler, 10)
 
         # joystick
         self.key_map = {
@@ -122,28 +127,58 @@ class UnitreeSdk2Bridge:
             "left": 15,
         }
 
+    # Arm-Indizes (15..28) -> aus rt/arm_sdk; alles andere (Beine 0..11, Taille
+    # 12..14) -> aus rt/lowcmd. Index 29 = arm_sdk-Weight (Blend Loco<->arm_sdk).
+    ARM_LO = 15
+    ARM_HI = 28
+    WEIGHT_IDX = 29
+
     def LowCmdHandler(self, msg: LowCmd_):
-        # Wird für rt/lowcmd UND rt/arm_sdk aufgerufen. Speichert nur den
-        # letzten Befehl; der PD-Torque wird in ApplyLowCmd() pro Sim-Schritt
-        # gerechnet. Wichtig: wuerde man hier (im DDS-Callback) ctrl schreiben,
-        # bliebe der Torque zwischen zwei Nachrichten KONSTANT. Faellt die
-        # Publish-Rate (z.B. weil die IK den arm_controller bremst), wirkt ein
-        # fixer Open-Loop-Torque ueber viele Steps -> Aufschwingen/Divergenz.
-        self.low_cmd = msg
+        # rt/lowcmd (Loco-Controller: Beine/Taille, ggf. ganzer Koerper).
+        # Nur speichern; PD-Torque wird in ApplyLowCmd() pro Sim-Schritt gerechnet.
+        self.low_cmd_legs = msg
+
+    def ArmSdkHandler(self, msg: LowCmd_):
+        # rt/arm_sdk (arm_controller: Arme + Weight @ index 29).
+        self.low_cmd_arm = msg
+
+    @staticmethod
+    def _pd(mc, q, dq):
+        # Ein Motor-PD-Torque aus einem motor_cmd + aktuellen Sensoren.
+        return mc.tau + mc.kp * (mc.q - q) + mc.kd * (mc.dq - dq)
 
     def ApplyLowCmd(self):
-        # Pro Sim-Schritt aufgerufen: rechnet den PD-Befehl pro Motor mit den
-        # AKTUELLEN Sensorwerten -> Regelrate = Sim-Rate, unabhaengig von der
-        # Publish-Rate des Senders. Gelenke ohne Befehl (kp=kd=0) -> 0 Nm.
-        if self.mj_data is None or self.low_cmd is None:
+        # Pro Sim-Schritt: Merge der beiden Quellen pro Motor mit AKTUELLEN
+        # Sensorwerten -> Regelrate = Sim-Rate, unabhaengig von der Publish-Rate.
+        #   Beine/Taille (0..14): aus rt/lowcmd (Loco).
+        #   Arme (15..28): aus rt/arm_sdk, per Weight ueber den Loco-Befehl
+        #                  geblendet (w=1 -> voll arm_sdk; w=0 -> Loco/aus).
+        # Quelle ohne Befehl (kp=kd=tau=0 bzw. None) -> 0 Nm.
+        if self.mj_data is None:
             return
-        cmd = self.low_cmd
-        for i in range(self.num_motor):
-            self.mj_data.ctrl[i] = (
-                cmd.motor_cmd[i].tau
-                + cmd.motor_cmd[i].kp * (cmd.motor_cmd[i].q - self.mj_data.sensordata[i])
-                + cmd.motor_cmd[i].kd * (cmd.motor_cmd[i].dq - self.mj_data.sensordata[i + self.num_motor])
-            )
+        legs = self.low_cmd_legs
+        arm = self.low_cmd_arm
+        if legs is None and arm is None:
+            return
+
+        w = 0.0
+        if arm is not None:
+            w = float(arm.motor_cmd[self.WEIGHT_IDX].q)
+            w = 0.0 if w < 0.0 else (1.0 if w > 1.0 else w)
+
+        n = self.num_motor
+        sd = self.mj_data.sensordata
+        for i in range(n):
+            q = sd[i]
+            dq = sd[i + n]
+            if self.ARM_LO <= i <= self.ARM_HI and arm is not None:
+                tau_a = self._pd(arm.motor_cmd[i], q, dq)
+                tau_l = self._pd(legs.motor_cmd[i], q, dq) if legs is not None else 0.0
+                self.mj_data.ctrl[i] = w * tau_a + (1.0 - w) * tau_l
+            elif legs is not None:
+                self.mj_data.ctrl[i] = self._pd(legs.motor_cmd[i], q, dq)
+            else:
+                self.mj_data.ctrl[i] = 0.0
 
     def PublishLowState(self):
         if self.mj_data != None:
@@ -156,7 +191,7 @@ class UnitreeSdk2Bridge:
                     i + 2 * self.num_motor
                 ]
 
-            if self.have_frame_sensor_:
+            if self.have_frame_sensor:
 
                 self.low_state.imu_state.quaternion[0] = self.mj_data.sensordata[
                     self.dim_motor_sensor + 0

@@ -85,6 +85,7 @@ setup(
             'sim_arm_wiggle = g1pilot.tools.sim_arm_wiggle:main',
             'sim_goal_probe = g1pilot.tools.sim_goal_probe:main',
             'sim_arm_monitor = g1pilot.tools.sim_arm_monitor:main',
+            'sim_leg_hold = g1pilot.tools.sim_leg_hold:main',
         ],
     },
 )

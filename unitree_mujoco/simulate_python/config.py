@@ -1,4 +1,6 @@
-ROBOT = "g1" # Robot name, "go2", "b2", "b2w", "h1", "go2w", "g1" 
+import os
+
+ROBOT = "g1" # Robot name, "go2", "b2", "b2w", "h1", "go2w", "g1"
 ROBOT_SCENE = "../unitree_robots/" + ROBOT + "/scene.xml" # Robot scene
 DOMAIN_ID = 1 # Domain id
 INTERFACE = "lo" # Interface 
@@ -30,8 +32,11 @@ VIEWER_DT = 0.02  # 50 fps for viewer
 #   "off"      : Basis voellig frei (Weld aus) - fuer echten Loco-Controller.
 # HOLD_BASE (bool) bleibt aus Rueckwaerts-Kompatibilitaet: True -> nutzt
 # HOLD_BASE_MODE, False -> erzwingt "off".
+# Per Env ueberschreibbar, damit man ohne config-Edit zwischen Arm-only (weld)
+# und freiem Loco-Betrieb (off) umschalten kann:
+#   HOLD_BASE_MODE=off docker compose ... up   -> Basis frei, Loco regelt die Beine
 HOLD_BASE = True
-HOLD_BASE_MODE = "weld"
+HOLD_BASE_MODE = os.environ.get("HOLD_BASE_MODE", "weld")
 # Federwerte fuer Beine/Taille im "weld"-Modus (nur dort genutzt).
 HOLD_BASE_STIFFNESS = 2000.0
 HOLD_BASE_DAMPING = 80.0

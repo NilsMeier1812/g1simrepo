@@ -36,6 +36,8 @@ services:
     environment:
       - DISPLAY=${DISPLAY}
       - MUJOCO_GL=glfw
+      # weld = Arm-only (Basis fix), off = Loco-Modus (Basis frei). Siehe run_sim_loco.sh.
+      - HOLD_BASE_MODE=${HOLD_BASE_MODE:-weld}
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ../unitree_mujoco:/unitree_mujoco:ro   # Mountet dein lokales Repo!
