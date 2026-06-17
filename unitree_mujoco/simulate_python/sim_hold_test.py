@@ -29,6 +29,7 @@ import types
 
 import numpy as np
 import mujoco
+import mujoco.viewer  # noqa: F401  (nur fuer --view genutzt)
 
 import config as sim_config
 from hold_base import HoldBase
@@ -97,7 +98,6 @@ def main():
 
     viewer = None
     if args.view:
-        import mujoco.viewer
         viewer = mujoco.viewer.launch_passive(model, data)
 
     t0 = time.perf_counter()
