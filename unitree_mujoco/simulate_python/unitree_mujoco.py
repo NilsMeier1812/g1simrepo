@@ -19,7 +19,7 @@ mj_data = mujoco.MjData(mj_model)
 # HOLD_BASE: Oberkoerper fuer Arm-Tests ruhig halten (bis ein Loco-Controller
 # existiert). Modus/Tuning kommen aus config.py. Richtet Weld/Steifigkeit einmal
 # ein; im teleport-Modus liefert step() einen per-Step-Hook.
-hold_base = HoldBase(mj_model, config)
+hold_base = HoldBase(mj_model, config, mj_data)
 
 if config.ENABLE_ELASTIC_BAND:
     elastic_band = ElasticBand()

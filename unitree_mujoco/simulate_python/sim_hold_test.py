@@ -80,7 +80,7 @@ def main():
         }[args.integrator]
     nu = model.nu
 
-    hold = HoldBase(model, hb_cfg)
+    hold = HoldBase(model, hb_cfg, data)
 
     target = np.zeros(nu)
     for k, idx in enumerate(LEFT_ARM):

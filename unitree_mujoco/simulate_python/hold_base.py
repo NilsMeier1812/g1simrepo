@@ -43,7 +43,11 @@ def resolve_mode(config):
 
 
 class HoldBase:
-    def __init__(self, mj_model, config):
+    def __init__(self, mj_model, config, mj_data=None):
+        # mj_data wird gebraucht, um die LAUFZEIT-Flag eq_active zu setzen. Sonst
+        # bleibt der Weld im off/teleport-Modus aktiv (eq_active0 wirkt nur bei
+        # mj_resetData) und der Roboter haengt starr in der Luft.
+        self.mj_data = mj_data
         self.mode = resolve_mode(config)
         self.stiffness = float(getattr(config, "HOLD_BASE_STIFFNESS", 2000.0))
         self.damping = float(getattr(config, "HOLD_BASE_DAMPING", 80.0))
@@ -78,6 +82,14 @@ class HoldBase:
                 mj_model.eq_active[wid] = val
             else:
                 print("[HOLD_BASE] WARN: keine eq_active(0)-API gefunden.", flush=True)
+            # KRITISCH: eq_active0 ist nur der Startwert, den mj_resetData nach
+            # mj_data.eq_active kopiert. Der Solver liest aber pro Step die
+            # LAUFZEIT-Flag mj_data.eq_active. Diese wurde bei der MjData-Erzeugung
+            # bereits gelatcht -> ohne folgendes Setzen bleibt der Weld trotz
+            # eq_active0=0 aktiv (Roboter haengt in der Luft). Darum hier direkt
+            # die Laufzeit-Flag mitschalten.
+            if self.mj_data is not None and hasattr(self.mj_data, "eq_active"):
+                self.mj_data.eq_active[wid] = val
         except Exception as e:
             print(f"[HOLD_BASE] WARN: Weld-Schalten fehlgeschlagen: {e}", flush=True)
 
