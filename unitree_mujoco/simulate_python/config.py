@@ -61,3 +61,22 @@ LOCO_STARTUP_HOLD_POSE = [
 LOCO_STARTUP_HOLD_KP = 100.0
 LOCO_STARTUP_HOLD_KD = 2.0
 # === LOCO STARTUP HOLD END ===
+
+
+# === LOCO MANAGED WELD ===
+# Ein freistehender Zweibeiner laesst sich NICHT rein statisch (ohne aktive Balance)
+# aufrecht halten — er kippt in ~1-2 s. Nur die RL-Policy balanciert aktiv. Auf
+# langsamen Rechnern faellt der Roboter aber um, bevor loco_sim (nach colcon build +
+# Launch) ueberhaupt verbunden ist. Loesung: im off-Modus die Basis (torso_link-Weld)
+# GEHALTEN lassen, bis loco_sim das Balancieren startet. loco_sim signalisiert seinen
+# Zustand ueber rt/lowcmd motor_cmd[29].q (Bein-Kanal, dort sonst ungenutzt):
+#   0 = HOLD (Basis gehalten/Weld an), 1 = RUN (Basis frei + in Stand-Pose stellen),
+#   2 = DAMP (Basis frei, kein Reset -> sanftes Hinsetzen).
+# Beim Wechsel nach RUN setzt die Bridge den Roboter in eine saubere Stand-Pose
+# (Beine = default_angles, aufrecht, v=0) und loest den Weld -> die Policy startet aus
+# genau dem Zustand, in dem sie zuverlaessig balanciert. Das macht das Start-Timing
+# (langsamer PC) egal und ersetzt das "Operator haelt den Roboter"-Schrittchen des
+# echten Roboters.
+LOCO_MANAGED_WELD = True
+LOCO_RESET_PELVIS_Z = 0.78   # Pelvis-Hoehe beim Aufstehen in die Stand-Pose (Fuesse am Boden)
+# === LOCO MANAGED WELD END ===

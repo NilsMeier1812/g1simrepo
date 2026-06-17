@@ -75,6 +75,27 @@ class UnitreeSdk2Bridge:
             print("[BRIDGE] Loco-Startup-Hold aktiv: halte Beine/Taille in Standpose, "
                   "bis der erste rt/lowcmd-Befehl kommt.", flush=True)
 
+        # Managed-Weld: im off-Modus die Basis (Weld) halten, bis loco_sim das
+        # Balancieren startet. loco_sim signalisiert seinen Zustand ueber
+        # rt/lowcmd motor_cmd[WEIGHT_IDX].q (Code 0=HOLD, 1=RUN, 2=DAMP). Beim
+        # Wechsel nach RUN -> Roboter in saubere Stand-Pose stellen + Weld loesen.
+        self.managed_weld = (
+            str(getattr(config, "HOLD_BASE_MODE", "weld")).lower() == "off"
+            and bool(getattr(config, "LOCO_MANAGED_WELD", True))
+        )
+        self.weld_id = mujoco.mj_name2id(
+            self.mj_model, mujoco.mjtObj.mjOBJ_EQUALITY, "hold_base_weld"
+        )
+        if self.weld_id < 0:
+            self.managed_weld = False
+        self._prev_loco_code = 0
+        self.stance_pose = list(getattr(config, "LOCO_STARTUP_HOLD_POSE", [0.0] * 15))
+        self.reset_z_run = float(getattr(config, "LOCO_RESET_PELVIS_Z", 0.78))
+        self.spawn_z = float(self.mj_model.qpos0[2])
+        if self.managed_weld:
+            print("[BRIDGE] Managed-Weld aktiv: Basis gehalten, bis loco_sim balanciert "
+                  "(RUN) -> dann Stand-Pose + Weld loesen.", flush=True)
+
         # Check sensor
         for i in range(self.dim_motor_sensor, self.mj_model.nsensor):
             name = mujoco.mj_id2name(
@@ -169,6 +190,46 @@ class UnitreeSdk2Bridge:
         target = self.startup_hold_pose[i] if i < len(self.startup_hold_pose) else 0.0
         return self.startup_hold_kp * (target - q) + self.startup_hold_kd * (0.0 - dq)
 
+    def _set_weld(self, active):
+        # Weld-Constraint scharf/inaktiv schalten (Laufzeit-Flag eq_active + Startwert).
+        val = 1 if active else 0
+        if hasattr(self.mj_model, "eq_active0"):
+            self.mj_model.eq_active0[self.weld_id] = val
+        if hasattr(self.mj_data, "eq_active"):
+            self.mj_data.eq_active[self.weld_id] = val
+
+    def _reset_pose(self, legw, pelvis_z):
+        # Roboter in eine saubere Pose stellen: Pelvis aufrecht auf pelvis_z (x,y=0),
+        # Beine/Taille = legw (15 Werte), ARME = 0, Geschwindigkeit 0. Die Arme MUESSEN
+        # mit genullt werden: im gehaltenen HOLD haengen sie sonst limp durch (z.B.
+        # Ellbogen ~70 grad), und der Sprung auf 0 beim Policy-Start kippt den Roboter.
+        qp = self.mj_data.qpos
+        qp[0] = 0.0; qp[1] = 0.0; qp[2] = pelvis_z
+        qp[3] = 1.0; qp[4] = 0.0; qp[5] = 0.0; qp[6] = 0.0   # Quaternion aufrecht [w,x,y,z]
+        for i in range(self.num_motor):
+            qp[7 + i] = legw[i] if i < len(legw) else 0.0
+        self.mj_data.qvel[:] = 0.0
+        mujoco.mj_forward(self.mj_model, self.mj_data)
+
+    def _handle_managed_weld(self, legs):
+        # Zustands-Code von loco_sim aus rt/lowcmd lesen und Basis entsprechend
+        # halten/freigeben. 0=HOLD, 1=RUN (aufstehen+frei), 2=DAMP (frei).
+        code = int(round(float(legs.motor_cmd[self.WEIGHT_IDX].q))) if legs is not None else 0
+        if code == self._prev_loco_code:
+            return
+        if code == 1:       # Balancing START: in Stand-Pose stellen + Basis freigeben
+            self._reset_pose(self.stance_pose, self.reset_z_run)
+            self._set_weld(False)
+            print("[BRIDGE] Balancing START -> Stand-Pose gesetzt, Weld geloest.", flush=True)
+        elif code == 0:     # HOLD/Standby: in Spawn-Pose stellen + Basis halten
+            self._reset_pose([0.0] * 15, self.spawn_z)
+            self._set_weld(True)
+            print("[BRIDGE] HOLD -> Spawn-Pose, Weld an (Basis gehalten).", flush=True)
+        elif code == 2:     # DAMP/Emergency: Basis freigeben, kein Reset
+            self._set_weld(False)
+            print("[BRIDGE] DAMP -> Weld geloest (Basis frei).", flush=True)
+        self._prev_loco_code = code
+
     def ApplyLowCmd(self):
         # Pro Sim-Schritt: Merge der beiden Quellen pro Motor mit AKTUELLEN
         # Sensorwerten -> Regelrate = Sim-Rate, unabhaengig von der Publish-Rate.
@@ -181,6 +242,8 @@ class UnitreeSdk2Bridge:
             return
         legs = self.low_cmd_legs
         arm = self.low_cmd_arm
+        if self.managed_weld:
+            self._handle_managed_weld(legs)
         use_startup = legs is None and self.startup_hold_active
         if legs is None and arm is None and not use_startup:
             return

@@ -3,10 +3,10 @@
 # Loco-/Balance-Controller die Beine regeln kann. Sonst identisch zu run_sim.sh
 # (X11-Freigabe + sauberes down + up).
 #
-# Ablauf: Stack starten. Die Bridge haelt im off-Modus die Beine/Taille in einer
-# Standpose (Loco-Startup-Hold), bis loco_sim verbunden ist und auf rt/lowcmd
-# kommandiert — so faellt der Roboter im Startfenster (colcon build/Launch) NICHT
-# um. Danach uebernimmt loco_sim (HOLD), und START BALANCING startet die Policy.
+# Ablauf: Stack starten. Die Bridge haelt im off-Modus die Basis (Managed-Weld),
+# bis loco_sim das Balancieren startet — so faellt der Roboter im Startfenster
+# (colcon build/Launch) NICHT um, egal wie langsam der PC ist. START BALANCING:
+# Bridge stellt den Roboter in eine saubere Stand-Pose, loest den Weld, Policy laeuft.
 set -e
 cd "$(dirname "$0")"
 

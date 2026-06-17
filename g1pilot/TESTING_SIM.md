@@ -231,27 +231,35 @@ regelt die Beine; Taille/Arme werden gehalten, bis der `arm_controller` die Arme
 ### Architektur (kurz)
 ```
 loco_sim   : rt/lowstate (IMU+Gelenke) → Policy(LSTM) → rt/lowcmd (Beine 0–11, Taille/Arme gehalten)
+             + Zustands-Code an die Bridge via rt/lowcmd motor_cmd[29].q (0=HOLD,1=RUN,2=DAMP)
 arm_ctrl   : rt/arm_sdk (Arme 15–28, Weight@29)   ← überschreibt Arme gewichtet
 Bridge     : merged beide Quellen pro Motor → mj_data.ctrl (PD je Sim-Schritt)
-FSM        : HOLD (steifer Stand) → [START BALANCING] → RUN (Policy) ; [EMERGENCY] → DAMP
+             Managed-Weld: hält die Basis (Weld), bis loco_sim RUN meldet → dann stellt
+             es den Roboter in eine saubere Stand-Pose und löst den Weld.
+FSM        : HOLD (Basis gehalten) → [START BALANCING] → RUN (Policy balanciert frei) ; [EMERGENCY] → DAMP
 ```
+
+> **Warum Managed-Weld?** Ein freistehender Zweibeiner lässt sich NICHT statisch aufrecht
+> halten — nur die Policy balanciert aktiv (headless verifiziert). Auf langsamen Rechnern
+> fällt der Roboter aber um, bevor `loco_sim` (nach `colcon build`+Launch) verbunden ist.
+> Darum hält die Bridge die Basis fest, bis das Balancieren wirklich startet — das macht
+> das Start-Timing egal und gibt der Policy einen sauberen, aufrechten Start.
 
 ### Start (freie Basis)
 ```bash
 cd ~/g1simrepo/g1pilot && git checkout loco && git pull
 ./run_sim_loco.sh        # setzt HOLD_BASE_MODE=off → Basis FREI
 ```
-MuJoCo-Startlog muss `[HOLD_BASE] Modus=off: Basis frei (Weld aus).` und
-`[BRIDGE] Loco-Startup-Hold aktiv ...` zeigen. Die Bridge hält den Roboter im
-Startfenster (während `colcon build`/Launch) in einer Standpose, bis `loco_sim`
-verbunden ist — er fällt also **nicht** mehr beim Launch um. `loco_sim` meldet dann
-`loco_sim bereit (HOLD = steifer Stand)` und `Policy geladen: ... recurrent=True`
-und übernimmt nahtlos. Im HOLD steht der Roboter steif (balanciert noch nicht aktiv).
+MuJoCo-Startlog muss `[HOLD_BASE] Modus=off (managed): Basis vorerst gehalten` und
+`[BRIDGE] Managed-Weld aktiv ...` zeigen. Die Bridge hält die Basis (Weld), bis
+`loco_sim` das Balancieren startet — der Roboter steht also beim Launch sicher und
+fällt **nicht** um (egal wie langsam der PC ist). `loco_sim` meldet `Policy geladen:
+... recurrent=True`. Im HOLD wird die Basis gehalten (noch kein aktives Balancieren).
 
 ### Ablauf
 1. **START BALANCING** (Streamdeck-Button, publisht `/g1pilot/start_balancing`) →
-   `loco_sim` rampt in die Default-Pose und aktiviert die Policy → Roboter steht
-   **frei und balanciert** (sollte ≥30 s stehen, auch bei kleinem Maus-Schubs).
+   die Bridge stellt den Roboter in eine saubere Stand-Pose, löst den Weld, und
+   `loco_sim` aktiviert die Policy → Roboter steht **frei und balanciert**.
    Manuell ohne Streamdeck:
    ```bash
    ros2 topic pub -1 /g1pilot/start_balancing std_msgs/Bool "{data: true}"
@@ -268,11 +276,16 @@ und übernimmt nahtlos. Im HOLD steht der Roboter steif (balanciert noch nicht a
    ```
 
 ### Fehlersuche
-- **Roboter sackt beim Launch zusammen** (vor START): Der Bridge-Startup-Hold greift
-  nicht — prüfe das MuJoCo-Startlog auf `[HOLD_BASE] Modus=off` und
-  `[BRIDGE] Loco-Startup-Hold aktiv`. Fehlt der `off`-Modus, wurde nicht über
-  `run_sim_loco.sh` gestartet (HOLD_BASE_MODE nicht gesetzt). Danach muss `loco_sim`
-  `rt/lowstate` bekommen und übernehmen (`ros2 node list` → `loco_sim`).
+- **Roboter sackt beim Launch zusammen** (vor START): Managed-Weld greift nicht —
+  prüfe das MuJoCo-Startlog auf `[HOLD_BASE] Modus=off (managed)` und
+  `[BRIDGE] Managed-Weld aktiv`. Fehlt der `off`-Modus, wurde nicht über
+  `run_sim_loco.sh` gestartet (HOLD_BASE_MODE nicht gesetzt).
+- **Beim START BALANCING „springt" der Roboter kurz** in die Stand-Pose: Das ist
+  gewollt (Reset auf einen sauberen, aufrechten Start für die Policy).
+- **Policy balanciert, kippt aber nach einigen Sekunden** weg: Sim-zu-Sim-Lücke
+  (Policy in Isaac Gym trainiert, hier MuJoCo). Beobachten: nach wie vielen Sekunden
+  und in welche Richtung (vor/zurück/seitlich) — danach Reibung/Gains/`LOCO_RESET_PELVIS_Z`
+  nachziehen.
 - **`Policy geladen` fehlt / ImportError torch** → Sim-Image nicht neu gebaut
   (`docker compose --profile sim build g1pilot-sim`).
 - **Steht im HOLD, kippt aber nach START BALANCING** → Policy-Mapping/Sim-Realismus.

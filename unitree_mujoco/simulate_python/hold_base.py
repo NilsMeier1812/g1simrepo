@@ -64,8 +64,17 @@ class HoldBase:
             print("[HOLD_BASE] Modus=teleport: Unterkoerper wird jeden Step auf qpos0 "
                   "gesetzt (Weld aus).", flush=True)
         else:
-            self._set_weld_active(mj_model, False)
-            print("[HOLD_BASE] Modus=off: Basis frei (Weld aus).", flush=True)
+            managed = bool(getattr(config, "LOCO_MANAGED_WELD", True))
+            if managed:
+                # Basis vorerst gehalten lassen; die Bridge loest den Weld erst,
+                # wenn loco_sim das Balancieren startet (RUN). Beine bleiben frei
+                # (nicht versteift) -> der Loco-Controller regelt sie.
+                self._set_weld_active(mj_model, True)
+                print("[HOLD_BASE] Modus=off (managed): Basis vorerst gehalten (Weld an); "
+                      "Freigabe, sobald loco_sim balanciert.", flush=True)
+            else:
+                self._set_weld_active(mj_model, False)
+                print("[HOLD_BASE] Modus=off: Basis frei (Weld aus).", flush=True)
 
     def _set_weld_active(self, mj_model, active):
         try:

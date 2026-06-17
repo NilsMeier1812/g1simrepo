@@ -18,15 +18,15 @@ Koerper-Aufteilung (passt 1:1 zum Bridge-Merge):
     arm_controller die Arme via rt/arm_sdk (Weight-Blend) uebernimmt. So sieht die
     Policy exakt die "Arme gehalten"-Dynamik, auf der sie trainiert ist.
 
-FSM (per Streamdeck-Topics):
-  HOLD   : Start-/Standby-Zustand. Steifer Stand auf Default-Pose (Beine kp/kd aus
-           Config) -> Roboter bleibt aufrecht, balanciert aber nicht aktiv.
-  MOVING : sanfter Ramp der Beine in die Default-Pose (2 s), dann -> RUN.
-  RUN    : Policy aktiv (Stehen/Balancieren).
+FSM (per Streamdeck-Topics); der Zustand wird auch der Bridge gemeldet (Weld):
+  HOLD   : Start-/Standby-Zustand. Die Bridge haelt die Basis (Weld an), Beine
+           werden auf Default-Pose gehalten -> Roboter steht sicher, wartet.
+  RUN    : Policy aktiv. Beim Eintritt stellt die Bridge den Roboter in die
+           Stand-Pose und loest den Weld -> freies Stehen/Balancieren.
   DAMP   : Emergency. Alle Motoren kp=0, kd=damp -> weich, sanftes Hinsetzen.
-  /g1pilot/start_balancing(True) : -> MOVING -> RUN.
+  /g1pilot/start_balancing(True) : -> RUN (Bridge: aufstehen + Basis freigeben).
   /g1pilot/emergency_stop(True)  : -> DAMP und Arme aus (/g1pilot/arms/enabled False).
-  /g1pilot/start(True)           : -> HOLD (Standby zuruecksetzen).
+  /g1pilot/start(True)           : -> HOLD (Standby; Bridge haelt Basis wieder).
 
 Aufruf (im g1pilot-Container; im Sim-Bringup automatisch gestartet):
   ros2 run g1pilot loco_sim --ros-args -p interface:=lo
@@ -52,11 +52,15 @@ from unitree_sdk2py.utils.crc import CRC
 from g1pilot.utils.common import init_dds
 
 
-# FSM-Zustaende.
-HOLD = "hold"      # Standby: steifer Stand auf Default-Pose (kein aktives Balancieren)
-DAMP = "damp"      # Emergency: weich/limp (nur kd) -> sanftes Hinsetzen
-MOVING = "moving"  # Ramp in die Default-Pose
-RUN = "run"        # Policy aktiv (Stehen/Balancieren)
+# FSM-Zustaende. Der Zustands-Code wird zusaetzlich an die MuJoCo-Bridge gemeldet
+# (rt/lowcmd motor_cmd[WEIGHT_IDX].q): 0=HOLD, 1=RUN, 2=DAMP. Die Bridge haelt im
+# off-Modus die Basis (Weld), bis RUN kommt -> dann Stand-Pose + Weld loesen.
+HOLD = "hold"      # Standby: Basis von der Bridge gehalten (Weld an)
+DAMP = "damp"      # Emergency: weich/limp (nur kd) -> sanftes Hinsetzen, Basis frei
+RUN = "run"        # Policy aktiv (Stehen/Balancieren), Basis frei
+
+WEIGHT_IDX = 29    # rt/lowcmd: Zustands-Code an die Bridge (Bein-Kanal, sonst ungenutzt)
+LOCO_CODE = {HOLD: 0.0, RUN: 1.0, DAMP: 2.0}
 
 
 def get_gravity_orientation(quat):
@@ -79,11 +83,9 @@ class LocoSim(Node):
         self.declare_parameter("interface", "lo")
         self.declare_parameter("policy", "g1")        # Unterordner in policies/
         self.declare_parameter("damp_kd", 8.0)        # kd im DAMP-Zustand
-        self.declare_parameter("move_time", 2.0)      # Ramp-Dauer DAMP->RUN [s]
         interface = self.get_parameter("interface").get_parameter_value().string_value
         policy_name = self.get_parameter("policy").get_parameter_value().string_value
         self.damp_kd = float(self.get_parameter("damp_kd").value)
-        self.move_time = float(self.get_parameter("move_time").value)
 
         self._load_config_and_policy(policy_name)
 
@@ -122,8 +124,6 @@ class LocoSim(Node):
         self.action = np.zeros(self.num_actions, dtype=np.float32)
         self.cmd = np.zeros(3, dtype=np.float32)     # normierte Velocity [vx,vy,vyaw] in [-1,1]
         self.counter = 0
-        self._move_q0 = None
-        self._move_t0 = 0.0
 
         # Streamdeck-/FSM-Hooks (gleiche Topics wie loco_client auf dem echten Roboter).
         self.create_subscription(Bool, "/g1pilot/start_balancing", self._on_start_balancing, 10)
@@ -207,13 +207,14 @@ class LocoSim(Node):
         if self.low_state is None:
             self.get_logger().warn("Kann nicht balancieren: keine rt/lowstate.")
             return
-        # Ramp aus der aktuellen Bein-Pose in die Default-Pose starten.
-        with self._lock:
-            self._move_q0 = np.array(
-                [self.low_state.motor_state[i].q for i in self.leg_idx], dtype=np.float32)
-        self._move_t0 = time.time()
-        self.state = MOVING
-        self.get_logger().info("START BALANCING -> fahre in Default-Pose (Ramp), dann Policy aktiv.")
+        # Direkt in RUN. Die Bridge stellt den Roboter beim RUN-Eintritt in die
+        # Stand-Pose und loest den Weld (Code 1) -> die Policy startet aus einem
+        # sauberen, aufrechten Zustand.
+        self.counter = 0
+        self.action[:] = 0.0
+        self._reset_policy_state()
+        self.state = RUN
+        self.get_logger().info("START BALANCING -> RUN (Bridge: aufstehen + Basis freigeben).")
 
     def _on_emergency(self, msg: Bool):
         if msg.data:
@@ -245,8 +246,6 @@ class LocoSim(Node):
                     self._send_hold()
                 elif self.state == DAMP:
                     self._send_damp()
-                elif self.state == MOVING:
-                    self._send_move_to_default()
                 elif self.state == RUN:
                     self._send_policy()
             except Exception as e:
@@ -259,6 +258,8 @@ class LocoSim(Node):
     def _write(self):
         self.cmd_msg.mode_pr = 0
         self.cmd_msg.mode_machine = self.mode_machine
+        # Zustands-Code fuer die Bridge (Managed-Weld): 0=HOLD, 1=RUN, 2=DAMP.
+        self.cmd_msg.motor_cmd[WEIGHT_IDX].q = LOCO_CODE.get(self.state, 0.0)
         self.cmd_msg.crc = self.crc.Crc(self.cmd_msg)
         self.lowcmd_pub.Write(self.cmd_msg)
 
@@ -297,27 +298,6 @@ class LocoSim(Node):
             mc.kp = 0.0
             mc.kd = self.damp_kd
         self._write()
-
-    def _send_move_to_default(self):
-        alpha = (time.time() - self._move_t0) / max(self.move_time, 1e-3)
-        if alpha >= 1.0:
-            alpha = 1.0
-        for k, idx in enumerate(self.leg_idx):
-            mc = self.cmd_msg.motor_cmd[idx]
-            mc.mode = 1
-            mc.q = float(self._move_q0[k] * (1.0 - alpha) + self.default_angles[k] * alpha)
-            mc.dq = 0.0
-            mc.tau = 0.0
-            mc.kp = float(self.kps[k])
-            mc.kd = float(self.kds[k])
-        self._hold_arm_waist()
-        self._write()
-        if alpha >= 1.0:
-            self.counter = 0
-            self.action[:] = 0.0
-            self._reset_policy_state()
-            self.state = RUN
-            self.get_logger().info("Default-Pose erreicht -> Policy aktiv (RUN).")
 
     def _build_obs(self):
         ls = self.low_state
