@@ -210,8 +210,16 @@ class ArmController(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
-        self.home_right = np.array([0.90, -0.06, 0.04, -0.78, -0.07, -0.11, -0.30], dtype=float)
-        self.home_left  = np.array([0.90, -0.06, 0.04, -0.78, -0.07, -0.11, -0.30], dtype=float)
+        # Home-Pose je Arm (7 DOF, Reihenfolge:
+        #   [shoulder_pitch, shoulder_roll, shoulder_yaw, elbow,
+        #    wrist_roll, wrist_pitch, wrist_yaw]).
+        # Natuerliche Ruhepose: Arme leicht vor (pitch +), leicht seitlich aus
+        # (roll links + / rechts -, gespiegelt!), Ellbogen leicht gebeugt (elbow +).
+        # Als Parameter -> live tunebar via --ros-args -p home_left:="[...]".
+        self.declare_parameter("home_left",  [0.3,  0.2, 0.0, 0.5, 0.0, 0.0, 0.0])
+        self.declare_parameter("home_right", [0.3, -0.2, 0.0, 0.5, 0.0, 0.0, 0.0])
+        self.home_left  = np.array(self.get_parameter("home_left").value,  dtype=float)
+        self.home_right = np.array(self.get_parameter("home_right").value, dtype=float)
 
         self.left_workspace_publisher = self.create_publisher(Marker, '/g1pilot/workspace/left', 10)
         self.right_workspace_publisher = self.create_publisher(Marker, '/g1pilot/workspace/right', 10)
