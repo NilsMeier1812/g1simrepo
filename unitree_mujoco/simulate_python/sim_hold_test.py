@@ -51,6 +51,10 @@ def main():
                    help="HOLD_BASE-Modus fuer diesen Test")
     p.add_argument("--kp", type=float, default=150.0)
     p.add_argument("--kd", type=float, default=12.0)
+    p.add_argument("--dt", type=float, default=0.0,
+                   help="Sim-Zeitschritt [s]; 0 = config.SIMULATE_DT")
+    p.add_argument("--integrator", default="", choices=["", "euler", "implicitfast", "implicit", "rk4"],
+                   help="MuJoCo-Integrator ueberschreiben (leer = Modell-Default)")
     p.add_argument("--seconds", type=float, default=8.0, help="Sim-Zeit")
     p.add_argument("--settle", type=float, default=1.0, help="Einschwingzeit vor Messung")
     p.add_argument("--view", action="store_true", help="Viewer zeigen (realtime)")
@@ -66,7 +70,14 @@ def main():
 
     model = mujoco.MjModel.from_xml_path(sim_config.ROBOT_SCENE)
     data = mujoco.MjData(model)
-    model.opt.timestep = sim_config.SIMULATE_DT
+    model.opt.timestep = args.dt if args.dt > 0 else sim_config.SIMULATE_DT
+    if args.integrator:
+        model.opt.integrator = {
+            "euler": mujoco.mjtIntegrator.mjINT_EULER,
+            "implicitfast": mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
+            "implicit": mujoco.mjtIntegrator.mjINT_IMPLICIT,
+            "rk4": mujoco.mjtIntegrator.mjINT_RK4,
+        }[args.integrator]
     nu = model.nu
 
     hold = HoldBase(model, hb_cfg)
@@ -77,8 +88,11 @@ def main():
     for k, idx in enumerate(RIGHT_ARM):
         target[idx] = TARGET_RIGHT[k]
 
+    integ_name = {0: "euler", 1: "rk4", 2: "implicit", 3: "implicitfast"}.get(
+        int(model.opt.integrator), str(int(model.opt.integrator)))
     print(f"[hold_test] mode={args.mode} kp={args.kp:.0f} kd={args.kd:.0f} "
-          f"dt={model.opt.timestep*1000:.1f}ms seconds={args.seconds}", flush=True)
+          f"dt={model.opt.timestep*1000:.2f}ms integrator={integ_name} "
+          f"seconds={args.seconds}", flush=True)
 
     def apply_pd():
         # Nur Armmotoren stellen (wie arm_sdk); Beine/Taille macht HOLD_BASE.
