@@ -241,10 +241,12 @@ FSM        : HOLD (steifer Stand) → [START BALANCING] → RUN (Policy) ; [EMER
 cd ~/g1simrepo/g1pilot && git checkout loco && git pull
 ./run_sim_loco.sh        # setzt HOLD_BASE_MODE=off → Basis FREI
 ```
-MuJoCo-Startlog muss `[HOLD_BASE] Modus=off: Basis frei (Weld aus).` zeigen.
-`loco_sim` meldet `loco_sim bereit (HOLD = steifer Stand)` und
-`Policy geladen: ... recurrent=True`. Im HOLD steht der Roboter steif (balanciert
-noch nicht aktiv).
+MuJoCo-Startlog muss `[HOLD_BASE] Modus=off: Basis frei (Weld aus).` und
+`[BRIDGE] Loco-Startup-Hold aktiv ...` zeigen. Die Bridge hält den Roboter im
+Startfenster (während `colcon build`/Launch) in einer Standpose, bis `loco_sim`
+verbunden ist — er fällt also **nicht** mehr beim Launch um. `loco_sim` meldet dann
+`loco_sim bereit (HOLD = steifer Stand)` und `Policy geladen: ... recurrent=True`
+und übernimmt nahtlos. Im HOLD steht der Roboter steif (balanciert noch nicht aktiv).
 
 ### Ablauf
 1. **START BALANCING** (Streamdeck-Button, publisht `/g1pilot/start_balancing`) →
@@ -266,9 +268,11 @@ noch nicht aktiv).
    ```
 
 ### Fehlersuche
-- **Roboter sackt sofort zusammen, sobald `run_sim_loco.sh` startet** (vor START):
-  HOLD greift nicht — prüfe, ob `loco_sim` `rt/lowstate` bekommt (sonst bleibt es im
-  Wartezustand). `ros2 node list` muss `loco_sim` zeigen.
+- **Roboter sackt beim Launch zusammen** (vor START): Der Bridge-Startup-Hold greift
+  nicht — prüfe das MuJoCo-Startlog auf `[HOLD_BASE] Modus=off` und
+  `[BRIDGE] Loco-Startup-Hold aktiv`. Fehlt der `off`-Modus, wurde nicht über
+  `run_sim_loco.sh` gestartet (HOLD_BASE_MODE nicht gesetzt). Danach muss `loco_sim`
+  `rt/lowstate` bekommen und übernehmen (`ros2 node list` → `loco_sim`).
 - **`Policy geladen` fehlt / ImportError torch** → Sim-Image nicht neu gebaut
   (`docker compose --profile sim build g1pilot-sim`).
 - **Steht im HOLD, kippt aber nach START BALANCING** → Policy-Mapping/Sim-Realismus.

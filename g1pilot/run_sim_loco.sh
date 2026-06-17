@@ -3,9 +3,10 @@
 # Loco-/Balance-Controller die Beine regeln kann. Sonst identisch zu run_sim.sh
 # (X11-Freigabe + sauberes down + up).
 #
-# Ablauf: Stack starten -> Beine bekommen erst Kommandos, wenn ein Loco-Controller
-# (sim_leg_hold zum Test, spaeter loco_sim) auf rt/lowcmd publiziert. Ohne das
-# faellt der Roboter (keine Basis-Fixierung mehr) — das ist beabsichtigt.
+# Ablauf: Stack starten. Die Bridge haelt im off-Modus die Beine/Taille in einer
+# Standpose (Loco-Startup-Hold), bis loco_sim verbunden ist und auf rt/lowcmd
+# kommandiert — so faellt der Roboter im Startfenster (colcon build/Launch) NICHT
+# um. Danach uebernimmt loco_sim (HOLD), und START BALANCING startet die Policy.
 set -e
 cd "$(dirname "$0")"
 

@@ -41,3 +41,23 @@ HOLD_BASE_MODE = os.environ.get("HOLD_BASE_MODE", "weld")
 HOLD_BASE_STIFFNESS = 2000.0
 HOLD_BASE_DAMPING = 80.0
 # === HOLD_BASE END ===
+
+
+# === LOCO STARTUP HOLD ===
+# Nur im "off"-Modus (freie Basis, Loco-Betrieb): haelt Beine+Taille (Motor 0..14)
+# in einer Standpose, SOLANGE noch KEIN Loco-Controller auf rt/lowcmd kommandiert
+# hat. Ueberbrueckt das Startfenster (MuJoCo steppt sofort, der g1pilot-Container
+# braucht aber erst colcon build + Launch, bis loco_sim verbunden ist) — sonst
+# faellt der Roboter bei freier Basis um, bevor man START BALANCING druecken kann.
+# Sobald das erste rt/lowcmd ankommt, uebernimmt der Regler nahtlos (der Hold ist
+# dann inaktiv). Pose = Policy-default_angles (leicht gebeugte Knie), damit der
+# Uebergang zu loco_sims HOLD-Zustand ohne Sprung passiert.
+LOCO_STARTUP_HOLD = True
+LOCO_STARTUP_HOLD_POSE = [
+    -0.1, 0.0, 0.0, 0.3, -0.2, 0.0,   # linkes Bein:  hip_pitch, hip_roll, hip_yaw, knee, ankle_pitch, ankle_roll
+    -0.1, 0.0, 0.0, 0.3, -0.2, 0.0,   # rechtes Bein: dito
+    0.0, 0.0, 0.0,                    # Taille: yaw, roll, pitch
+]
+LOCO_STARTUP_HOLD_KP = 100.0
+LOCO_STARTUP_HOLD_KD = 2.0
+# === LOCO STARTUP HOLD END ===

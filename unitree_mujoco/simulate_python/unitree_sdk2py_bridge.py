@@ -59,6 +59,22 @@ class UnitreeSdk2Bridge:
         self.low_cmd_legs = None   # rt/lowcmd  -> Beine+Taille (0..14), ggf. Arme wenn kein arm_sdk
         self.low_cmd_arm = None    # rt/arm_sdk -> Arme (15..28), Weight @ index 29
 
+        # Loco-Startup-Hold: im off-Modus Beine/Taille in einer Standpose halten,
+        # SOLANGE noch kein Loco-Controller auf rt/lowcmd kommandiert hat (legs is
+        # None). Ueberbrueckt das Startfenster (colcon build/Launch), in dem der
+        # Roboter bei freier Basis sonst umfaellt, bevor loco_sim verbunden ist.
+        # Sobald das erste rt/lowcmd ankommt (legs != None), uebernimmt der Regler.
+        self.startup_hold_active = (
+            str(getattr(config, "HOLD_BASE_MODE", "weld")).lower() == "off"
+            and bool(getattr(config, "LOCO_STARTUP_HOLD", True))
+        )
+        self.startup_hold_pose = list(getattr(config, "LOCO_STARTUP_HOLD_POSE", [0.0] * 15))
+        self.startup_hold_kp = float(getattr(config, "LOCO_STARTUP_HOLD_KP", 100.0))
+        self.startup_hold_kd = float(getattr(config, "LOCO_STARTUP_HOLD_KD", 2.0))
+        if self.startup_hold_active:
+            print("[BRIDGE] Loco-Startup-Hold aktiv: halte Beine/Taille in Standpose, "
+                  "bis der erste rt/lowcmd-Befehl kommt.", flush=True)
+
         # Check sensor
         for i in range(self.dim_motor_sensor, self.mj_model.nsensor):
             name = mujoco.mj_id2name(
@@ -147,10 +163,17 @@ class UnitreeSdk2Bridge:
         # Ein Motor-PD-Torque aus einem motor_cmd + aktuellen Sensoren.
         return mc.tau + mc.kp * (mc.q - q) + mc.kd * (mc.dq - dq)
 
+    def _startup_pd(self, i, q, dq):
+        # Statischer PD-Hold eines Bein-/Taillen-Motors (0..14) auf die Startpose,
+        # solange noch kein Loco-Controller kommandiert.
+        target = self.startup_hold_pose[i] if i < len(self.startup_hold_pose) else 0.0
+        return self.startup_hold_kp * (target - q) + self.startup_hold_kd * (0.0 - dq)
+
     def ApplyLowCmd(self):
         # Pro Sim-Schritt: Merge der beiden Quellen pro Motor mit AKTUELLEN
         # Sensorwerten -> Regelrate = Sim-Rate, unabhaengig von der Publish-Rate.
-        #   Beine/Taille (0..14): aus rt/lowcmd (Loco).
+        #   Beine/Taille (0..14): aus rt/lowcmd (Loco); solange noch kein Loco-
+        #                  Befehl kam -> Startup-Hold (nur off-Modus).
         #   Arme (15..28): aus rt/arm_sdk, per Weight ueber den Loco-Befehl
         #                  geblendet (w=1 -> voll arm_sdk; w=0 -> Loco/aus).
         # Quelle ohne Befehl (kp=kd=tau=0 bzw. None) -> 0 Nm.
@@ -158,7 +181,8 @@ class UnitreeSdk2Bridge:
             return
         legs = self.low_cmd_legs
         arm = self.low_cmd_arm
-        if legs is None and arm is None:
+        use_startup = legs is None and self.startup_hold_active
+        if legs is None and arm is None and not use_startup:
             return
 
         w = 0.0
@@ -177,6 +201,8 @@ class UnitreeSdk2Bridge:
                 self.mj_data.ctrl[i] = w * tau_a + (1.0 - w) * tau_l
             elif legs is not None:
                 self.mj_data.ctrl[i] = self._pd(legs.motor_cmd[i], q, dq)
+            elif use_startup and i < self.ARM_LO:
+                self.mj_data.ctrl[i] = self._startup_pd(i, q, dq)
             else:
                 self.mj_data.ctrl[i] = 0.0
 
