@@ -42,6 +42,10 @@ class UnitreeSdk2Bridge:
         self.have_imu = False
         self.have_frame_sensor = False
         self.dt = self.mj_model.opt.timestep
+        # State-Publish-Rate von der Sim-Rate entkoppeln: bei dt=0.001 (noetig
+        # fuer PD-Stabilitaet) wuerde 1 kHz DDS-Verkehr die Realtime-Sim
+        # belasten. Auf max. ~500 Hz deckeln (entspricht echtem Roboter).
+        self.state_dt = max(self.dt, 0.002)
         self.idl_type = (self.num_motor > NUM_MOTOR_IDL_GO) # 0: unitree_go, 1: unitree_hg
 
         self.joystick = None
@@ -66,7 +70,7 @@ class UnitreeSdk2Bridge:
         self.low_state_puber = ChannelPublisher(TOPIC_LOWSTATE, LowState_)
         self.low_state_puber.Init()
         self.lowStateThread = RecurrentThread(
-            interval=self.dt, target=self.PublishLowState, name="sim_lowstate"
+            interval=self.state_dt, target=self.PublishLowState, name="sim_lowstate"
         )
         self.lowStateThread.Start()
 
@@ -74,7 +78,7 @@ class UnitreeSdk2Bridge:
         self.high_state_puber = ChannelPublisher(TOPIC_HIGHSTATE, SportModeState_)
         self.high_state_puber.Init()
         self.HighStateThread = RecurrentThread(
-            interval=self.dt, target=self.PublishHighState, name="sim_highstate"
+            interval=self.state_dt, target=self.PublishHighState, name="sim_highstate"
         )
         self.HighStateThread.Start()
 

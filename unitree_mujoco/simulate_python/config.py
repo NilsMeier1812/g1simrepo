@@ -10,7 +10,12 @@ JOYSTICK_DEVICE = 0 # Joystick number
 PRINT_SCENE_INFORMATION = True # Print link, joint and sensors information of robot
 ENABLE_ELASTIC_BAND = False # Virtual spring band, used for lifting h1
 
-SIMULATE_DT = 0.005  # Need to be larger than the runtime of viewer.sync()
+# Sim-Zeitschritt. 1 kHz (0.001) ist noetig, damit der extern gerechnete PD-
+# Daempfungsterm (kd) NUMERISCH STABIL bleibt: bei 0.005 schwingen die leichten
+# Armgelenke auf (explizite Integration ueberschiesst, mehr kd macht es schlimmer).
+# Messung (sim_hold_test): dt=0.005 -> 0.17 rad Zittern, dt=0.002 -> 0.02 rad,
+# dt=0.001 -> 0.0001 rad (praktisch null). Bei Realtime-Problemen 0.002 nehmen.
+SIMULATE_DT = 0.001
 VIEWER_DT = 0.02  # 50 fps for viewer
 
 
