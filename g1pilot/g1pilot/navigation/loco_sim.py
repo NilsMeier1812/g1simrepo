@@ -180,6 +180,17 @@ class LocoSim(Node):
             torch.set_num_threads(1)
         except Exception:
             pass
+        # TorchScript-Profiling-Executor ABSCHALTEN. Er instrumentiert jeden
+        # forward() und re-optimiert bei dynamischem Control-Flow (LSTM-Loop) staendig
+        # nach -> fuer dieses winzige Modell reiner Overhead (gemessen ~29ms/Schritt
+        # statt <5ms, deckelt den Loop bei ~30Hz). Der einfache Executor ist hier um
+        # ein Vielfaches schneller. (jit.freeze/optimize_for_inference NICHT nutzen:
+        # die wuerden den LSTM-hidden_state als Konstante einfrieren -> Reset kaputt.)
+        try:
+            torch._C._jit_set_profiling_executor(False)
+            torch._C._jit_set_profiling_mode(False)
+        except Exception:
+            pass
         policy_path = os.path.join(pdir, cfg["policy_file"])
         self.policy = torch.jit.load(policy_path, map_location="cpu")
         self.policy.eval()
@@ -190,9 +201,21 @@ class LocoSim(Node):
         # Zustand MUSS aber zu Beginn jeder Balance-Episode genullt werden, sonst
         # leakt alter LSTM-Zustand ueber DAMP->RUN-Zyklen rein.
         self.recurrent = hasattr(self.policy, "hidden_state") and hasattr(self.policy, "cell_state")
+        # Warmup: erste forward()-Aufrufe loesen einmalige TorchScript-Kompilierung
+        # aus. Hier abfruehstuecken, damit der erste echte Balance-Schritt nicht
+        # 100ms+ haengt. Danach den (durch Warmup veraenderten) LSTM-Zustand nullen.
+        t_warm = time.perf_counter()
+        with torch.no_grad():
+            dummy = torch.zeros(1, self.num_obs, dtype=torch.float32)
+            for _ in range(5):
+                self.policy(dummy)
+        if self.recurrent:
+            self.policy.hidden_state.zero_()
+            self.policy.cell_state.zero_()
         self.get_logger().info(
             f"Policy geladen: {policy_path} (num_obs={self.num_obs}, "
-            f"num_actions={self.num_actions}, recurrent={self.recurrent})")
+            f"num_actions={self.num_actions}, recurrent={self.recurrent}, "
+            f"warmup={1e3 * (time.perf_counter() - t_warm):.0f}ms)")
 
     def _reset_policy_state(self):
         """LSTM-Zustand der Policy nullen (Start einer Balance-Episode)."""
