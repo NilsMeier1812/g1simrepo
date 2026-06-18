@@ -292,20 +292,26 @@ fällt **nicht** um (egal wie langsam der PC ist). `loco_sim` meldet `Policy gel
    ros2 topic pub -1 /g1pilot/emergency_stop std_msgs/Bool "{data: true}"
    ```
 
-### Balance-Regler tunen (live, ohne Rebuild)
-Stellgröße ist **Feedforward-Drehmoment [Nm]** (mc.tau), bis ±50 Nm Knöchel-Limit.
-Die `[state]`-Logzeile zeigt `grav` (aufrecht=`[0 0 -1]`; `gx>0`=vorn, `gy>0`=links)
-und `|action|` = mittleres Stell-Drehmoment. Vorzeichen sind aus der Gelenk-Kinematik
-abgeleitet; falls `grav` bei BALANCE **schneller** divergiert (Regler verstärkt) →
-betroffenes `kp` negieren:
+### Balance-Regler — wie er funktioniert (headless in MuJoCo validiert)
+Zwei Anteile:
+1. **Steifer Posture-Hold** (`bal_kp_scale=10`, Beine+Taille): DER Haupthebel. Die
+   weichen Lauf-Gains (`kp_ankle=40`) geben unter Last nach → der CoM kippt vornüber;
+   erst die ~10× steiferen Gains halten die Standpose. (Validiert: steht >10 s, max.
+   Neigung < 0.03, Knöchel-Moment ~20 Nm.)
+2. **Aktives Feedforward-Drehmoment** [Nm] auf Knöchel (`150/40`) + Hüfte (`200/40`),
+   PD auf die per IMU gemessene Neigung — regelt Störungen aus (z. B. Arm-Manipulation;
+   validiert: fängt Schübse bis ~80 N ab). Vorzeichen aus der Gelenk-Kinematik
+   abgeleitet UND getestet: Knöchel-Pitch `+`, Roll `−`.
+
+### Live tunen (ohne Rebuild)
+Die `[state]`-Logzeile zeigt `grav` (aufrecht=`[0 0 -1]`; `gx>0`=vorn, `gy>0`=links).
 ```bash
-ros2 param set /loco_sim bal_ankle_kp_pitch 600.0   # stärker/früher gegen Vor/Zurück (Nm/Neigung)
-ros2 param set /loco_sim bal_ankle_kp_roll  600.0   # stärker gegen Seitkippen
-ros2 param set /loco_sim bal_ankle_kd_pitch 40.0    # mehr Dämpfung (gegen Schwingen, Nm/(rad/s))
-ros2 param set /loco_sim bal_hip_kp_pitch   150.0   # Hüft-Sekundärstrategie zuschalten
-ros2 param set /loco_sim bal_kp_scale       2.0     # Posture-Beine steifer (mehr passive Stabilität)
-# Vorzeichen umdrehen, falls verstärkt statt abgefangen:
-ros2 param set /loco_sim bal_ankle_kp_pitch -400.0
+ros2 param set /loco_sim bal_kp_scale       12.0   # Posture steifer (falls er noch nachgibt)
+ros2 param set /loco_sim bal_ankle_kp_pitch 200.0  # aktive Knöchel-Stärke (Nm/Neigung)
+ros2 param set /loco_sim bal_ankle_kd_pitch 50.0   # mehr Dämpfung, falls er zittert
+ros2 param set /loco_sim bal_hip_kp_pitch   250.0  # Hüfte stärker (große Störungen)
+# nur falls es in DEINER Sim doch verstärkt statt abfängt — Vorzeichen umdrehen:
+ros2 param set /loco_sim bal_ankle_kp_pitch -150.0
 ```
 
 ### Bonus: Laufen (Walking-Policy)

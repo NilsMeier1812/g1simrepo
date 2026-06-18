@@ -110,22 +110,29 @@ class LocoSim(Node):
         # Direktes tau (bis ans Modell-Limit ±50 Nm Knoechel) gibt dem Regler die
         # noetige Kraft. Die Bridge addiert tau zum Posture-PD (_pd: tau+kp*..+kd*..).
         #
-        # VORZEICHEN aus der Gelenk-Kinematik abgeleitet (Achsen y bzw. x):
+        # VORZEICHEN aus der Gelenk-Kinematik abgeleitet UND headless in MuJoCo
+        # validiert (Achsen y bzw. x):
         #   Pitch: +tau bei Vorwaerts-Neigung (gx>0) -> Koerper kippt zurueck.
         #   Roll : -tau bei Links-Neigung   (gy>0) -> Koerper kippt nach rechts.
         # Falls es in der Sim doch verstaerkt statt abfaengt: kp-Vorzeichen umdrehen.
+        #
+        # Defaults headless validiert (g1 scene.xml, freie Basis): steht >10 s
+        # stabil (Neigung < 0.03), faengt Schuebse bis ~80 N ab, Drehmoment im Limit.
+        # ENTSCHEIDEND ist bal_kp_scale: die weichen Lauf-Gains (kp_ankle=40) geben
+        # unter Last nach -> der CoM kippt vornueber. Erst ein STEIFER Posture-Hold
+        # (kp_scale ~10) haelt die Standpose; das aktive tau-Feedback regelt Stoerungen.
         # Alle Gains live als ROS-Parameter (ros2 param set /loco_sim bal_... X).
-        self.declare_parameter("bal_ankle_kp_pitch", 400.0)  # Nm pro Einheit Neigung
-        self.declare_parameter("bal_ankle_kd_pitch", 30.0)   # Nm pro rad/s
-        self.declare_parameter("bal_ankle_kp_roll", 400.0)
-        self.declare_parameter("bal_ankle_kd_roll", 30.0)
-        self.declare_parameter("bal_hip_kp_pitch", 0.0)      # Huefte sekundaer, default aus
-        self.declare_parameter("bal_hip_kd_pitch", 0.0)
-        self.declare_parameter("bal_hip_kp_roll", 0.0)
-        self.declare_parameter("bal_hip_kd_roll", 0.0)
+        self.declare_parameter("bal_kp_scale", 10.0)         # Posture-Steifigkeit (Beine+Taille) — DER Haupthebel
+        self.declare_parameter("bal_ankle_kp_pitch", 150.0)  # Nm pro Einheit Neigung
+        self.declare_parameter("bal_ankle_kd_pitch", 40.0)   # Nm pro rad/s
+        self.declare_parameter("bal_ankle_kp_roll", 150.0)
+        self.declare_parameter("bal_ankle_kd_roll", 40.0)
+        self.declare_parameter("bal_hip_kp_pitch", 200.0)    # Huefte-Sekundaerstrategie (validiert: hilft, daempft)
+        self.declare_parameter("bal_hip_kd_pitch", 40.0)
+        self.declare_parameter("bal_hip_kp_roll", 200.0)
+        self.declare_parameter("bal_hip_kd_roll", 40.0)
         self.declare_parameter("bal_ankle_tau_limit", 50.0)  # Knoechel-Motorlimit [Nm]
         self.declare_parameter("bal_hip_tau_limit", 80.0)    # Huefte-Motorlimit [Nm]
-        self.declare_parameter("bal_kp_scale", 1.0)          # Posture-Steifigkeit (Beine) skalieren
 
         self._load_config_and_policy(policy_name)
 
@@ -435,16 +442,22 @@ class LocoSim(Node):
         self.cmd_msg.crc = self.crc.Crc(self.cmd_msg)
         self.lowcmd_pub.Write(self.cmd_msg)
 
-    def _hold_arm_waist(self):
-        """Taille + Arme auf arm_waist_target halten (Config-Gains)."""
+    def _hold_arm_waist(self, waist_scale=1.0):
+        """Taille + Arme auf arm_waist_target halten (Config-Gains).
+
+        waist_scale steift die TAILLE (aw_idx 12,13,14) zusaetzlich an — im Balance-
+        Modus noetig, damit der Oberkoerper nicht nach vorn 'flopt' und den CoV
+        verschiebt (headless validiert). Arme bleiben nominal (sie werden ohnehin
+        vom arm_controller via rt/arm_sdk ueberschrieben)."""
         for k, idx in enumerate(self.aw_idx):
             mc = self.cmd_msg.motor_cmd[idx]
             mc.mode = 1
             mc.q = float(self.aw_target[k])
             mc.dq = 0.0
             mc.tau = 0.0
-            mc.kp = float(self.aw_kps[k])
-            mc.kd = float(self.aw_kds[k])
+            sc = waist_scale if idx in (12, 13, 14) else 1.0
+            mc.kp = float(self.aw_kps[k]) * sc
+            mc.kd = float(self.aw_kds[k]) * math.sqrt(sc)
 
     def _send_hold(self):
         # Steifer Stand: Beine auf Default-Pose halten (kein aktives Balancieren).
@@ -531,6 +544,7 @@ class LocoSim(Node):
         tau[L_HIP_ROLL] = tau[R_HIP_ROLL] = t_hip_roll
         self.action = tau                              # fuer die |action|-Diagnose [Nm]
 
+        kd_scale = math.sqrt(max(kp_scale, 1e-6))      # Daempfungsverhaeltnis halten
         for k, idx in enumerate(self.leg_idx):
             mc = self.cmd_msg.motor_cmd[idx]
             mc.mode = 1
@@ -538,8 +552,8 @@ class LocoSim(Node):
             mc.dq = 0.0
             mc.tau = float(tau[k])                      # + aktives Balance-Drehmoment
             mc.kp = float(self.kps[k]) * kp_scale
-            mc.kd = float(self.kds[k])
-        self._hold_arm_waist()
+            mc.kd = float(self.kds[k]) * kd_scale
+        self._hold_arm_waist(waist_scale=kp_scale)
         self._t_obs = 0.0
         self._t_pol = 0.0
         td = time.perf_counter()
