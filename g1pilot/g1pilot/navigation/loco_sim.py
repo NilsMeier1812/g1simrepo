@@ -124,6 +124,7 @@ class LocoSim(Node):
         self.action = np.zeros(self.num_actions, dtype=np.float32)
         self.cmd = np.zeros(3, dtype=np.float32)     # normierte Velocity [vx,vy,vyaw] in [-1,1]
         self.counter = 0
+        self._t_obs = self._t_pol = self._t_wr = 0.0  # Rechenzeit-Anteile (Timing-Diagnose)
 
         # Streamdeck-/FSM-Hooks (gleiche Topics wie loco_client auf dem echten Roboter).
         self.create_subscription(Bool, "/g1pilot/start_balancing", self._on_start_balancing, 10)
@@ -253,6 +254,7 @@ class LocoSim(Node):
         diag_busy_sum = 0.0          # reine Rechenzeit pro Schritt (ohne sleep)
         diag_over = 0                # Anzahl Schritte mit busy > control_dt (Overrun)
         diag_worst = 0.0
+        diag_obs = diag_pol = diag_wr = 0.0   # aufgeschluesselte Rechenzeit
         diag_period_last = time.perf_counter()
         while rclpy.ok():
             t0 = time.perf_counter()
@@ -273,6 +275,9 @@ class LocoSim(Node):
                 diag_n += 1
                 diag_busy_sum += busy
                 diag_worst = max(diag_worst, busy)
+                diag_obs += self._t_obs
+                diag_pol += self._t_pol
+                diag_wr += self._t_wr
                 if busy > self.control_dt:
                     diag_over += 1
                 if diag_n >= 100:        # ~2 s bei 50 Hz
@@ -282,18 +287,23 @@ class LocoSim(Node):
                         f"[timing] ist={hz:.1f}Hz (soll=50), "
                         f"busy_mittel={1e3 * diag_busy_sum / diag_n:.1f}ms "
                         f"max={1e3 * diag_worst:.1f}ms, "
-                        f"overruns={diag_over}/{diag_n}"
+                        f"overruns={diag_over}/{diag_n} | "
+                        f"obs={1e3 * diag_obs / diag_n:.2f} "
+                        f"policy={1e3 * diag_pol / diag_n:.2f} "
+                        f"write={1e3 * diag_wr / diag_n:.2f} ms"
                         + ("  <-- ZU LANGSAM: Loop haelt 50Hz nicht!" if hz < 45 else ""))
                     diag_n = 0
                     diag_busy_sum = 0.0
                     diag_over = 0
                     diag_worst = 0.0
+                    diag_obs = diag_pol = diag_wr = 0.0
                     diag_period_last = time.perf_counter()
             else:
                 diag_n = 0
                 diag_busy_sum = 0.0
                 diag_over = 0
                 diag_worst = 0.0
+                diag_obs = diag_pol = diag_wr = 0.0
                 diag_period_last = time.perf_counter()
             dt = self.control_dt - busy
             if dt > 0:
@@ -376,11 +386,19 @@ class LocoSim(Node):
 
     def _send_policy(self):
         self.counter += 1
+        ta = time.perf_counter()
         obs = self._build_obs()
+        tb = time.perf_counter()
         torch = self._torch
         with torch.no_grad():
             obs_t = torch.from_numpy(obs).unsqueeze(0)
             self.action = self.policy(obs_t).detach().numpy().squeeze()
+        tc = time.perf_counter()
+        # Reine Rechenzeit-Anteile (ohne Scheduler-Stalls) fuer die Timing-Diagnose:
+        # so sehen wir, ob Obs/Policy/Write wirklich teuer sind oder ob der Loop
+        # nur durch CPU-Konkurrenz (rviz, sim) verdraengt wird.
+        self._t_obs = tb - ta
+        self._t_pol = tc - tb
         target = self.default_angles + self.action * self.action_scale
 
         for k, idx in enumerate(self.leg_idx):
@@ -392,7 +410,9 @@ class LocoSim(Node):
             mc.kp = float(self.kps[k])
             mc.kd = float(self.kds[k])
         self._hold_arm_waist()
-        self._write()
+        td = time.perf_counter()
+        self._write()                       # CRC + DDS-Write
+        self._t_wr = time.perf_counter() - td
 
 
 def main(args=None):

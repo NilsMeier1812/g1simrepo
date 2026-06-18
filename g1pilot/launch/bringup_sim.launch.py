@@ -31,6 +31,11 @@ def generate_launch_description():
                 'interface':            'lo',
                 'publish_joint_states': 'true',
                 'sim_rate_hz':          '50.0',
+                # rviz2 AUS: es frisst auf langsamen PCs so viele Kerne, dass die
+                # 50-Hz-Regelschleife von loco_sim auf ~20 Hz einbricht (Policy
+                # ueberschiesst -> Roboter driftet/faellt). Der Roboter ist im
+                # MuJoCo-Fenster sichtbar; rviz2 wird zum Balancieren nicht gebraucht.
+                'use_rviz':             'false',
             }.items()
         ),
 
