@@ -171,6 +171,14 @@ class LocoSim(Node):
         # TorchScript-Policy laden (CPU). torch ist im Sim-Image installiert.
         import torch
         self._torch = torch
+        # Die Policy-LSTM ist winzig (hidden=64). Auf einem ausgelasteten/langsamen
+        # PC ist Multi-Threading hier KONTRAPRODUKTIV: der Thread-Pool-Overhead macht
+        # die Inferenz langsamer UND klaut der MuJoCo-Sim Kerne. Single-Thread haelt
+        # die 50-Hz-Regelschleife konstanter (siehe Timing-Diagnose im Control-Loop).
+        try:
+            torch.set_num_threads(1)
+        except Exception:
+            pass
         policy_path = os.path.join(pdir, cfg["policy_file"])
         self.policy = torch.jit.load(policy_path, map_location="cpu")
         self.policy.eval()
@@ -237,6 +245,15 @@ class LocoSim(Node):
 
     # ── Regelschleife ────────────────────────────────────────────────────────
     def _control_loop(self):
+        # Timing-Diagnose: misst, ob die Schleife im RUN-Zustand wirklich 50 Hz
+        # haelt. Auf einem langsamen PC kann die LSTM-Inferenz + DDS > control_dt
+        # dauern -> Loop laeuft zu langsam -> Actions werden zu lange gehalten ->
+        # Policy ueberschiesst, driftet, faellt nach Sekunden. Alle ~2 s loggen.
+        diag_n = 0
+        diag_busy_sum = 0.0          # reine Rechenzeit pro Schritt (ohne sleep)
+        diag_over = 0                # Anzahl Schritte mit busy > control_dt (Overrun)
+        diag_worst = 0.0
+        diag_period_last = time.perf_counter()
         while rclpy.ok():
             t0 = time.perf_counter()
             try:
@@ -251,7 +268,34 @@ class LocoSim(Node):
             except Exception as e:
                 self.get_logger().error(f"Regelschleife: {e}")
                 self.state = DAMP
-            dt = self.control_dt - (time.perf_counter() - t0)
+            busy = time.perf_counter() - t0
+            if self.state == RUN:
+                diag_n += 1
+                diag_busy_sum += busy
+                diag_worst = max(diag_worst, busy)
+                if busy > self.control_dt:
+                    diag_over += 1
+                if diag_n >= 100:        # ~2 s bei 50 Hz
+                    span = time.perf_counter() - diag_period_last
+                    hz = diag_n / span if span > 0 else 0.0
+                    self.get_logger().info(
+                        f"[timing] ist={hz:.1f}Hz (soll=50), "
+                        f"busy_mittel={1e3 * diag_busy_sum / diag_n:.1f}ms "
+                        f"max={1e3 * diag_worst:.1f}ms, "
+                        f"overruns={diag_over}/{diag_n}"
+                        + ("  <-- ZU LANGSAM: Loop haelt 50Hz nicht!" if hz < 45 else ""))
+                    diag_n = 0
+                    diag_busy_sum = 0.0
+                    diag_over = 0
+                    diag_worst = 0.0
+                    diag_period_last = time.perf_counter()
+            else:
+                diag_n = 0
+                diag_busy_sum = 0.0
+                diag_over = 0
+                diag_worst = 0.0
+                diag_period_last = time.perf_counter()
+            dt = self.control_dt - busy
             if dt > 0:
                 time.sleep(dt)
 
