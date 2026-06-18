@@ -125,6 +125,15 @@ class LocoSim(Node):
         self.cmd = np.zeros(3, dtype=np.float32)     # normierte Velocity [vx,vy,vyaw] in [-1,1]
         self.counter = 0
         self._t_obs = self._t_pol = self._t_wr = 0.0  # Rechenzeit-Anteile (Timing-Diagnose)
+        # Sim-Realtime-Faktor (nur fuer die Timing-Diagnose): laeuft die MuJoCo-Sim
+        # langsamer (z.B. 0.5x), entspricht 1 Policy-Schritt mehr Sim-Physik. Die
+        # effektive Sim-Zeit-Rate = wall_hz / factor; nur DARAUF muss 50Hz gelten.
+        try:
+            self.sim_factor = float(os.environ.get("SIM_REALTIME_FACTOR", "1.0"))
+            if self.sim_factor <= 0:
+                self.sim_factor = 1.0
+        except Exception:
+            self.sim_factor = 1.0
 
         # Streamdeck-/FSM-Hooks (gleiche Topics wie loco_client auf dem echten Roboter).
         self.create_subscription(Bool, "/g1pilot/start_balancing", self._on_start_balancing, 10)
@@ -306,15 +315,19 @@ class LocoSim(Node):
                 if diag_n >= 100:        # ~2 s bei 50 Hz
                     span = time.perf_counter() - diag_period_last
                     hz = diag_n / span if span > 0 else 0.0
+                    # Effektive Sim-Zeit-Rate: bei gebremster Sim (factor<1) sieht die
+                    # Policy pro Wall-Clock-Schritt mehr Physik -> nur hz/factor muss 50.
+                    eff = hz / self.sim_factor
                     self.get_logger().info(
-                        f"[timing] ist={hz:.1f}Hz (soll=50), "
+                        f"[timing] wall={hz:.1f}Hz, sim-effektiv={eff:.1f}Hz (soll=50, "
+                        f"sim_factor={self.sim_factor:g}), "
                         f"busy_mittel={1e3 * diag_busy_sum / diag_n:.1f}ms "
                         f"max={1e3 * diag_worst:.1f}ms, "
                         f"overruns={diag_over}/{diag_n} | "
                         f"obs={1e3 * diag_obs / diag_n:.2f} "
                         f"policy={1e3 * diag_pol / diag_n:.2f} "
                         f"write={1e3 * diag_wr / diag_n:.2f} ms"
-                        + ("  <-- ZU LANGSAM: Loop haelt 50Hz nicht!" if hz < 45 else ""))
+                        + ("  <-- ZU LANGSAM: Sim-effektiv < 45Hz!" if eff < 45 else ""))
                     diag_n = 0
                     diag_busy_sum = 0.0
                     diag_over = 0

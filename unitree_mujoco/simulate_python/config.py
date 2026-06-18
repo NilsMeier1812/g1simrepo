@@ -21,6 +21,20 @@ SIMULATE_DT = 0.001
 VIEWER_DT = 0.02  # 50 fps for viewer
 
 
+# === SIM REALTIME FACTOR ===
+# Laesst die Sim langsamer als Echtzeit laufen (1.0 = Echtzeit). Auf langsamen
+# PCs schafft loco_sim die 50-Hz-Policy-Inferenz nur mit ~30 Hz Wall-Clock. Eine
+# auf 50 Hz trainierte Policy bekommt dann pro Sim-Sekunde zu wenige Kommandos
+# -> sie ueberschiesst und driftet weg. Loesung: Sim auf z.B. 0.5x bremsen, dann
+# vergehen pro Policy-Schritt (~30 Hz) wieder genau ~20 ms PHYSIK -> die Policy
+# sieht exakt ihre trainierte 50-Hz-Dynamik (Roboter laeuft optisch in Zeitlupe,
+# balanciert aber korrekt). Faustregel: FACTOR <= (gemessene policy-Hz)/50, damit
+# die Policy immer mithaelt. Per Env setzbar (run_sim_loco.sh setzt 0.5); Default
+# 1.0 laesst die Arm-only-Sim (run_sim.sh) unveraendert.
+SIM_REALTIME_FACTOR = float(os.environ.get("SIM_REALTIME_FACTOR", "1.0"))
+# === SIM REALTIME FACTOR END ===
+
+
 # === HOLD_BASE FEATURE ===
 # Hält den Oberkörper ruhig, damit die Arme ohne Balance-Controller getestet
 # werden können. HOLD_BASE_MODE waehlt WIE:

@@ -38,6 +38,9 @@ services:
       - MUJOCO_GL=glfw
       # weld = Arm-only (Basis fix), off = Loco-Modus (Basis frei). Siehe run_sim_loco.sh.
       - HOLD_BASE_MODE=${HOLD_BASE_MODE:-weld}
+      # Realtime-Faktor (1.0 = Echtzeit). run_sim_loco.sh setzt < 1, damit eine
+      # 50-Hz-Policy auf langsamen PCs pro Schritt die volle Physik bekommt.
+      - SIM_REALTIME_FACTOR=${SIM_REALTIME_FACTOR:-1.0}
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ../unitree_mujoco:/unitree_mujoco:ro   # Mountet dein lokales Repo!
@@ -70,6 +73,9 @@ services:
       # Mit CycloneDDS greift /etc/cyclonedds.xml (nur lo, Multicast aus, Peer 127.0.0.1).
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
       - CYCLONEDDS_URI=file:///etc/cyclonedds.xml
+      # Nur fuer die loco_sim-Timing-Diagnose: gleicher Wert wie bei mujoco-sim,
+      # damit die effektive Sim-Zeit-Rate (wall_hz/factor) korrekt geloggt wird.
+      - SIM_REALTIME_FACTOR=${SIM_REALTIME_FACTOR:-1.0}
     command: >
       bash -c "cd /ros2_ws &&
                source /opt/ros/humble/setup.bash &&

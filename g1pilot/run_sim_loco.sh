@@ -17,4 +17,14 @@ docker compose --profile sim down --remove-orphans
 
 export HOLD_BASE_MODE=off
 echo "[run_sim_loco] HOLD_BASE_MODE=off -> Basis ist FREI (Loco-Modus)."
-G1_SIM_MODE=true HOLD_BASE_MODE=off docker compose --profile sim up "$@"
+
+# Realtime-Faktor: Sim langsamer als Echtzeit, damit die 50-Hz-Policy auf langsamen
+# PCs pro Schritt die volle Physik bekommt (sonst driftet/faellt sie). 0.5 = halbe
+# Geschwindigkeit (Roboter optisch in Zeitlupe, aber dynamisch korrekt). Tuning:
+# FACTOR <= (in loco_sim geloggte policy-Hz)/50. Default 0.5; per Env ueberschreibbar:
+#   SIM_REALTIME_FACTOR=0.6 ./run_sim_loco.sh
+export SIM_REALTIME_FACTOR=${SIM_REALTIME_FACTOR:-0.5}
+echo "[run_sim_loco] SIM_REALTIME_FACTOR=$SIM_REALTIME_FACTOR (Sim-Geschwindigkeit; 1.0=Echtzeit)."
+
+G1_SIM_MODE=true HOLD_BASE_MODE=off SIM_REALTIME_FACTOR=$SIM_REALTIME_FACTOR \
+  docker compose --profile sim up "$@"

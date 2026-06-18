@@ -73,7 +73,13 @@ def SimulationThread():
 
         locker.release()
 
-        time_until_next_step = mj_model.opt.timestep - (
+        # Realtime-Faktor: Sim absichtlich langsamer als Echtzeit laufen lassen
+        # (config.SIM_REALTIME_FACTOR < 1), damit eine 50-Hz-Policy auf langsamen
+        # PCs pro Schritt wieder die volle Physik bekommt. 1.0 = Echtzeit.
+        factor = getattr(config, "SIM_REALTIME_FACTOR", 1.0)
+        if factor <= 0:
+            factor = 1.0
+        time_until_next_step = mj_model.opt.timestep / factor - (
             time.perf_counter() - step_start
         )
         if time_until_next_step > 0:
