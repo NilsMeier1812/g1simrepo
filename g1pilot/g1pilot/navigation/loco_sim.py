@@ -125,6 +125,8 @@ class LocoSim(Node):
         self.cmd = np.zeros(3, dtype=np.float32)     # normierte Velocity [vx,vy,vyaw] in [-1,1]
         self.counter = 0
         self._t_obs = self._t_pol = self._t_wr = 0.0  # Rechenzeit-Anteile (Timing-Diagnose)
+        self._dbg_grav = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+        self._dbg_gyro = np.zeros(3, dtype=np.float32)
         # Sim-Realtime-Faktor (nur fuer die Timing-Diagnose): laeuft die MuJoCo-Sim
         # langsamer (z.B. 0.5x), entspricht 1 Policy-Schritt mehr Sim-Physik. Die
         # effektive Sim-Zeit-Rate = wall_hz / factor; nur DARAUF muss 50Hz gelten.
@@ -287,6 +289,9 @@ class LocoSim(Node):
         diag_over = 0                # Anzahl Schritte mit busy > control_dt (Overrun)
         diag_worst = 0.0
         diag_obs = diag_pol = diag_wr = 0.0   # aufgeschluesselte Rechenzeit
+        diag_grav = np.zeros(3)               # mittlere proj. Gravitation (Lehnung)
+        diag_gyro = np.zeros(3)               # mittlerer Gyro (Drehung)
+        diag_act = np.zeros(self.num_actions) # mittlere Action (Bias?)
         diag_period_last = time.perf_counter()
         while rclpy.ok():
             t0 = time.perf_counter()
@@ -310,6 +315,9 @@ class LocoSim(Node):
                 diag_obs += self._t_obs
                 diag_pol += self._t_pol
                 diag_wr += self._t_wr
+                diag_grav += self._dbg_grav
+                diag_gyro += self._dbg_gyro
+                diag_act += np.abs(self.action)
                 if busy > self.control_dt:
                     diag_over += 1
                 if diag_n >= 100:        # ~2 s bei 50 Hz
@@ -328,11 +336,21 @@ class LocoSim(Node):
                         f"policy={1e3 * diag_pol / diag_n:.2f} "
                         f"write={1e3 * diag_wr / diag_n:.2f} ms"
                         + ("  <-- ZU LANGSAM: Sim-effektiv < 45Hz!" if eff < 45 else ""))
+                    g = diag_grav / diag_n
+                    gy = diag_gyro / diag_n
+                    self.get_logger().info(
+                        f"[state] grav=[{g[0]:+.3f} {g[1]:+.3f} {g[2]:+.3f}] "
+                        f"(aufrecht=[0 0 -1]; gx>0=nach vorn, gy>0=nach links geneigt) "
+                        f"gyro=[{gy[0]:+.3f} {gy[1]:+.3f} {gy[2]:+.3f}] "
+                        f"|action|_mittel={np.mean(diag_act / diag_n):.3f}")
                     diag_n = 0
                     diag_busy_sum = 0.0
                     diag_over = 0
                     diag_worst = 0.0
                     diag_obs = diag_pol = diag_wr = 0.0
+                    diag_grav = np.zeros(3)
+                    diag_gyro = np.zeros(3)
+                    diag_act = np.zeros(self.num_actions)
                     diag_period_last = time.perf_counter()
             else:
                 diag_n = 0
@@ -340,6 +358,9 @@ class LocoSim(Node):
                 diag_over = 0
                 diag_worst = 0.0
                 diag_obs = diag_pol = diag_wr = 0.0
+                diag_grav = np.zeros(3)
+                diag_gyro = np.zeros(3)
+                diag_act = np.zeros(self.num_actions)
                 diag_period_last = time.perf_counter()
             dt = self.control_dt - busy
             if dt > 0:
@@ -397,6 +418,11 @@ class LocoSim(Node):
         ang_vel = np.array(ls.imu_state.gyroscope, dtype=np.float32)
 
         gravity = get_gravity_orientation(quat)
+        # Roh-Werte fuer die Diagnose merken (vor Skalierung): projizierte Gravitation
+        # zeigt eine LEHNUNG (aufrecht = [0,0,-1]; konstantes gx/gy = geneigt), Gyro
+        # zeigt Drehung. So unterscheiden wir "lehnt" (Obs-Bias) von "wandert aufrecht".
+        self._dbg_grav = gravity.copy()
+        self._dbg_gyro = ang_vel.copy()
         qj_obs = (qj - self.default_angles) * self.dof_pos_scale
         dqj_obs = dqj * self.dof_vel_scale
         ang_vel = ang_vel * self.ang_vel_scale
