@@ -64,6 +64,12 @@ services:
       # unterscheiden, sonst kollidieren rmw_cyclonedds und unitree_sdk2py
       # im selben Prozess (robot_state crasht: "create domain error").
       - ROS_DOMAIN_ID=0
+      # KRITISCH: ROS auf CycloneDDS zwingen. Sonst nimmt Humble den Default
+      # (FastDDS), der die cyclonedds.xml IGNORIERT und SPDP-Multicast auf ALLEN
+      # Interfaces (inkl. WLAN) macht -> flutet wlanX, crasht z.B. iwlwifi-Firmware.
+      # Mit CycloneDDS greift /etc/cyclonedds.xml (nur lo, Multicast aus, Peer 127.0.0.1).
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - CYCLONEDDS_URI=file:///etc/cyclonedds.xml
     command: >
       bash -c "cd /ros2_ws &&
                source /opt/ros/humble/setup.bash &&
