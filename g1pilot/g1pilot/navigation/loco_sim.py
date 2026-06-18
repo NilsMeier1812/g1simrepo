@@ -19,12 +19,18 @@ Koerper-Aufteilung (passt 1:1 zum Bridge-Merge):
     Policy exakt die "Arme gehalten"-Dynamik, auf der sie trainiert ist.
 
 FSM (per Streamdeck-Topics); der Zustand wird auch der Bridge gemeldet (Weld):
-  HOLD   : Start-/Standby-Zustand. Die Bridge haelt die Basis (Weld an), Beine
-           werden auf Default-Pose gehalten -> Roboter steht sicher, wartet.
-  RUN    : Policy aktiv. Beim Eintritt stellt die Bridge den Roboter in die
-           Stand-Pose und loest den Weld -> freies Stehen/Balancieren.
-  DAMP   : Emergency. Alle Motoren kp=0, kd=damp -> weich, sanftes Hinsetzen.
-  /g1pilot/start_balancing(True) : -> RUN (Bridge: aufstehen + Basis freigeben).
+  HOLD    : Start-/Standby-Zustand. Die Bridge haelt die Basis (Weld an), Beine
+            werden auf Default-Pose gehalten -> Roboter steht sicher, wartet.
+  BALANCE : PRIMAER. Modellbasierter Knoechel-/Hueft-Balancer haelt den Roboter
+            am Platz aufrecht und kompensiert Stoerungen (Oberkoerper-Manipulation)
+            automatisch ueber IMU-Feedback. Spiegelt LocoClient.BalanceStand.
+  RUN     : BONUS. Walking-RL-Policy (Laufen via loco_cmd_vel). Beim Eintritt stellt
+            die Bridge den Roboter auf und loest den Weld.
+  DAMP    : Emergency. Alle Motoren kp=0, kd=damp -> weich, sanftes Hinsetzen.
+  BALANCE und RUN melden der Bridge denselben Code (1 = aufstehen + Basis frei);
+  der Bridge ist egal, WELCHER Regler balanciert.
+  /g1pilot/start_balancing(True) : -> BALANCE (modellbasiert, am Platz stehen).
+  /g1pilot/start_walking(True)   : -> RUN (Walking-Policy; Geschwindigkeit via loco_cmd_vel).
   /g1pilot/emergency_stop(True)  : -> DAMP und Arme aus (/g1pilot/arms/enabled False).
   /g1pilot/start(True)           : -> HOLD (Standby; Bridge haelt Basis wieder).
 
@@ -53,14 +59,23 @@ from g1pilot.utils.common import init_dds
 
 
 # FSM-Zustaende. Der Zustands-Code wird zusaetzlich an die MuJoCo-Bridge gemeldet
-# (rt/lowcmd motor_cmd[WEIGHT_IDX].q): 0=HOLD, 1=RUN, 2=DAMP. Die Bridge haelt im
-# off-Modus die Basis (Weld), bis RUN kommt -> dann Stand-Pose + Weld loesen.
+# (rt/lowcmd motor_cmd[WEIGHT_IDX].q): 0=HOLD (Basis gehalten), 1=aktiv balancierend
+# (Basis frei + aufgestellt), 2=DAMP (Basis frei, kein Reset). Die Bridge interessiert
+# nur, OB balanciert wird (Code 1) — nicht WELCHER Regler. Darum teilen sich BALANCE
+# und RUN denselben Code 1 (beide: aufstehen + Weld loesen).
 HOLD = "hold"      # Standby: Basis von der Bridge gehalten (Weld an)
 DAMP = "damp"      # Emergency: weich/limp (nur kd) -> sanftes Hinsetzen, Basis frei
-RUN = "run"        # Policy aktiv (Stehen/Balancieren), Basis frei
+BALANCE = "balance"  # PRIMAER: modellbasierter Knoechel-/Hueft-Balancer (am Platz stehen)
+RUN = "run"        # BONUS: Walking-RL-Policy (Laufen via cmd_vel), Basis frei
 
 WEIGHT_IDX = 29    # rt/lowcmd: Zustands-Code an die Bridge (Bein-Kanal, sonst ungenutzt)
-LOCO_CODE = {HOLD: 0.0, RUN: 1.0, DAMP: 2.0}
+LOCO_CODE = {HOLD: 0.0, BALANCE: 1.0, RUN: 1.0, DAMP: 2.0}
+
+# Indizes im 12er-Bein-Array (leg_idx-Reihenfolge, siehe default_angles):
+#   0..5 = links  (hip_pitch, hip_roll, hip_yaw, knee, ankle_pitch, ankle_roll)
+#   6..11 = rechts (dito)
+L_HIP_PITCH, L_HIP_ROLL, L_ANKLE_PITCH, L_ANKLE_ROLL = 0, 1, 4, 5
+R_HIP_PITCH, R_HIP_ROLL, R_ANKLE_PITCH, R_ANKLE_ROLL = 6, 7, 10, 11
 
 
 def get_gravity_orientation(quat):
@@ -86,6 +101,25 @@ class LocoSim(Node):
         interface = self.get_parameter("interface").get_parameter_value().string_value
         policy_name = self.get_parameter("policy").get_parameter_value().string_value
         self.damp_kd = float(self.get_parameter("damp_kd").value)
+
+        # ── Modellbasierter Balance-Regler (Knoechel-/Hueft-Strategie) ──────────
+        # Feedback auf die per IMU gemessene Neigung (projizierte Gravitation) und
+        # die Drehrate (Gyro). Haelt den Roboter auf der festen Standpose aufrecht
+        # und kompensiert Stoerungen (z.B. die Oberkoerper-Manipulation) automatisch,
+        # da er auf die GEMESSENE Abweichung reagiert — egal woher sie kommt.
+        # Alle Gains als ROS-Parameter -> live tunebar ohne Rebuild:
+        #   ros2 param set /loco_sim bal_ankle_kp_pitch 2.0
+        # VORZEICHEN ist die erste Tuning-Frage: faengt er die Neigung NICHT ab,
+        # sondern verstaerkt sie -> Vorzeichen des jeweiligen kp/kd umdrehen.
+        self.declare_parameter("bal_ankle_kp_pitch", 1.5)  # Knoechel gegen Vor/Zurueck-Neigung
+        self.declare_parameter("bal_ankle_kd_pitch", 0.10)
+        self.declare_parameter("bal_ankle_kp_roll", 1.5)   # Knoechel gegen Seitneigung
+        self.declare_parameter("bal_ankle_kd_roll", 0.10)
+        self.declare_parameter("bal_hip_kp_pitch", 0.5)    # Huefte (Sekundaerstrategie)
+        self.declare_parameter("bal_hip_kd_pitch", 0.05)
+        self.declare_parameter("bal_hip_kp_roll", 0.0)     # default aus (Vorzeichen unklar)
+        self.declare_parameter("bal_hip_kd_roll", 0.0)
+        self.declare_parameter("bal_max_offset", 0.5)      # Begrenzung der Korrektur [rad]
 
         self._load_config_and_policy(policy_name)
 
@@ -138,7 +172,10 @@ class LocoSim(Node):
             self.sim_factor = 1.0
 
         # Streamdeck-/FSM-Hooks (gleiche Topics wie loco_client auf dem echten Roboter).
+        # START BALANCING -> BALANCE (modellbasiert, Hauptfall). start_walking -> RUN
+        # (Walking-Policy, Bonus). Beide stellen den Roboter via Bridge auf + loesen den Weld.
         self.create_subscription(Bool, "/g1pilot/start_balancing", self._on_start_balancing, 10)
+        self.create_subscription(Bool, "/g1pilot/start_walking", self._on_start_walking, 10)
         self.create_subscription(Bool, "/g1pilot/emergency_stop", self._on_emergency, 10)
         self.create_subscription(Bool, "/g1pilot/start", self._on_start, 10)
         self.create_subscription(Twist, "/g1pilot/loco_cmd_vel", self._on_cmd_vel, 10)
@@ -151,7 +188,9 @@ class LocoSim(Node):
         self._run_thread.start()
         self.get_logger().info(
             f"loco_sim bereit (HOLD = steifer Stand). policy='{policy_name}', "
-            f"control_dt={self.control_dt:.3f}s. START BALANCING -> Stehen/Balancieren.")
+            f"control_dt={self.control_dt:.3f}s. "
+            f"START BALANCING -> BALANCE (modellbasiert, am Platz). "
+            f"/g1pilot/start_walking -> RUN (Walking-Policy, Bonus).")
 
     # ── Setup ────────────────────────────────────────────────────────────────
     def _load_config_and_policy(self, policy_name):
@@ -242,22 +281,36 @@ class LocoSim(Node):
             self.mode_machine = int(getattr(msg, "mode_machine", 0))
 
     def _on_start_balancing(self, msg: Bool):
+        # PRIMAER: modellbasierter Balance-Regler (am Platz stehen + ausgleichen).
         if not msg.data:
             return
-        if self.state == RUN:
+        if self.state == BALANCE:
             self.get_logger().info("Balancieren laeuft bereits.")
             return
         if self.low_state is None:
             self.get_logger().warn("Kann nicht balancieren: keine rt/lowstate.")
             return
-        # Direkt in RUN. Die Bridge stellt den Roboter beim RUN-Eintritt in die
-        # Stand-Pose und loest den Weld (Code 1) -> die Policy startet aus einem
-        # sauberen, aufrechten Zustand.
+        # Code 1 an die Bridge -> Stand-Pose setzen + Weld loesen -> der Balancer
+        # startet aus einem sauberen, aufrechten Zustand.
+        self.action[:] = 0.0
+        self.state = BALANCE
+        self.get_logger().info("START BALANCING -> BALANCE (modellbasiert: aufstehen + Basis freigeben).")
+
+    def _on_start_walking(self, msg: Bool):
+        # BONUS: Walking-RL-Policy. Laufen via /g1pilot/loco_cmd_vel.
+        if not msg.data:
+            return
+        if self.state == RUN:
+            self.get_logger().info("Walking laeuft bereits.")
+            return
+        if self.low_state is None:
+            self.get_logger().warn("Kann nicht laufen: keine rt/lowstate.")
+            return
         self.counter = 0
         self.action[:] = 0.0
         self._reset_policy_state()
         self.state = RUN
-        self.get_logger().info("START BALANCING -> RUN (Bridge: aufstehen + Basis freigeben).")
+        self.get_logger().info("START WALKING -> RUN (Walking-Policy; Geschwindigkeit via loco_cmd_vel).")
 
     def _on_emergency(self, msg: Bool):
         if msg.data:
@@ -302,13 +355,15 @@ class LocoSim(Node):
                     self._send_hold()
                 elif self.state == DAMP:
                     self._send_damp()
+                elif self.state == BALANCE:
+                    self._send_balance()
                 elif self.state == RUN:
                     self._send_policy()
             except Exception as e:
                 self.get_logger().error(f"Regelschleife: {e}")
                 self.state = DAMP
             busy = time.perf_counter() - t0
-            if self.state == RUN:
+            if self.state in (RUN, BALANCE):
                 diag_n += 1
                 diag_busy_sum += busy
                 diag_worst = max(diag_worst, busy)
@@ -409,6 +464,81 @@ class LocoSim(Node):
             mc.kp = 0.0
             mc.kd = self.damp_kd
         self._write()
+
+    def _send_balance(self):
+        """Modellbasierter Balance-Regler (Knoechel-/Hueft-Strategie).
+
+        Haelt den Roboter auf der festen Standpose (default_angles) und korrigiert
+        die per IMU gemessene Neigung aktiv ueber Knoechel (primaer) und Huefte
+        (sekundaer). Braucht NUR IMU + Gelenke (also genau das, was ueber DDS kommt)
+        -> kein Positions-/Velocity-Bedarf, station-keeping per Konstruktion. Die
+        Korrektur reagiert auf die GEMESSENE Abweichung und kompensiert damit auch
+        Stoerungen aus der Oberkoerper-Manipulation automatisch.
+
+        Regelgesetz (PD auf die Neigung): Korrektur-Offset auf die Default-Pose
+            d = kp * neigung + kd * drehrate
+        Die per-Gelenk-PD in der Bridge setzt den Offset dann als Stellmoment um
+        (Ziel-Offset am Knoechel -> Drehmoment ueber den fixen Bodenkontakt -> Rumpf
+        richtet sich auf). Targets bleiben Positionen -> selber Aktuierungspfad wie
+        HOLD/Policy.
+        """
+        ls = self.low_state
+        quat = ls.imu_state.quaternion                 # [w,x,y,z], Pelvis
+        gyro = np.array(ls.imu_state.gyroscope, dtype=np.float32)
+        g = get_gravity_orientation(quat)              # aufrecht=[0,0,-1]
+        self._dbg_grav = g.copy()
+        self._dbg_gyro = gyro.copy()
+
+        # Neigungs-Fehler: aufrecht -> gx=gy=0. gx>0 = vorn, gy>0 = links geneigt.
+        pitch_err = float(g[0])
+        roll_err = float(g[1])
+        pitch_rate = float(gyro[1])                    # y-Achse = Pitch
+        roll_rate = float(gyro[0])                     # x-Achse = Roll
+
+        # Gains live aus den ROS-Parametern (Tuning ohne Rebuild).
+        akp_p = self.get_parameter("bal_ankle_kp_pitch").value
+        akd_p = self.get_parameter("bal_ankle_kd_pitch").value
+        akp_r = self.get_parameter("bal_ankle_kp_roll").value
+        akd_r = self.get_parameter("bal_ankle_kd_roll").value
+        hkp_p = self.get_parameter("bal_hip_kp_pitch").value
+        hkd_p = self.get_parameter("bal_hip_kd_pitch").value
+        hkp_r = self.get_parameter("bal_hip_kp_roll").value
+        hkd_r = self.get_parameter("bal_hip_kd_roll").value
+        lim = float(self.get_parameter("bal_max_offset").value)
+
+        def clamp(x):
+            return max(-lim, min(lim, x))
+
+        # Knoechel-Strategie (primaer). Pitch symmetrisch auf beide Knoechel; Roll
+        # gleichsinnig auf beide (gemeinsames Kippen der Fuesse verschiebt den CoP).
+        d_ankle_pitch = clamp(akp_p * pitch_err + akd_p * pitch_rate)
+        d_ankle_roll = clamp(akp_r * roll_err + akd_r * roll_rate)
+        # Huefte-Strategie (sekundaer, kleinere Gains).
+        d_hip_pitch = clamp(hkp_p * pitch_err + hkd_p * pitch_rate)
+        d_hip_roll = clamp(hkp_r * roll_err + hkd_r * roll_rate)
+
+        offset = np.zeros(self.num_actions, dtype=np.float32)
+        offset[L_ANKLE_PITCH] = offset[R_ANKLE_PITCH] = d_ankle_pitch
+        offset[L_ANKLE_ROLL] = offset[R_ANKLE_ROLL] = d_ankle_roll
+        offset[L_HIP_PITCH] = offset[R_HIP_PITCH] = d_hip_pitch
+        offset[L_HIP_ROLL] = offset[R_HIP_ROLL] = d_hip_roll
+        self.action = offset                           # fuer die |action|-Diagnose
+
+        target = self.default_angles + offset
+        for k, idx in enumerate(self.leg_idx):
+            mc = self.cmd_msg.motor_cmd[idx]
+            mc.mode = 1
+            mc.q = float(target[k])
+            mc.dq = 0.0
+            mc.tau = 0.0
+            mc.kp = float(self.kps[k])
+            mc.kd = float(self.kds[k])
+        self._hold_arm_waist()
+        self._t_obs = 0.0
+        self._t_pol = 0.0
+        td = time.perf_counter()
+        self._write()
+        self._t_wr = time.perf_counter() - td
 
     def _build_obs(self):
         ls = self.low_state

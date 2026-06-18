@@ -228,22 +228,41 @@ regelt die Beine; Taille/Arme werden gehalten, bis der `arm_controller` die Arme
 > Branch: `loco`. Erfordert das **neu gebaute Sim-Image** (PyTorch im
 > `Dockerfile.sim`) — beim ersten Mal `docker compose ... build g1pilot-sim`.
 
-### Architektur (kurz)
+### Zwei Unterkörper-Regler (FSM, immer nur EINER aktiv)
+Der **primäre** Modus ist ein **modellbasierter Balance-Regler** (am Platz stehen +
+Oberkörper-Störungen ausgleichen, spiegelt `LocoClient.BalanceStand`). Die
+**Walking-RL-Policy** bleibt als umschaltbarer **Bonus** erhalten (Laufen via
+`loco_cmd_vel`). Sie teilen sich die Beine über die FSM — nie beide gleichzeitig.
+
 ```
-loco_sim   : rt/lowstate (IMU+Gelenke) → Policy(LSTM) → rt/lowcmd (Beine 0–11, Taille/Arme gehalten)
-             + Zustands-Code an die Bridge via rt/lowcmd motor_cmd[29].q (0=HOLD,1=RUN,2=DAMP)
+loco_sim   : rt/lowstate (IMU+Gelenke) → [BALANCE: Knöchel/Hüft-Regler  |  RUN: Policy(LSTM)]
+             → rt/lowcmd (Beine 0–11; Taille/Arme gehalten)
+             + Zustands-Code an die Bridge via motor_cmd[29].q (0=HOLD, 1=balancierend, 2=DAMP)
 arm_ctrl   : rt/arm_sdk (Arme 15–28, Weight@29)   ← überschreibt Arme gewichtet
 Bridge     : merged beide Quellen pro Motor → mj_data.ctrl (PD je Sim-Schritt)
-             Managed-Weld: hält die Basis (Weld), bis loco_sim RUN meldet → dann stellt
+             Managed-Weld: hält die Basis (Weld), bis loco_sim Code 1 meldet → dann stellt
              es den Roboter in eine saubere Stand-Pose und löst den Weld.
-FSM        : HOLD (Basis gehalten) → [START BALANCING] → RUN (Policy balanciert frei) ; [EMERGENCY] → DAMP
+FSM        : HOLD → [START BALANCING] → BALANCE (modellbasiert, am Platz)
+                  → [start_walking]    → RUN     (Walking-Policy, Bonus)
+                  → [EMERGENCY]        → DAMP
 ```
 
+> **Warum modellbasiert als Primär?** Die unitree_rl_gym-Policy ist eine *Lauf*-Policy
+> (validiert auf `cmd=[0.5,0,0]`); bei `cmd=0` marschiert sie auf der Stelle und driftet,
+> weil ihre Observation **keine Basis-Position** enthält. Fürs reine Am-Platz-Stehen +
+> Ausgleichen ist ein Knöchel-/Hüft-Balancer auf IMU-Feedback der bessere Fit:
+> station-keeping per Konstruktion, deterministisch, kompensiert Oberkörper-Störungen
+> automatisch (reagiert auf die gemessene Neigung, egal woher).
+
 > **Warum Managed-Weld?** Ein freistehender Zweibeiner lässt sich NICHT statisch aufrecht
-> halten — nur die Policy balanciert aktiv (headless verifiziert). Auf langsamen Rechnern
-> fällt der Roboter aber um, bevor `loco_sim` (nach `colcon build`+Launch) verbunden ist.
-> Darum hält die Bridge die Basis fest, bis das Balancieren wirklich startet — das macht
-> das Start-Timing egal und gibt der Policy einen sauberen, aufrechten Start.
+> halten — nur ein aktiver Balance-Regler hält ihn. Auf langsamen Rechnern fällt der
+> Roboter aber um, bevor `loco_sim` (nach `colcon build`+Launch) verbunden ist. Darum
+> hält die Bridge die Basis fest, bis das Balancieren wirklich startet.
+
+> **Langsamer PC / Realtime-Faktor:** `run_sim_loco.sh` setzt `SIM_REALTIME_FACTOR=0.65`,
+> damit pro Regelschritt ~20 ms Physik vergehen (= Trainingsrate 50 Hz), auch wenn der
+> Loop nur ~33 Hz Wall-Clock schafft. In der `[timing]`-Zeile soll **`sim-effektiv`**
+> ~50 Hz zeigen; sonst `SIM_REALTIME_FACTOR` = (wall-Hz / 50) anpassen.
 
 ### Start (freie Basis)
 ```bash
@@ -257,23 +276,42 @@ fällt **nicht** um (egal wie langsam der PC ist). `loco_sim` meldet `Policy gel
 ... recurrent=True`. Im HOLD wird die Basis gehalten (noch kein aktives Balancieren).
 
 ### Ablauf
-1. **START BALANCING** (Streamdeck-Button, publisht `/g1pilot/start_balancing`) →
-   die Bridge stellt den Roboter in eine saubere Stand-Pose, löst den Weld, und
-   `loco_sim` aktiviert die Policy → Roboter steht **frei und balanciert**.
-   Manuell ohne Streamdeck:
+1. **START BALANCING** (`/g1pilot/start_balancing`) → Bridge stellt den Roboter auf,
+   löst den Weld, `loco_sim` aktiviert den **modellbasierten Balance-Regler** (BALANCE)
+   → Roboter steht **frei und hält die Position**:
    ```bash
    ros2 topic pub -1 /g1pilot/start_balancing std_msgs/Bool "{data: true}"
    ```
-2. **Arme + Loco gleichzeitig:** Arme an + Marker ziehen (wie L6). Beine balancieren
-   weiter, Arme folgen — keiner geht limp (beweist den Bridge-Merge):
+2. **Arme + Balance gleichzeitig:** Arme an + Marker ziehen (wie L6). Der Balancer
+   gleicht die Oberkörper-Störung automatisch aus, Arme folgen — keiner geht limp:
    ```bash
    ros2 topic pub -1 /g1pilot/arms/enabled std_msgs/Bool "{data: true}"
    ```
-3. **EMERGENCY STOP** (`/g1pilot/emergency_stop`) → `loco_sim` dampt (weich, sanftes
-   Hinsetzen) **und** schaltet die Arme aus:
+3. **EMERGENCY STOP** (`/g1pilot/emergency_stop`) → DAMP (weich) **und** Arme aus:
    ```bash
    ros2 topic pub -1 /g1pilot/emergency_stop std_msgs/Bool "{data: true}"
    ```
+
+### Balance-Regler tunen (live, ohne Rebuild)
+Die `[state]`-Logzeile zeigt `grav` (aufrecht = `[0 0 -1]`; `gx>0`=vorn, `gy>0`=links).
+Erste Frage ist das **Vorzeichen**: bleibt `grav` bei BALANCE nahe `[0 0 -1]` → Gains
+stimmen; **divergiert es schneller** als ohne Regler → Vorzeichen des betroffenen Gains
+umdrehen. Dann Stärke/Dämpfung nachziehen:
+```bash
+ros2 param set /loco_sim bal_ankle_kp_pitch 2.0    # stärker gegen Vor/Zurück-Kippen
+ros2 param set /loco_sim bal_ankle_kp_roll  2.0    # stärker gegen Seitkippen
+ros2 param set /loco_sim bal_ankle_kd_pitch 0.15   # mehr Dämpfung (gegen Schwingen)
+ros2 param set /loco_sim bal_hip_kp_pitch   0.8    # Hüft-Sekundärstrategie
+# Vorzeichen umdrehen, falls verstärkt statt abgefangen:
+ros2 param set /loco_sim bal_ankle_kp_pitch -1.5
+```
+
+### Bonus: Laufen (Walking-Policy)
+```bash
+ros2 topic pub -1 /g1pilot/start_walking std_msgs/Bool "{data: true}"   # -> RUN
+ros2 topic pub -1 /g1pilot/loco_cmd_vel geometry_msgs/Twist "{linear: {x: 0.4}}"  # vorwärts
+ros2 topic pub -1 /g1pilot/loco_cmd_vel geometry_msgs/Twist "{linear: {x: 0.0}}"  # stoppen
+```
 
 ### Fehlersuche
 - **Roboter sackt beim Launch zusammen** (vor START): Managed-Weld greift nicht —
