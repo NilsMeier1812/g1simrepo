@@ -18,12 +18,15 @@ docker compose --profile sim down --remove-orphans
 export HOLD_BASE_MODE=off
 echo "[run_sim_loco] HOLD_BASE_MODE=off -> Basis ist FREI (Loco-Modus)."
 
-# Realtime-Faktor: Sim langsamer als Echtzeit, damit die 50-Hz-Policy auf langsamen
-# PCs pro Schritt die volle Physik bekommt (sonst driftet/faellt sie). 0.5 = halbe
-# Geschwindigkeit (Roboter optisch in Zeitlupe, aber dynamisch korrekt). Tuning:
-# FACTOR <= (in loco_sim geloggte policy-Hz)/50. Default 0.5; per Env ueberschreibbar:
-#   SIM_REALTIME_FACTOR=0.6 ./run_sim_loco.sh
-export SIM_REALTIME_FACTOR=${SIM_REALTIME_FACTOR:-0.5}
+# Realtime-Faktor: Sim langsamer als Echtzeit, damit pro Policy-Schritt GENAU ~20 ms
+# Physik vergehen (= Trainingsrate 50 Hz). Die Policy nimmt 20 ms/Aufruf an; real sind
+# es wall_dt*factor. Damit sim-effektiv (=wall_hz/factor) ~50 Hz trifft, gilt:
+#   factor = wall_hz / 50   (bei ~33 Hz Wall-Clock also ~0.65).
+# ZU KLEIN (z.B. 0.5 -> effektiv 66 Hz) => Policy ueberregelt, schaukelt hoch und kippt.
+# ZU GROSS (1.0 -> effektiv 30 Hz)      => Policy unterregelt, driftet weg.
+# Tuning: in der [timing]-Zeile soll "sim-effektiv" ~50 Hz zeigen; sonst factor anpassen.
+# Per Env ueberschreibbar:  SIM_REALTIME_FACTOR=0.6 ./run_sim_loco.sh
+export SIM_REALTIME_FACTOR=${SIM_REALTIME_FACTOR:-0.65}
 echo "[run_sim_loco] SIM_REALTIME_FACTOR=$SIM_REALTIME_FACTOR (Sim-Geschwindigkeit; 1.0=Echtzeit)."
 
 G1_SIM_MODE=true HOLD_BASE_MODE=off SIM_REALTIME_FACTOR=$SIM_REALTIME_FACTOR \
