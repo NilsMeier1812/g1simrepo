@@ -103,23 +103,29 @@ class LocoSim(Node):
         self.damp_kd = float(self.get_parameter("damp_kd").value)
 
         # ── Modellbasierter Balance-Regler (Knoechel-/Hueft-Strategie) ──────────
-        # Feedback auf die per IMU gemessene Neigung (projizierte Gravitation) und
-        # die Drehrate (Gyro). Haelt den Roboter auf der festen Standpose aufrecht
-        # und kompensiert Stoerungen (z.B. die Oberkoerper-Manipulation) automatisch,
-        # da er auf die GEMESSENE Abweichung reagiert — egal woher sie kommt.
-        # Alle Gains als ROS-Parameter -> live tunebar ohne Rebuild:
-        #   ros2 param set /loco_sim bal_ankle_kp_pitch 2.0
-        # VORZEICHEN ist die erste Tuning-Frage: faengt er die Neigung NICHT ab,
-        # sondern verstaerkt sie -> Vorzeichen des jeweiligen kp/kd umdrehen.
-        self.declare_parameter("bal_ankle_kp_pitch", 1.5)  # Knoechel gegen Vor/Zurueck-Neigung
-        self.declare_parameter("bal_ankle_kd_pitch", 0.10)
-        self.declare_parameter("bal_ankle_kp_roll", 1.5)   # Knoechel gegen Seitneigung
-        self.declare_parameter("bal_ankle_kd_roll", 0.10)
-        self.declare_parameter("bal_hip_kp_pitch", 0.5)    # Huefte (Sekundaerstrategie)
-        self.declare_parameter("bal_hip_kd_pitch", 0.05)
-        self.declare_parameter("bal_hip_kp_roll", 0.0)     # default aus (Vorzeichen unklar)
+        # Feedback auf die per IMU gemessene Neigung (projizierte Gravitation) +
+        # Drehrate (Gyro). Stellgroesse ist FEEDFORWARD-DREHMOMENT [Nm] (mc.tau),
+        # NICHT ein Positions-Offset: die weichen Policy-Gains (kp_ankle=40) liefern
+        # nur ~20 Nm, eine 0.3-rad-Neigung braucht aber ~50 Nm -> zu wenig Autoritaet.
+        # Direktes tau (bis ans Modell-Limit ±50 Nm Knoechel) gibt dem Regler die
+        # noetige Kraft. Die Bridge addiert tau zum Posture-PD (_pd: tau+kp*..+kd*..).
+        #
+        # VORZEICHEN aus der Gelenk-Kinematik abgeleitet (Achsen y bzw. x):
+        #   Pitch: +tau bei Vorwaerts-Neigung (gx>0) -> Koerper kippt zurueck.
+        #   Roll : -tau bei Links-Neigung   (gy>0) -> Koerper kippt nach rechts.
+        # Falls es in der Sim doch verstaerkt statt abfaengt: kp-Vorzeichen umdrehen.
+        # Alle Gains live als ROS-Parameter (ros2 param set /loco_sim bal_... X).
+        self.declare_parameter("bal_ankle_kp_pitch", 400.0)  # Nm pro Einheit Neigung
+        self.declare_parameter("bal_ankle_kd_pitch", 30.0)   # Nm pro rad/s
+        self.declare_parameter("bal_ankle_kp_roll", 400.0)
+        self.declare_parameter("bal_ankle_kd_roll", 30.0)
+        self.declare_parameter("bal_hip_kp_pitch", 0.0)      # Huefte sekundaer, default aus
+        self.declare_parameter("bal_hip_kd_pitch", 0.0)
+        self.declare_parameter("bal_hip_kp_roll", 0.0)
         self.declare_parameter("bal_hip_kd_roll", 0.0)
-        self.declare_parameter("bal_max_offset", 0.5)      # Begrenzung der Korrektur [rad]
+        self.declare_parameter("bal_ankle_tau_limit", 50.0)  # Knoechel-Motorlimit [Nm]
+        self.declare_parameter("bal_hip_tau_limit", 80.0)    # Huefte-Motorlimit [Nm]
+        self.declare_parameter("bal_kp_scale", 1.0)          # Posture-Steifigkeit (Beine) skalieren
 
         self._load_config_and_policy(policy_name)
 
@@ -468,19 +474,17 @@ class LocoSim(Node):
     def _send_balance(self):
         """Modellbasierter Balance-Regler (Knoechel-/Hueft-Strategie).
 
-        Haelt den Roboter auf der festen Standpose (default_angles) und korrigiert
-        die per IMU gemessene Neigung aktiv ueber Knoechel (primaer) und Huefte
-        (sekundaer). Braucht NUR IMU + Gelenke (also genau das, was ueber DDS kommt)
-        -> kein Positions-/Velocity-Bedarf, station-keeping per Konstruktion. Die
-        Korrektur reagiert auf die GEMESSENE Abweichung und kompensiert damit auch
-        Stoerungen aus der Oberkoerper-Manipulation automatisch.
+        Haelt den Roboter auf der festen Standpose (default_angles) mit einem
+        Posture-PD und legt ein FEEDFORWARD-DREHMOMENT [Nm] auf Knoechel (primaer)
+        und Huefte (sekundaer), das die per IMU gemessene Neigung aktiv aufrichtet.
+        Braucht NUR IMU + Gelenke (genau das, was ueber DDS kommt) -> kein
+        Positions-/Velocity-Bedarf, station-keeping per Konstruktion. Reagiert auf
+        die gemessene Abweichung und kompensiert damit Oberkoerper-Stoerungen
+        automatisch.
 
-        Regelgesetz (PD auf die Neigung): Korrektur-Offset auf die Default-Pose
-            d = kp * neigung + kd * drehrate
-        Die per-Gelenk-PD in der Bridge setzt den Offset dann als Stellmoment um
-        (Ziel-Offset am Knoechel -> Drehmoment ueber den fixen Bodenkontakt -> Rumpf
-        richtet sich auf). Targets bleiben Positionen -> selber Aktuierungspfad wie
-        HOLD/Policy.
+        Direktes tau (statt Positions-Offset), weil die weichen Policy-Gains zu wenig
+        Knoechel-Autoritaet liefern (~20 Nm; noetig ~50 Nm). Die Bridge addiert tau
+        zum Posture-PD (_pd: tau + kp*(q-q_ist) + kd*(dq-dq_ist)).
         """
         ls = self.low_state
         quat = ls.imu_state.quaternion                 # [w,x,y,z], Pelvis
@@ -504,34 +508,36 @@ class LocoSim(Node):
         hkd_p = self.get_parameter("bal_hip_kd_pitch").value
         hkp_r = self.get_parameter("bal_hip_kp_roll").value
         hkd_r = self.get_parameter("bal_hip_kd_roll").value
-        lim = float(self.get_parameter("bal_max_offset").value)
+        a_lim = float(self.get_parameter("bal_ankle_tau_limit").value)
+        h_lim = float(self.get_parameter("bal_hip_tau_limit").value)
+        kp_scale = float(self.get_parameter("bal_kp_scale").value)
 
-        def clamp(x):
+        def clamp(x, lim):
             return max(-lim, min(lim, x))
 
-        # Knoechel-Strategie (primaer). Pitch symmetrisch auf beide Knoechel; Roll
-        # gleichsinnig auf beide (gemeinsames Kippen der Fuesse verschiebt den CoP).
-        d_ankle_pitch = clamp(akp_p * pitch_err + akd_p * pitch_rate)
-        d_ankle_roll = clamp(akp_r * roll_err + akd_r * roll_rate)
-        # Huefte-Strategie (sekundaer, kleinere Gains).
-        d_hip_pitch = clamp(hkp_p * pitch_err + hkd_p * pitch_rate)
-        d_hip_roll = clamp(hkp_r * roll_err + hkd_r * roll_rate)
+        # Feedforward-Drehmoment [Nm]. Vorzeichen aus der Gelenk-Kinematik:
+        #   Knoechel-Pitch: +tau bei Vorwaerts-Neigung (gx>0) -> Koerper kippt zurueck.
+        #   Knoechel-Roll : -tau bei Links-Neigung   (gy>0) -> Koerper kippt nach rechts.
+        # Roll gleichsinnig auf beide Fuesse (gemeinsames Kippen verschiebt den CoP).
+        t_ankle_pitch = clamp(akp_p * pitch_err + akd_p * pitch_rate, a_lim)
+        t_ankle_roll = clamp(-(akp_r * roll_err + akd_r * roll_rate), a_lim)
+        t_hip_pitch = clamp(hkp_p * pitch_err + hkd_p * pitch_rate, h_lim)
+        t_hip_roll = clamp(-(hkp_r * roll_err + hkd_r * roll_rate), h_lim)
 
-        offset = np.zeros(self.num_actions, dtype=np.float32)
-        offset[L_ANKLE_PITCH] = offset[R_ANKLE_PITCH] = d_ankle_pitch
-        offset[L_ANKLE_ROLL] = offset[R_ANKLE_ROLL] = d_ankle_roll
-        offset[L_HIP_PITCH] = offset[R_HIP_PITCH] = d_hip_pitch
-        offset[L_HIP_ROLL] = offset[R_HIP_ROLL] = d_hip_roll
-        self.action = offset                           # fuer die |action|-Diagnose
+        tau = np.zeros(self.num_actions, dtype=np.float32)
+        tau[L_ANKLE_PITCH] = tau[R_ANKLE_PITCH] = t_ankle_pitch
+        tau[L_ANKLE_ROLL] = tau[R_ANKLE_ROLL] = t_ankle_roll
+        tau[L_HIP_PITCH] = tau[R_HIP_PITCH] = t_hip_pitch
+        tau[L_HIP_ROLL] = tau[R_HIP_ROLL] = t_hip_roll
+        self.action = tau                              # fuer die |action|-Diagnose [Nm]
 
-        target = self.default_angles + offset
         for k, idx in enumerate(self.leg_idx):
             mc = self.cmd_msg.motor_cmd[idx]
             mc.mode = 1
-            mc.q = float(target[k])
+            mc.q = float(self.default_angles[k])       # Posture: feste Standpose halten
             mc.dq = 0.0
-            mc.tau = 0.0
-            mc.kp = float(self.kps[k])
+            mc.tau = float(tau[k])                      # + aktives Balance-Drehmoment
+            mc.kp = float(self.kps[k]) * kp_scale
             mc.kd = float(self.kds[k])
         self._hold_arm_waist()
         self._t_obs = 0.0

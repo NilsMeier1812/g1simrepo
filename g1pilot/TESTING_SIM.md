@@ -293,17 +293,19 @@ fällt **nicht** um (egal wie langsam der PC ist). `loco_sim` meldet `Policy gel
    ```
 
 ### Balance-Regler tunen (live, ohne Rebuild)
-Die `[state]`-Logzeile zeigt `grav` (aufrecht = `[0 0 -1]`; `gx>0`=vorn, `gy>0`=links).
-Erste Frage ist das **Vorzeichen**: bleibt `grav` bei BALANCE nahe `[0 0 -1]` → Gains
-stimmen; **divergiert es schneller** als ohne Regler → Vorzeichen des betroffenen Gains
-umdrehen. Dann Stärke/Dämpfung nachziehen:
+Stellgröße ist **Feedforward-Drehmoment [Nm]** (mc.tau), bis ±50 Nm Knöchel-Limit.
+Die `[state]`-Logzeile zeigt `grav` (aufrecht=`[0 0 -1]`; `gx>0`=vorn, `gy>0`=links)
+und `|action|` = mittleres Stell-Drehmoment. Vorzeichen sind aus der Gelenk-Kinematik
+abgeleitet; falls `grav` bei BALANCE **schneller** divergiert (Regler verstärkt) →
+betroffenes `kp` negieren:
 ```bash
-ros2 param set /loco_sim bal_ankle_kp_pitch 2.0    # stärker gegen Vor/Zurück-Kippen
-ros2 param set /loco_sim bal_ankle_kp_roll  2.0    # stärker gegen Seitkippen
-ros2 param set /loco_sim bal_ankle_kd_pitch 0.15   # mehr Dämpfung (gegen Schwingen)
-ros2 param set /loco_sim bal_hip_kp_pitch   0.8    # Hüft-Sekundärstrategie
+ros2 param set /loco_sim bal_ankle_kp_pitch 600.0   # stärker/früher gegen Vor/Zurück (Nm/Neigung)
+ros2 param set /loco_sim bal_ankle_kp_roll  600.0   # stärker gegen Seitkippen
+ros2 param set /loco_sim bal_ankle_kd_pitch 40.0    # mehr Dämpfung (gegen Schwingen, Nm/(rad/s))
+ros2 param set /loco_sim bal_hip_kp_pitch   150.0   # Hüft-Sekundärstrategie zuschalten
+ros2 param set /loco_sim bal_kp_scale       2.0     # Posture-Beine steifer (mehr passive Stabilität)
 # Vorzeichen umdrehen, falls verstärkt statt abgefangen:
-ros2 param set /loco_sim bal_ankle_kp_pitch -1.5
+ros2 param set /loco_sim bal_ankle_kp_pitch -400.0
 ```
 
 ### Bonus: Laufen (Walking-Policy)
