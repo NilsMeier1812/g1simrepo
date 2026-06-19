@@ -9,6 +9,7 @@ from unitree_sdk2py_bridge import UnitreeSdk2Bridge, ElasticBand
 
 import config
 from hold_base import HoldBase
+from push_listener import PushListener
 
 
 locker = threading.Lock()
@@ -20,6 +21,10 @@ mj_data = mujoco.MjData(mj_model)
 # existiert). Modus/Tuning kommen aus config.py. Richtet Weld/Steifigkeit einmal
 # ein; im teleport-Modus liefert step() einen per-Step-Hook.
 hold_base = HoldBase(mj_model, config, mj_data)
+
+# PUSH: Stoer-Impuls fuer den Balancer-Test. Hoert auf UDP (vom Streamdeck-Button
+# ueber loco_sim) und bringt eine kurze Kraft in zufaelliger Richtung auf.
+push = PushListener(mj_model, config)
 
 if config.ENABLE_ELASTIC_BAND:
     elastic_band = ElasticBand()
@@ -70,6 +75,7 @@ def SimulationThread():
         # Rate von rt/lowcmd / rt/arm_sdk haengt (sonst Open-Loop-Torque zwischen
         # Nachrichten -> Aufschwingen der Arme).
         unitree.ApplyLowCmd()
+        push.apply(mj_data)          # Stoer-Impuls VOR dem Step setzen (wirkt im Step)
         mujoco.mj_step(mj_model, mj_data)
 
         # Nur im teleport-Modus: Unterkoerper jeden Schritt zuruecksetzen.
@@ -122,6 +128,7 @@ def SimulationLockstep(unitree):
         # wo der Low-Level-PD zwischen 50-Hz-Sollwerten mit 1 kHz weiterregelt).
         for _ in range(decimation):
             unitree.ApplyLowCmd()
+            push.apply(mj_data)      # Stoer-Impuls VOR dem Step setzen (wirkt im Step)
             mujoco.mj_step(mj_model, mj_data)
             hold_base.after_step(mj_data)
         locker.release()

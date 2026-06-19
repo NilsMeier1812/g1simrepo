@@ -44,6 +44,7 @@ Aufruf (im g1pilot-Container; im Sim-Bringup automatisch gestartet):
 """
 import math
 import os
+import socket
 import threading
 import time
 
@@ -216,6 +217,14 @@ class LocoSim(Node):
         # Bei EMERGENCY auch die Arme abschalten (das tat sonst der loco_client).
         self.arms_enabled_pub = self.create_publisher(Bool, "/g1pilot/arms/enabled", 1)
 
+        # PUSH-Stoertest (nur Sim): /g1pilot/push -> UDP-Trigger an den MuJoCo-Prozess,
+        # der dann einen Impuls in zufaelliger Richtung aufbringt. UDP, weil der
+        # MuJoCo-Container kein ROS hat; beide laufen host-net -> 127.0.0.1. Port muss
+        # zu config.PUSH_UDP_PORT der Sim passen (Default 47900).
+        self._push_port = int(os.environ.get("SIM_PUSH_PORT", "47900"))
+        self._push_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.create_subscription(Bool, "/g1pilot/push", self._on_push, 10)
+
         # Regelschleife in eigenem Thread: feste control_dt (50 Hz), unabhaengig von
         # ROS-Timer-Jitter und nah an deploy_real.py.
         self._run_thread = threading.Thread(target=self._control_loop, daemon=True)
@@ -367,6 +376,17 @@ class LocoSim(Node):
         if msg.data:
             self.state = HOLD
             self.get_logger().info("START -> Standby (HOLD, steifer Stand).")
+
+    def _on_push(self, msg: Bool):
+        # Stoer-Test: ein UDP-Trigger an die Sim -> Impuls in zufaelliger Richtung
+        # (Richtung + Kraft macht der MuJoCo-Prozess). Nur ein Datagramm, kein State.
+        if not msg.data:
+            return
+        try:
+            self._push_sock.sendto(b"push", ("127.0.0.1", self._push_port))
+            self.get_logger().info("PUSH -> Stoer-Impuls an die Sim (zufaellige Richtung).")
+        except OSError as e:
+            self.get_logger().warn(f"PUSH konnte nicht gesendet werden: {e}")
 
     def _on_cmd_vel(self, msg: Twist):
         # Normierte Velocity [-1,1]. Nur im RUN-Zustand (Laufen) wirksam; BALANCE

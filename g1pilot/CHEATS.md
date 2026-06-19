@@ -17,6 +17,16 @@ ros2 topic pub --once /g1pilot/emergency_stop std_msgs/msg/Bool "{data: true}"
 ros2 topic pub --once /g1pilot/start_balancing std_msgs/msg/Bool "{data: true}"
 ```
 
+### PUSH ROBOT (Stoer-Test, nur Sim)
+Schubst den Roboter mit einem kurzen Impuls in ZUFAELLIGER Richtung, um die
+Stoerunterdrueckung des Balancers zu testen (auch als Streamdeck-Button "PUSH ROBOT").
+```bash
+ros2 topic pub --once /g1pilot/push std_msgs/msg/Bool "{data: true}"
+```
+Kraft/Dauer per Env an der Sim (Default 150 N, 120 ms): `SIM_PUSH_FORCE_N`,
+`SIM_PUSH_DURATION_S`. Direkt ohne ROS: `echo -n 250 | nc -u -w0 127.0.0.1 47900`
+(Payload = Kraft in N).
+
 ## PUBLISHING COMMANDS FOR NAVIGATION
 
 ###  PUBLISH GOAL

@@ -25,6 +25,7 @@ class StreamDeck(Node):
         self.pub_left_hand = self.create_publisher(String, '/g1pilot/dx3/hand_action/left', 10)
         self.pub_right_hand = self.create_publisher(String, '/g1pilot/dx3/hand_action/right', 10)
         self.pub_emergency_stop = self.create_publisher(Bool, '/g1pilot/emergency_stop', 10)
+        self.pub_push = self.create_publisher(Bool, '/g1pilot/push', 10)
 
     def publish_bool(self, pub, value: bool):
         msg = Bool()
@@ -69,6 +70,10 @@ class ButtonGUI(QWidget):
 
             # Oben rechts: Marker-Follow (Leader-Follower) an/aus.
             (0, 4): ("MARKER\nFOLLOW", lambda: self.toggle_button((0, 4), self.node.pub_marker_follow)),
+
+            # Stoer-Test (nur Sim): schubst den Roboter in zufaelliger Richtung,
+            # um die Stoerunterdrueckung des Balancers zu pruefen.
+            (1, 4): ("PUSH\nROBOT", lambda: self.flash_button((1, 4), self.node.pub_push, duration=400)),
 
             (2, 0): ("OPEN\nLEFT\nHAND", lambda: self.toggle_hand("left", "open", self.node.pub_left_hand)),
             (2, 1): ("CLOSE\nLEFT\nHAND", lambda: self.toggle_hand("left", "close", self.node.pub_left_hand)),
