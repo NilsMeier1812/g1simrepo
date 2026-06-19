@@ -81,6 +81,11 @@ def SimulationThread():
         # Nur im teleport-Modus: Unterkoerper jeden Schritt zuruecksetzen.
         hold_base.after_step(mj_data)
 
+        # Sensoren auf den AKTUELLEN Zustand bringen: mj_step fuellt sensordata vor
+        # der Integration -> sonst publiziert der lowStateThread einen Schritt alte
+        # Geschwindigkeiten (dq/gyro), an denen eine RL-Policy kippt. Siehe Lockstep.
+        mujoco.mj_forward(mj_model, mj_data)
+
         locker.release()
 
         # Realtime-Faktor: Sim absichtlich langsamer als Echtzeit laufen lassen
@@ -131,6 +136,14 @@ def SimulationLockstep(unitree):
             push.apply(mj_data)      # Stoer-Impuls VOR dem Step setzen (wirkt im Step)
             mujoco.mj_step(mj_model, mj_data)
             hold_base.after_step(mj_data)
+        # KRITISCH: mj_step fuellt sensordata am ANFANG des Schritts (vor der
+        # Integration) -> nach der Schleife sind die Sensoren (v.a. Gelenk-/IMU-
+        # GESCHWINDIGKEITEN) einen Schritt ALT. Bei Fussaufprall weicht dq dadurch
+        # um >1 rad/s vom wahren qvel ab; eine RL-Policy, die genau diese dq/gyro in
+        # ihrer Observation hat, kippt davon. mj_forward rechnet die Sensoren ohne
+        # weitere Integration auf den AKTUELLEN Zustand neu -> sensordata == qpos/qvel
+        # (headless verifiziert: Diff 1.44 -> 0.0). Erst danach publizieren.
+        mujoco.mj_forward(mj_model, mj_data)
         locker.release()
 
         # Frischen State NACH den Schritten publizieren -> der Controller reagiert
