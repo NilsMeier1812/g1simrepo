@@ -52,6 +52,7 @@ import numpy as np
 import yaml
 import rclpy
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from std_msgs.msg import Bool
 from geometry_msgs.msg import Twist
 from ament_index_python.packages import get_package_share_directory
@@ -111,6 +112,26 @@ class LocoSim(Node):
         # Darum ist "pd" Default fuer am-Platz-Balancieren; die Policy ist fuer RUN
         # (Laufen) da. Live umschaltbar: ros2 param set /loco_sim bal_mode policy.
         self.declare_parameter("bal_mode", "pd")
+
+        # CATCH FALLS: "Stuerze abfangen". Nur im pd-BALANCE relevant. Der PD-Balancer
+        # hat einen niedrigen, festen Stoss-Deckel (~50 N vorwaerts), weil er NICHT
+        # steppt. Ist catch_falls an (Default), schaltet loco_sim bei drohendem Sturz
+        # (Neigung > catch_tilt) automatisch auf die steppfaehige RL-Policy um, die
+        # deutlich groessere Stoesse auffaengt (best-effort, keine Garantie). Sobald
+        # der Roboter wieder ruhig steht (Neigung < settle_tilt + wenig Drehung fuer
+        # settle_s), kehrt er zum praezisen PD-Stand zurueck. Live per Topic
+        # /g1pilot/catch_falls oder ros2 param set /loco_sim catch_falls true/false.
+        # Schwellen aus dem Headless-Sweep (experiment_push_recovery.py): catch_tilt
+        # ~0.15 faengt vorwaerts bis ~120-150 N; zu hoch = zu spaet, zu tief = unnoetig
+        # frueh stepppen bei kleinen Stoerungen, die der PD noch ausregelt.
+        self.declare_parameter("catch_falls", True)
+        self.declare_parameter("catch_tilt", 0.15)          # Neigung -> auf Policy umschalten
+        self.declare_parameter("catch_settle_tilt", 0.08)   # Neigung < -> gilt als ruhig
+        self.declare_parameter("catch_settle_gyro", 0.6)    # |Gyro| [rad/s] < -> ruhig
+        self.declare_parameter("catch_settle_s", 1.5)       # so lange ruhig -> zurueck zu PD
+        self._catch_active = False   # True, solange die Policy gerade einen Sturz abfaengt
+        self._settle_t0 = None       # Zeitstempel, seit wann es nach dem Fang ruhig ist
+
         interface = self.get_parameter("interface").get_parameter_value().string_value
         policy_name = self.get_parameter("policy").get_parameter_value().string_value
         self.damp_kd = float(self.get_parameter("damp_kd").value)
@@ -214,6 +235,9 @@ class LocoSim(Node):
         self.create_subscription(Bool, "/g1pilot/emergency_stop", self._on_emergency, 10)
         self.create_subscription(Bool, "/g1pilot/start", self._on_start, 10)
         self.create_subscription(Twist, "/g1pilot/loco_cmd_vel", self._on_cmd_vel, 10)
+        # CATCH FALLS an/aus (Streamdeck-Toggle). Setzt den Parameter -> get_parameter
+        # bleibt einzige Wahrheit, auch via ros2 param tunebar.
+        self.create_subscription(Bool, "/g1pilot/catch_falls", self._on_catch_falls, 10)
         # Bei EMERGENCY auch die Arme abschalten (das tat sonst der loco_client).
         self.arms_enabled_pub = self.create_publisher(Bool, "/g1pilot/arms/enabled", 1)
 
@@ -343,6 +367,8 @@ class LocoSim(Node):
         self.counter = 0
         self.action[:] = 0.0
         self._reset_policy_state()
+        self._catch_active = False
+        self._settle_t0 = None
         self.state = BALANCE
         mode = str(self.get_parameter("bal_mode").value).lower()
         how = ("modellbasierter Knoechel-/Hueft-PD, haelt Pose"
@@ -363,12 +389,22 @@ class LocoSim(Node):
         self.counter = 0
         self.action[:] = 0.0
         self._reset_policy_state()
+        self._catch_active = False   # bewusstes Laufen -> kein Auto-Zurueck zu PD
+        self._settle_t0 = None
         self.state = RUN
         self.get_logger().info("START WALKING -> RUN (Walking-Policy; Geschwindigkeit via loco_cmd_vel).")
+
+    def _on_catch_falls(self, msg: Bool):
+        # Toggle "Stuerze abfangen". Setzt den Parameter (Wahrheit fuer die Schleife).
+        self.set_parameters([Parameter("catch_falls", Parameter.Type.BOOL, bool(msg.data))])
+        self.get_logger().info(
+            f"CATCH FALLS {'AN' if msg.data else 'AUS'} "
+            f"({'PD schaltet bei drohendem Sturz auf Policy um' if msg.data else 'reiner PD, kein Auto-Stepping'}).")
 
     def _on_emergency(self, msg: Bool):
         if msg.data:
             self.state = DAMP
+            self._catch_active = False
             self.arms_enabled_pub.publish(Bool(data=False))
             self.get_logger().warn("EMERGENCY STOP -> DAMP + Arme aus.")
 
@@ -398,6 +434,51 @@ class LocoSim(Node):
         vyaw = max(-1.0, min(1.0, msg.angular.z))
         with self._lock:
             self.cmd = np.array([vx, vy, vyaw], dtype=np.float32)
+
+    # ── Stuerze abfangen (PD <-> Policy) ─────────────────────────────────────
+    def _catch_step(self):
+        """Im pd-BALANCE: schaltet bei drohendem Sturz (Neigung > catch_tilt) auf die
+        steppfaehige RL-Policy um (cmd=0, kalt-Reset). Faengt deutlich groessere
+        Stoesse als der nicht-steppende PD (best-effort). Nach dem Auffangen, sobald
+        es ruhig ist (Neigung+Gyro klein fuer catch_settle_s), zurueck zum PD-Stand.
+        Ein bereits laufender Fang wird auch nach Toggle-Aus sauber zu Ende gebracht."""
+        enabled = bool(self.get_parameter("catch_falls").value)
+        g = self._dbg_grav
+        tilt = max(abs(float(g[0])), abs(float(g[1])))
+
+        if (self.state == BALANCE and not self._catch_active and enabled
+                and str(self.get_parameter("bal_mode").value).lower() == "pd"):
+            if tilt > float(self.get_parameter("catch_tilt").value):
+                with self._lock:
+                    self.cmd = np.zeros(3, dtype=np.float32)   # cmd=0: nur auffangen, nicht weglaufen
+                self._reset_policy_state()
+                self.action[:] = 0.0
+                self._catch_active = True
+                self._settle_t0 = None
+                self.state = RUN
+                self.get_logger().warn(
+                    f"CATCH! Neigung {tilt:.2f} -> Policy faengt den Sturz ab (Stepping, cmd=0).")
+
+        elif self.state == RUN and self._catch_active:
+            spin = float(np.linalg.norm(self._dbg_gyro))
+            calm = (tilt < float(self.get_parameter("catch_settle_tilt").value)
+                    and spin < float(self.get_parameter("catch_settle_gyro").value))
+            now = time.perf_counter()
+            if calm:
+                if self._settle_t0 is None:
+                    self._settle_t0 = now
+                elif now - self._settle_t0 > float(self.get_parameter("catch_settle_s").value):
+                    self._return_to_pd("wieder stabil")
+            else:
+                self._settle_t0 = None
+
+    def _return_to_pd(self, reason):
+        self._reset_policy_state()
+        self.action[:] = 0.0
+        self._catch_active = False
+        self._settle_t0 = None
+        self.state = BALANCE
+        self.get_logger().info(f"CATCH: {reason} -> zurueck zum PD-Stand (station-keeping).")
 
     # ── Regelschleife ────────────────────────────────────────────────────────
     def _control_loop(self):
@@ -434,6 +515,11 @@ class LocoSim(Node):
             except Exception as e:
                 self.get_logger().error(f"Regelschleife: {e}")
                 self.state = DAMP
+            # CATCH FALLS: nach dem Regelschritt (frisch gesetztes _dbg_grav/_dbg_gyro)
+            # pruefen, ob bei drohendem Sturz auf die Policy umgeschaltet oder nach dem
+            # Auffangen zu PD zurueckgekehrt werden muss.
+            if self.low_state is not None:
+                self._catch_step()
             busy = time.perf_counter() - t0
             if self.state in (RUN, BALANCE):
                 diag_n += 1

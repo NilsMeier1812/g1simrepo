@@ -26,6 +26,7 @@ class StreamDeck(Node):
         self.pub_right_hand = self.create_publisher(String, '/g1pilot/dx3/hand_action/right', 10)
         self.pub_emergency_stop = self.create_publisher(Bool, '/g1pilot/emergency_stop', 10)
         self.pub_push = self.create_publisher(Bool, '/g1pilot/push', 10)
+        self.pub_catch_falls = self.create_publisher(Bool, '/g1pilot/catch_falls', 10)
 
     def publish_bool(self, pub, value: bool):
         msg = Bool()
@@ -64,6 +65,10 @@ class ButtonGUI(QWidget):
         button_actions = {
             (0, 0): ("START", lambda: self.flash_button((0, 0), self.node.pub_start)),
             (0, 1): ("START\nBALANCING", lambda: self.flash_button((0, 1), self.node.pub_start_balancing)),
+
+            # Stuerze abfangen: schaltet bei drohendem Sturz automatisch PD->Policy
+            # (Stepping). Toggle, standardmaessig AN (gruen, siehe set_button_active unten).
+            (0, 2): ("CATCH\nFALLS", lambda: self.toggle_button((0, 2), self.node.pub_catch_falls)),
             (1, 1): ("HOMING\nARMS", lambda: self.flash_button((1, 1), self.node.pub_arms_home)),
 
             (1, 0): ("ENABLE\nMANIPULATION", lambda: self.toggle_button((1, 0), self.node.pub_arms_enabled)),
@@ -125,6 +130,8 @@ class ButtonGUI(QWidget):
         # Marker-Follow ist per Default aktiv -> Button gruen anzeigen, damit der
         # angezeigte Zustand zum Default des interactive_marker-Node passt.
         self.set_button_active((0, 4), True)
+        # CATCH FALLS ist per Default aktiv (loco_sim catch_falls=True) -> gruen anzeigen.
+        self.set_button_active((0, 2), True)
 
         main_layout.addLayout(grid)
         self.setLayout(main_layout)

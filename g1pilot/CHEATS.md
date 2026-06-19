@@ -17,6 +17,16 @@ ros2 topic pub --once /g1pilot/emergency_stop std_msgs/msg/Bool "{data: true}"
 ros2 topic pub --once /g1pilot/start_balancing std_msgs/msg/Bool "{data: true}"
 ```
 
+### CATCH FALLS (Stuerze abfangen, Toggle — Default AN)
+Schaltet bei drohendem Sturz automatisch vom PD-Balancer auf die steppfaehige
+RL-Policy um (faengt ~80-150 N statt ~50 N) und kehrt nach dem Auffangen zum
+PD-Stand zurueck. Auch als Streamdeck-Button "CATCH FALLS".
+```bash
+ros2 topic pub --once /g1pilot/catch_falls std_msgs/msg/Bool "{data: true}"   # an (Default)
+ros2 topic pub --once /g1pilot/catch_falls std_msgs/msg/Bool "{data: false}"  # aus (reiner PD)
+```
+Schwelle tunebar: `ros2 param set /loco_sim catch_tilt 0.15` (hoeher = spaeter umschalten).
+
 ### PUSH ROBOT (Stoer-Test, nur Sim)
 Schubst den Roboter mit einem kurzen Impuls in ZUFAELLIGER Richtung, um die
 Stoerunterdrueckung des Balancers zu testen (auch als Streamdeck-Button "PUSH ROBOT").
