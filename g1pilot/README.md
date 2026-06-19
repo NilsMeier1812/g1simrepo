@@ -127,6 +127,24 @@ The sim/real switch is driven by a single environment variable, `G1_SIM_MODE`
 > `ROS_DOMAIN_ID=0`; using the same number makes nodes that use both ROS and the
 > Unitree SDK crash with a CycloneDDS "create domain error".
 
+Easiest entry point — the interactive start menu. It asks which balance
+controller (PD/Policy), whether to open RViz, lockstep on/off, and whether to
+rebuild images, then sets the matching env vars and brings the sim up:
+
+```bash
+./start.sh
+# Non-interactive (takes defaults / env overrides), e.g. policy + RViz:
+BAL_MODE=policy USE_RVIZ=true ./start.sh --yes
+```
+
+The menu controls these env vars (also usable directly):
+
+| Env | Werte | Wirkung |
+|-----|-------|---------|
+| `BAL_MODE` | `pd` (Default) / `policy` | BALANCE-Regler: PD steht perfekt am Platz, Policy ist die RL-Variante (fuers Laufen). Live umschaltbar: `ros2 param set /loco_sim bal_mode <wert>`. |
+| `USE_RVIZ` | `false` (Default) / `true` | RViz mitstarten. Dank Lockstep bricht das Balancieren dabei nicht mehr ein. |
+| `SIM_LOCKSTEP` | `1` (Default) / `0` | Deterministische 50-Hz-Regelrate (PC-unabhaengig). |
+
 Recommended (consolidated) Docker entry point:
 
 ```bash

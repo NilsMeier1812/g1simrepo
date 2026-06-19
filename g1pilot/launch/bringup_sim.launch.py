@@ -19,6 +19,18 @@ import os
 def generate_launch_description():
     pkg_share = FindPackageShare('g1pilot').find('g1pilot')
 
+    # ── Konfiguration ueber Umgebungsvariablen (vom Start-Menue start.sh
+    #    gesetzt; Defaults = bisheriges Verhalten). ───────────────────────
+    #  USE_RVIZ : "true"/"false" — RViz mitstarten. Default false. Dank LOCKSTEP
+    #             (Regelrate haengt am rt/lowstate-Eingang, nicht an der Wall-Clock)
+    #             bricht das Balancieren NICHT mehr ein, wenn RViz Kerne frisst —
+    #             darum ist RViz jetzt wieder gefahrlos zuschaltbar.
+    #  BAL_MODE : "pd"/"policy" — BALANCE-Regler. pd = modellbasierter Knoechel-/
+    #             Hueft-PD (steht perfekt am Platz, Default). policy = RL-Policy.
+    #             Live weiter umschaltbar: ros2 param set /loco_sim bal_mode <wert>.
+    use_rviz = os.environ.get('USE_RVIZ', 'false').strip().lower()
+    bal_mode = os.environ.get('BAL_MODE', 'pd').strip().lower()
+
     return LaunchDescription([
 
         # ── 1. robot_state: liest LowState_ von MuJoCo über DDS lo ──────
@@ -31,11 +43,11 @@ def generate_launch_description():
                 'interface':            'lo',
                 'publish_joint_states': 'true',
                 'sim_rate_hz':          '50.0',
-                # rviz2 AUS: es frisst auf langsamen PCs so viele Kerne, dass die
-                # 50-Hz-Regelschleife von loco_sim auf ~20 Hz einbricht (Policy
-                # ueberschiesst -> Roboter driftet/faellt). Der Roboter ist im
-                # MuJoCo-Fenster sichtbar; rviz2 wird zum Balancieren nicht gebraucht.
-                'use_rviz':             'false',
+                # rviz2 standardmaessig AUS (USE_RVIZ=false). Frueher brach RViz die
+                # 50-Hz-Regelschleife ein; unter LOCKSTEP ist das nicht mehr der Fall
+                # (Regelrate haengt am rt/lowstate-Eingang). Per Start-Menue/USE_RVIZ
+                # zuschaltbar. Der Roboter ist ohnehin im MuJoCo-Fenster sichtbar.
+                'use_rviz':             use_rviz,
             }.items()
         ),
 
@@ -76,6 +88,7 @@ def generate_launch_description():
             output='screen',
             parameters=[{
                 'interface': 'lo',
+                'bal_mode':  bal_mode,
             }]
         ),
     ])
