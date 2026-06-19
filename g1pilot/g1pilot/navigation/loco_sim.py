@@ -27,11 +27,11 @@ FSM (per Streamdeck-Topics); der Zustand wird auch der Bridge gemeldet (Weld):
             kompensiert Stoerungen ueber IMU-Feedback. Alternativ bal_mode=policy:
             RL-Policy mit cmd=0 (faellt nicht, laeuft aber bei cmd=0 weg -> nur
             bedingt station-keeping). Live umschaltbar via ros2 param set.
-  RUN     : Laufen. RL-Lauf-Policy (motion.pt), Geschwindigkeit via loco_cmd_vel.
-            Beim Eintritt stellt die Bridge den Roboter auf und loest den Weld.
-            AUTO-HANDOFF: zentriert man das Kommando (Joystick los, cmd~0), rollt die
-            Policy aus und loco_sim schaltet nach walk_stop_settle_s automatisch
-            zurueck nach BALANCE (PD-Stand) -> Zyklus Stehen->Gehen->Stehen geschlossen.
+  RUN     : Laufen (armiert). COMMAND-GATING: die Lauf-Policy (motion.pt) laeuft NUR
+            bei anliegendem Geh-Kommando (loco_cmd_vel); bei zentriertem Joystick
+            haelt stattdessen der PD-Stand -> der cmd=0-Eigendrift der Policy wird nie
+            sichtbar. Loslassen -> kurz ausrollen -> sanfter Handoff zurueck nach
+            BALANCE. So ist der Zyklus Stehen->Gehen->Stehen geschlossen UND driftfrei.
   Deterministik: im Lockstep-Modus (SIM_LOCKSTEP=1) taktet der Control-Loop auf den
   rt/lowstate-Eingang (ein Kommando pro State) -> die Policy sieht garantiert 50 Hz.
   DAMP    : Emergency. Alle Motoren kp=0, kd=damp -> weich, sanftes Hinsetzen.
@@ -143,10 +143,28 @@ class LocoSim(Node):
         # (nur IMU+Gelenke). Headless validiert (audit_timehandoff.py): settle 1.0-2.0s
         # landen alle "steht am PD" mit Restdrift ~0.2 m/s, den der PD auffaengt; 1.3s
         # ist der beste Kompromiss (niedrigste Restgeschwindigkeit, geringe Restdrift).
-        self.declare_parameter("walk_stop_settle_s", 1.3)   # cmd~0 so lange -> RUN->PD
+        self.declare_parameter("walk_stop_settle_s", 0.5)   # cmd~0 nach Laufen -> RUN->PD
+        self.declare_parameter("walk_idle_s", 2.0)          # RUN ohne je Befehl -> PD (Leerlauf-Sicherung)
         self.declare_parameter("walk_stop_eps", 0.06)       # |cmd| darunter = "zentriert"
         self._walk_moved = False     # True, sobald in dieser RUN-Episode wirklich gelaufen
         self._walk_zero_t0 = None    # Zeitstempel, seit wann das Kommando ~0 ist
+        # COMMAND-GATING: im RUN laeuft die Policy NUR bei echtem Geh-Kommando. Bei
+        # zentriertem Joystick (cmd~0) haelt stattdessen der PD-Stand -> der
+        # cmd=0-Eigendrift der Policy (driftet ~vorwaerts/rueckwaerts, da keine
+        # Linear-Velocity in der Obs) wird nie sichtbar. Push -> Policy; loslassen ->
+        # kurz ausrollen -> zurueck zum PD-Stand.
+        self._walk_active = False    # True = Policy laeuft gerade (es liegt ein Kommando an)
+
+        # SANFTER PD-Eintritt: beim Wechsel nach BALANCE (v.a. aus dem Laufen) wuerde
+        # der steife Posture-PD die Beine aus der Schrittstellung schlagartig in die
+        # Default-Pose reissen -> Lurch ("rennt wild los", headless: v_lurch 0.67 hart
+        # vs 0.22 mit Rampe). Darum rampt loco_sim ueber bal_ramp_s die Soll-Pose von
+        # der AKTUELLEN Beinstellung -> default_angles, die Steifigkeit 1->bal_kp_scale
+        # und das Balance-Tau 0->voll. So uebernimmt der PD ruckfrei.
+        self.declare_parameter("bal_ramp_s", 0.4)
+        self._bal_entering = False   # True direkt nach einem Wechsel in BALANCE
+        self._bal_t0 = 0.0           # Start der Eintritts-Rampe
+        self._bal_q_start = None     # Beinpose beim Eintritt (Ausgangspunkt der Rampe)
 
         interface = self.get_parameter("interface").get_parameter_value().string_value
         policy_name = self.get_parameter("policy").get_parameter_value().string_value
@@ -385,6 +403,7 @@ class LocoSim(Node):
         self._reset_policy_state()
         self._catch_active = False
         self._settle_t0 = None
+        self._bal_entering = True    # sanfte Eintritts-Rampe scharf schalten
         self.state = BALANCE
         mode = str(self.get_parameter("bal_mode").value).lower()
         how = ("modellbasierter Knoechel-/Hueft-PD, haelt Pose"
@@ -407,12 +426,14 @@ class LocoSim(Node):
         self._reset_policy_state()
         self._catch_active = False   # bewusstes Laufen -> kein Auto-Zurueck zu PD
         self._settle_t0 = None
-        self._walk_moved = False     # Auto-Stop erst scharf, wenn wirklich gelaufen
-        self._walk_zero_t0 = None
+        self._walk_moved = False     # noch kein echtes Kommando -> Leerlauf-Sicherung greift
+        self._walk_active = False    # startet im PD-Stand-Hold (kein Drift), bis ein Kommando kommt
+        self._walk_zero_t0 = time.perf_counter()   # ab Eintritt zaehlt der cmd~0-Timer
+        self._bal_entering = True    # PD-Hold ruckfrei aus der aktuellen Pose hochrampen
         self.state = RUN
         self.get_logger().info(
-            "START WALKING -> RUN (Geschwindigkeit via loco_cmd_vel; Joystick "
-            "zentrieren -> automatischer Handoff zurueck zum PD-Stand).")
+            "START WALKING -> RUN (armiert). Joystick gibt Geschwindigkeit; bei "
+            "zentriertem Stick haelt der PD-Stand, beim Loslassen Handoff zurueck.")
 
     def _on_catch_falls(self, msg: Bool):
         # Toggle "Stuerze abfangen". Setzt den Parameter (Wahrheit fuer die Schleife).
@@ -497,41 +518,54 @@ class LocoSim(Node):
         self.action[:] = 0.0
         self._catch_active = False
         self._settle_t0 = None
+        self._bal_entering = True
         self.state = BALANCE
         self.get_logger().info(f"CATCH: {reason} -> zurueck zum PD-Stand (station-keeping).")
 
-    # ── Gehen -> Stehen (automatischer Handoff) ──────────────────────────────
-    def _walk_stop_step(self):
-        """Im RUN (bewusstes Laufen): ist das Velocity-Kommando ~0 (Joystick
-        zentriert) und der Roboter eine Weile ausgerollt, automatisch zurueck zum
-        PD-Stand. ZEITBASIERT, weil rt/lowstate keine Basis-Linear-Geschwindigkeit
-        liefert: cmd=0 fuer walk_stop_settle_s -> Policy bremst (Restdrift ~0.2 m/s,
-        headless validiert) -> PD uebernimmt. Greift NUR, wenn in dieser RUN-Episode
-        wirklich gelaufen wurde (_walk_moved) -> kein vorzeitiger Wechsel beim Start.
-        Ein laufender CATCH-Fang (_catch_active) hat Vorrang und wird nicht gestoert."""
+    # ── Gehen <-> Stehen (Command-Gating im RUN) ─────────────────────────────
+    def _walk_gate_step(self):
+        """Im RUN schaltet das Geh-Kommando die Policy ein/aus:
+          * cmd > eps         -> Policy laeuft (_walk_active=True).
+          * cmd ~0 nach Laufen -> nach walk_stop_settle_s zurueck zum vollen PD-Stand
+                                  (BALANCE, mit CATCH FALLS).
+          * cmd ~0 ohne je Befehl -> nach walk_idle_s ebenfalls zurueck (Leerlauf).
+        Solange _walk_active=False ist, haelt der Regelloop den PD-Stand (kein
+        cmd=0-Eigendrift). ZEITBASIERT, weil rt/lowstate keine Basis-Velocity
+        liefert (headless: 0.3-0.5s Ausrollen reicht, Restdrift ~0.3 m/s faengt der
+        PD). Ein laufender CATCH-Fang (_catch_active) hat Vorrang."""
         if self.state != RUN or self._catch_active:
             return
         with self._lock:
             cmd_mag = float(np.linalg.norm(self.cmd))
+        now = time.perf_counter()
         if cmd_mag > float(self.get_parameter("walk_stop_eps").value):
-            self._walk_moved = True            # es wurde ein echtes Kommando gegeben
+            if not self._walk_active:
+                # Stand-Hold -> Laufen: Policy frisch starten (LSTM/Phase/Action null).
+                self._reset_policy_state()
+                self.action[:] = 0.0
+                self.counter = 0
+                self._walk_active = True
+                self.get_logger().info("WALK: Kommando -> Policy laeuft.")
+            self._walk_moved = True
             self._walk_zero_t0 = None
             return
-        if not self._walk_moved:
-            return                              # noch nie gelaufen -> nichts tun
-        now = time.perf_counter()
+        # cmd ~0.
         if self._walk_zero_t0 is None:
-            self._walk_zero_t0 = now            # ab jetzt ausrollen lassen
-        elif now - self._walk_zero_t0 > float(self.get_parameter("walk_stop_settle_s").value):
+            self._walk_zero_t0 = now
+        timeout = (float(self.get_parameter("walk_stop_settle_s").value) if self._walk_active
+                   else float(self.get_parameter("walk_idle_s").value))
+        if now - self._walk_zero_t0 > timeout:
             self._reset_policy_state()
             self.action[:] = 0.0
+            self._walk_active = False
             self._walk_moved = False
             self._walk_zero_t0 = None
             with self._lock:
                 self.cmd = np.zeros(3, dtype=np.float32)
+            self._bal_entering = True          # ruckfreier PD-Eintritt
             self.state = BALANCE
             self.get_logger().info(
-                "WALK STOP: Kommando ~0 ausgerollt -> zurueck zum PD-Stand "
+                "WALK STOP: Kommando ~0 -> sanfter Uebergang zum PD-Stand "
                 "(station-keeping, Oberkoerper frei fuer Tasks).")
 
     # ── Regelschleife ────────────────────────────────────────────────────────
@@ -565,7 +599,12 @@ class LocoSim(Node):
                     else:
                         self._send_policy()
                 elif self.state == RUN:
-                    self._send_policy()
+                    # Command-Gating: Policy nur bei anliegendem Kommando, sonst
+                    # PD-Stand-Hold (kein cmd=0-Eigendrift).
+                    if self._walk_active:
+                        self._send_policy()
+                    else:
+                        self._send_balance_pd()
             except Exception as e:
                 self.get_logger().error(f"Regelschleife: {e}")
                 self.state = DAMP
@@ -574,7 +613,7 @@ class LocoSim(Node):
             # Auffangen zu PD zurueckgekehrt werden muss.
             if self.low_state is not None:
                 self._catch_step()
-                self._walk_stop_step()
+                self._walk_gate_step()
             busy = time.perf_counter() - t0
             if self.state in (RUN, BALANCE):
                 diag_n += 1
@@ -747,6 +786,24 @@ class LocoSim(Node):
         h_lim = float(self.get_parameter("bal_hip_tau_limit").value)
         kp_scale = float(self.get_parameter("bal_kp_scale").value)
 
+        # Sanfter Eintritt: beim ersten Schritt nach dem Wechsel die aktuelle Beinpose
+        # als Rampen-Start merken. ramp 0->1 ueber bal_ramp_s blendet Soll-Pose
+        # (aktuell->default), Steifigkeit (1->kp_scale) und Balance-Tau (0->voll) ein,
+        # damit der steife PD die Beine nicht aus der Schrittstellung reisst.
+        if self._bal_entering:
+            self._bal_q_start = np.array(
+                [ls.motor_state[i].q for i in self.leg_idx], dtype=np.float32)
+            self._bal_t0 = time.perf_counter()
+            self._bal_entering = False
+        ramp_s = float(self.get_parameter("bal_ramp_s").value)
+        if self._bal_q_start is not None and ramp_s > 1e-3:
+            ramp = (time.perf_counter() - self._bal_t0) / ramp_s
+            ramp = max(0.0, min(1.0, ramp))
+        else:
+            ramp = 1.0
+        kp_scale_eff = 1.0 + (kp_scale - 1.0) * ramp     # weich -> steif
+        q_start = self._bal_q_start if self._bal_q_start is not None else self.default_angles
+
         def clamp(x, lim):
             return max(-lim, min(lim, x))
 
@@ -764,18 +821,20 @@ class LocoSim(Node):
         tau[L_ANKLE_ROLL] = tau[R_ANKLE_ROLL] = t_ankle_roll
         tau[L_HIP_PITCH] = tau[R_HIP_PITCH] = t_hip_pitch
         tau[L_HIP_ROLL] = tau[R_HIP_ROLL] = t_hip_roll
+        tau *= ramp                                    # Balance-Tau ueber die Rampe einblenden
         self.action = tau                              # fuer die |action|-Diagnose [Nm]
 
-        kd_scale = math.sqrt(max(kp_scale, 1e-6))      # Daempfungsverhaeltnis halten
+        kd_scale = math.sqrt(max(kp_scale_eff, 1e-6))  # Daempfungsverhaeltnis halten
         for k, idx in enumerate(self.leg_idx):
             mc = self.cmd_msg.motor_cmd[idx]
             mc.mode = 1
-            mc.q = float(self.default_angles[k])       # Posture: feste Standpose halten
+            # Soll-Pose von der Eintritts-Beinpose -> default_angles blenden.
+            mc.q = float(q_start[k] * (1.0 - ramp) + self.default_angles[k] * ramp)
             mc.dq = 0.0
             mc.tau = float(tau[k])                      # + aktives Balance-Drehmoment
-            mc.kp = float(self.kps[k]) * kp_scale
+            mc.kp = float(self.kps[k]) * kp_scale_eff
             mc.kd = float(self.kds[k]) * kd_scale
-        self._hold_arm_waist(waist_scale=kp_scale)
+        self._hold_arm_waist(waist_scale=kp_scale_eff)
         self._t_obs = 0.0
         self._t_pol = 0.0
         td = time.perf_counter()
