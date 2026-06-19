@@ -51,6 +51,10 @@ def SimulationThread():
     if config.PRINT_SCENE_INFORMATION:
         unitree.PrintSceneInformation()
 
+    if getattr(unitree, "lockstep", False):
+        SimulationLockstep(unitree)
+        return
+
     while viewer.is_running():
         step_start = time.perf_counter()
 
@@ -84,6 +88,47 @@ def SimulationThread():
         )
         if time_until_next_step > 0:
             time.sleep(time_until_next_step)
+
+
+def SimulationLockstep(unitree):
+    """Deterministische Sim: GENAU decimation Physikschritte pro empfangenem
+    rt/lowcmd, danach EIN frischer rt/lowstate. Die Regelrate ist damit an die
+    Sim-Uhr gekoppelt (nicht Wall-Clock) -> eine 50-Hz-Policy sieht auf jedem PC
+    exakt ihre trainierten 20 ms Physik/Schritt. Kein SIM_REALTIME_FACTOR-Sleep.
+
+    Watchdog: kommt kein neues Kommando (Controller noch nicht verbunden oder
+    abgestuerzt), wird nach SIM_LOCKSTEP_WATCHDOG_S trotzdem geschritten, damit
+    Sim/Viewer nie hart einfrieren (Startfenster + Robustheit)."""
+    global mj_data, mj_model
+    decimation = int(getattr(config, "SIM_LOCKSTEP_DECIMATION", 20))
+    watchdog = float(getattr(config, "SIM_LOCKSTEP_WATCHDOG_S", 0.2))
+    last_cmd_seq = -1
+    while viewer.is_running():
+        # Auf ein NEUES Kommando warten (oder Watchdog), ohne die CPU zu blockieren.
+        t_wait = time.perf_counter()
+        while (unitree.cmd_seq == last_cmd_seq
+               and (time.perf_counter() - t_wait) < watchdog
+               and viewer.is_running()):
+            time.sleep(0.0002)
+        last_cmd_seq = unitree.cmd_seq
+
+        locker.acquire()
+        if config.ENABLE_ELASTIC_BAND and elastic_band.enable:
+            mj_data.xfrc_applied[band_attached_link, :3] = elastic_band.Advance(
+                mj_data.qpos[:3], mj_data.qvel[:3]
+            )
+        # Ein Regelschritt = decimation Physikschritte; PD pro Schritt mit frischen
+        # Sensoren (das gehaltene Kommando bleibt konstant -> wie auf der Hardware,
+        # wo der Low-Level-PD zwischen 50-Hz-Sollwerten mit 1 kHz weiterregelt).
+        for _ in range(decimation):
+            unitree.ApplyLowCmd()
+            mujoco.mj_step(mj_model, mj_data)
+            hold_base.after_step(mj_data)
+        locker.release()
+
+        # Frischen State NACH den Schritten publizieren -> der Controller reagiert
+        # immer auf den Post-Step-Zustand (strikte 1:1-Alternation).
+        unitree.PublishLowState()
 
 
 def PhysicsViewerThread():

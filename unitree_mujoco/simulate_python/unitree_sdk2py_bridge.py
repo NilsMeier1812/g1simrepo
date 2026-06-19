@@ -59,6 +59,26 @@ class UnitreeSdk2Bridge:
         self.low_cmd_legs = None   # rt/lowcmd  -> Beine+Taille (0..14), ggf. Arme wenn kein arm_sdk
         self.low_cmd_arm = None    # rt/arm_sdk -> Arme (15..28), Weight @ index 29
 
+        # Lockstep-Handshake: cmd_seq zaehlt empfangene rt/lowcmd, state_seq
+        # publizierte rt/lowstate. Die Sim-Schleife (unitree_mujoco.py) wartet im
+        # Lockstep-Modus auf ein neues cmd_seq, macht dann genau decimation
+        # Physikschritte und publiziert EINEN frischen State (state_seq++). So ist
+        # die Regelrate an die Sim-Uhr gekoppelt, nicht an die Wall-Clock.
+        self.cmd_seq = 0
+        self.state_seq = 0
+        # Lockstep nur im Loco-Modus (off) sinnvoll. Im Lockstep publiziert die
+        # Sim-Schleife den lowstate INLINE nach den decimation-Schritten -> der
+        # 500-Hz-RecurrentThread wuerde Zwischenzustaende senden und wird deaktiviert.
+        self.lockstep = (
+            bool(getattr(config, "SIM_LOCKSTEP", False))
+            and str(getattr(config, "HOLD_BASE_MODE", "weld")).lower() == "off"
+        )
+        self.decimation = int(getattr(config, "SIM_LOCKSTEP_DECIMATION", 20))
+        if self.lockstep:
+            print(f"[BRIDGE] Lockstep aktiv: {self.decimation} Physikschritte pro "
+                  f"rt/lowcmd, lowstate inline danach (deterministische 50-Hz-Regelrate, "
+                  f"SIM_REALTIME_FACTOR irrelevant).", flush=True)
+
         # Loco-Startup-Hold: im off-Modus Beine/Taille in einer Standpose halten,
         # SOLANGE noch kein Loco-Controller auf rt/lowcmd kommandiert hat (legs is
         # None). Ueberbrueckt das Startfenster (colcon build/Launch), in dem der
@@ -113,7 +133,10 @@ class UnitreeSdk2Bridge:
         self.lowStateThread = RecurrentThread(
             interval=self.state_dt, target=self.PublishLowState, name="sim_lowstate"
         )
-        self.lowStateThread.Start()
+        # Im Lockstep publiziert die Sim-Schleife den State inline (nach den
+        # decimation-Schritten) -> keinen freilaufenden 500-Hz-Publisher starten.
+        if not self.lockstep:
+            self.lowStateThread.Start()
 
         self.high_state = unitree_go_msg_dds__SportModeState_()
         self.high_state_puber = ChannelPublisher(TOPIC_HIGHSTATE, SportModeState_)
@@ -174,6 +197,10 @@ class UnitreeSdk2Bridge:
         # rt/lowcmd (Loco-Controller: Beine/Taille, ggf. ganzer Koerper).
         # Nur speichern; PD-Torque wird in ApplyLowCmd() pro Sim-Schritt gerechnet.
         self.low_cmd_legs = msg
+        # Lockstep: signalisiert der Sim-Schleife "neues Kommando da -> jetzt
+        # decimation Schritte rechnen". Reihenfolge (erst Daten, dann Zaehler)
+        # stellt sicher, dass die Sim beim Aufwachen das fertige msg sieht.
+        self.cmd_seq += 1
 
     def ArmSdkHandler(self, msg: LowCmd_):
         # rt/arm_sdk (arm_controller: Arme + Weight @ index 29).
@@ -368,6 +395,8 @@ class UnitreeSdk2Bridge:
                 self.low_state.wireless_remote[20:24] = packs[3]
 
             self.low_state_puber.Write(self.low_state)
+            # Lockstep: markiert "frischer State publiziert" fuer den Controller-Takt.
+            self.state_seq += 1
 
     def PublishHighState(self):
 

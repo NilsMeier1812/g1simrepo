@@ -38,9 +38,11 @@ services:
       - MUJOCO_GL=glfw
       # weld = Arm-only (Basis fix), off = Loco-Modus (Basis frei). Siehe run_sim_loco.sh.
       - HOLD_BASE_MODE=${HOLD_BASE_MODE:-weld}
-      # Realtime-Faktor (1.0 = Echtzeit). run_sim_loco.sh setzt < 1, damit eine
-      # 50-Hz-Policy auf langsamen PCs pro Schritt die volle Physik bekommt.
+      # Realtime-Faktor (1.0 = Echtzeit). Nur OHNE Lockstep relevant.
       - SIM_REALTIME_FACTOR=${SIM_REALTIME_FACTOR:-1.0}
+      # Lockstep: deterministische Regelrate (decimation Physikschritte pro
+      # rt/lowcmd). run_sim_loco.sh setzt 1 -> garantierte 50 Hz fuer die Policy.
+      - SIM_LOCKSTEP=${SIM_LOCKSTEP:-0}
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ../unitree_mujoco:/unitree_mujoco:ro   # Mountet dein lokales Repo!
@@ -76,6 +78,9 @@ services:
       # Nur fuer die loco_sim-Timing-Diagnose: gleicher Wert wie bei mujoco-sim,
       # damit die effektive Sim-Zeit-Rate (wall_hz/factor) korrekt geloggt wird.
       - SIM_REALTIME_FACTOR=${SIM_REALTIME_FACTOR:-1.0}
+      # Lockstep: loco_sim taktet dann auf den rt/lowstate-Eingang (ein Kommando
+      # pro State) statt auf die Wall-Clock. MUSS zum mujoco-sim-Wert passen.
+      - SIM_LOCKSTEP=${SIM_LOCKSTEP:-0}
     command: >
       bash -c "cd /ros2_ws &&
                source /opt/ros/humble/setup.bash &&

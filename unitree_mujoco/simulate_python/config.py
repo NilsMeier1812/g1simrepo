@@ -35,6 +35,34 @@ SIM_REALTIME_FACTOR = float(os.environ.get("SIM_REALTIME_FACTOR", "1.0"))
 # === SIM REALTIME FACTOR END ===
 
 
+# === SIM LOCKSTEP (deterministische Regelrate) ===
+# Der SIM_REALTIME_FACTOR-Trick oben ist FRAGIL: er muss pro PC von Hand auf die
+# gemessene Wall-Clock-Rate getunt werden, und Timing-Jitter (DDS-Latenz, variable
+# Schleifenlast) laesst eine ratenabhaengige RL-Policy chattern/kippen. Lockstep
+# loest das an der Wurzel: die Sim macht GARANTIERT exakt SIM_LOCKSTEP_DECIMATION
+# Physikschritte pro empfangenem rt/lowcmd und publiziert danach EINEN frischen
+# rt/lowstate. Zusammen mit "ein Kommando pro lowstate" im Controller entsteht eine
+# strikte 1:1-Alternation -> die 50-Hz-Policy sieht auf JEDEM PC exakt ihre
+# trainierten 20 ms Physik/Schritt, voellig unabhaengig von der Wall-Clock.
+# SIM_REALTIME_FACTOR wird damit irrelevant (kein Wall-Clock-Sleep im Lockstep).
+# Nur im Loco-Modus (HOLD_BASE_MODE=off) sinnvoll; Arm-only/weld bleibt unberuehrt.
+#   decimation = control_dt / SIMULATE_DT = 0.02 / 0.001 = 20.
+def _env_truthy(name, default=False):
+    v = os.environ.get(name)
+    if v is None:
+        return default
+    return str(v).strip().lower() in ("1", "true", "yes", "on")
+
+SIM_LOCKSTEP = _env_truthy("SIM_LOCKSTEP", False)
+SIM_CONTROL_DT = float(os.environ.get("SIM_CONTROL_DT", "0.02"))
+SIM_LOCKSTEP_DECIMATION = max(1, int(round(SIM_CONTROL_DT / SIMULATE_DT)))
+# Watchdog: kommt im Lockstep kein neues Kommando (Controller noch nicht verbunden
+# oder abgestuerzt), trotzdem nach diesem Wall-Clock-Limit weiterschreiten, damit
+# die Sim/der Viewer nie hart einfriert.
+SIM_LOCKSTEP_WATCHDOG_S = float(os.environ.get("SIM_LOCKSTEP_WATCHDOG_S", "0.2"))
+# === SIM LOCKSTEP END ===
+
+
 # === HOLD_BASE FEATURE ===
 # Hält den Oberkörper ruhig, damit die Arme ohne Balance-Controller getestet
 # werden können. HOLD_BASE_MODE waehlt WIE:

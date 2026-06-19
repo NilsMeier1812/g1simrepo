@@ -18,16 +18,16 @@ docker compose --profile sim down --remove-orphans
 export HOLD_BASE_MODE=off
 echo "[run_sim_loco] HOLD_BASE_MODE=off -> Basis ist FREI (Loco-Modus)."
 
-# Realtime-Faktor: Sim langsamer als Echtzeit, damit pro Policy-Schritt GENAU ~20 ms
-# Physik vergehen (= Trainingsrate 50 Hz). Die Policy nimmt 20 ms/Aufruf an; real sind
-# es wall_dt*factor. Damit sim-effektiv (=wall_hz/factor) ~50 Hz trifft, gilt:
-#   factor = wall_hz / 50   (bei ~33 Hz Wall-Clock also ~0.65).
-# ZU KLEIN (z.B. 0.5 -> effektiv 66 Hz) => Policy ueberregelt, schaukelt hoch und kippt.
-# ZU GROSS (1.0 -> effektiv 30 Hz)      => Policy unterregelt, driftet weg.
-# Tuning: in der [timing]-Zeile soll "sim-effektiv" ~50 Hz zeigen; sonst factor anpassen.
-# Per Env ueberschreibbar:  SIM_REALTIME_FACTOR=0.6 ./run_sim_loco.sh
-export SIM_REALTIME_FACTOR=${SIM_REALTIME_FACTOR:-0.65}
-echo "[run_sim_loco] SIM_REALTIME_FACTOR=$SIM_REALTIME_FACTOR (Sim-Geschwindigkeit; 1.0=Echtzeit)."
+# LOCKSTEP (deterministische Regelrate): die Sim macht GARANTIERT decimation=20
+# Physikschritte pro rt/lowcmd und publiziert danach EINEN frischen rt/lowstate;
+# loco_sim rechnet ein Kommando pro State. Damit sieht die 50-Hz-Policy auf JEDEM
+# PC exakt ihre trainierten 20 ms Physik/Schritt - ohne das fragile per-PC-Tuning
+# von SIM_REALTIME_FACTOR. Der Realtime-Faktor ist im Lockstep irrelevant (kein
+# Wall-Clock-Sleep). Der Roboter laeuft auf langsamen PCs optisch langsamer, regelt
+# aber korrekt. Abschaltbar mit SIM_LOCKSTEP=0 (dann gilt wieder der Faktor unten).
+export SIM_LOCKSTEP=${SIM_LOCKSTEP:-1}
+export SIM_REALTIME_FACTOR=${SIM_REALTIME_FACTOR:-1.0}
+echo "[run_sim_loco] SIM_LOCKSTEP=$SIM_LOCKSTEP (1=deterministische 50-Hz-Regelrate; Faktor=$SIM_REALTIME_FACTOR, im Lockstep irrelevant)."
 
-G1_SIM_MODE=true HOLD_BASE_MODE=off SIM_REALTIME_FACTOR=$SIM_REALTIME_FACTOR \
+G1_SIM_MODE=true HOLD_BASE_MODE=off SIM_LOCKSTEP=$SIM_LOCKSTEP SIM_REALTIME_FACTOR=$SIM_REALTIME_FACTOR \
   docker compose --profile sim up "$@"

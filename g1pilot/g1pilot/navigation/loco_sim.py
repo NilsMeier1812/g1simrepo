@@ -21,11 +21,16 @@ Koerper-Aufteilung (passt 1:1 zum Bridge-Merge):
 FSM (per Streamdeck-Topics); der Zustand wird auch der Bridge gemeldet (Weld):
   HOLD    : Start-/Standby-Zustand. Die Bridge haelt die Basis (Weld an), Beine
             werden auf Default-Pose gehalten -> Roboter steht sicher, wartet.
-  BALANCE : PRIMAER. Modellbasierter Knoechel-/Hueft-Balancer haelt den Roboter
-            am Platz aufrecht und kompensiert Stoerungen (Oberkoerper-Manipulation)
-            automatisch ueber IMU-Feedback. Spiegelt LocoClient.BalanceStand.
-  RUN     : BONUS. Walking-RL-Policy (Laufen via loco_cmd_vel). Beim Eintritt stellt
-            die Bridge den Roboter auf und loest den Weld.
+  BALANCE : PRIMAER (am Platz stehen + Oberkoerper-Manipulation ausgleichen).
+            Default bal_mode=pd: modellbasierter Knoechel-/Hueft-PD haelt eine feste
+            Pose -> driftet praktisch nicht (unter Lockstep validiert: ~15 mm/12 s),
+            kompensiert Stoerungen ueber IMU-Feedback. Alternativ bal_mode=policy:
+            RL-Policy mit cmd=0 (faellt nicht, laeuft aber bei cmd=0 weg -> nur
+            bedingt station-keeping). Live umschaltbar via ros2 param set.
+  RUN     : BONUS. RL-Lauf-Policy (motion.pt), Geschwindigkeit via loco_cmd_vel
+            (Laufen). Beim Eintritt stellt die Bridge den Roboter auf und loest den Weld.
+  Deterministik: im Lockstep-Modus (SIM_LOCKSTEP=1) taktet der Control-Loop auf den
+  rt/lowstate-Eingang (ein Kommando pro State) -> die Policy sieht garantiert 50 Hz.
   DAMP    : Emergency. Alle Motoren kp=0, kd=damp -> weich, sanftes Hinsetzen.
   BALANCE und RUN melden der Bridge denselben Code (1 = aufstehen + Basis frei);
   der Bridge ist egal, WELCHER Regler balanciert.
@@ -98,9 +103,25 @@ class LocoSim(Node):
         self.declare_parameter("interface", "lo")
         self.declare_parameter("policy", "g1")        # Unterordner in policies/
         self.declare_parameter("damp_kd", 8.0)        # kd im DAMP-Zustand
+        # BALANCE-Regler: "pd" = modellbasierter Knoechel-/Hueft-PD. Unter Lockstep
+        # validiert als BESTER Platzhalter: haelt eine feste Pose (Drift ~15 mm/12 s),
+        # driftet per Konstruktion nicht. "policy" = RL-Lauf-Policy mit cmd=0; faellt
+        # zwar nicht, LAEUFT aber bei cmd=0 weg (~10 m/12 s -> kein station-keeping).
+        # Darum ist "pd" Default fuer am-Platz-Balancieren; die Policy ist fuer RUN
+        # (Laufen) da. Live umschaltbar: ros2 param set /loco_sim bal_mode policy.
+        self.declare_parameter("bal_mode", "pd")
         interface = self.get_parameter("interface").get_parameter_value().string_value
         policy_name = self.get_parameter("policy").get_parameter_value().string_value
         self.damp_kd = float(self.get_parameter("damp_kd").value)
+
+        # Lockstep: die Sim koppelt die Regelrate an die Sim-Uhr (genau decimation
+        # Physikschritte pro rt/lowcmd). Dann ist EIN Kommando pro empfangenem
+        # rt/lowstate korrekt (strikte 1:1-Alternation) -> wir takten den
+        # Control-Loop auf den lowstate-Eingang statt auf die Wall-Clock. So sieht
+        # die 50-Hz-Policy auf jedem PC exakt ihre trainierte Rate.
+        self.lockstep = str(os.environ.get("SIM_LOCKSTEP", "")).strip().lower() in (
+            "1", "true", "yes", "on")
+        self._state_seq = 0
 
         # ── Modellbasierter Balance-Regler (Knoechel-/Hueft-Strategie) ──────────
         # Feedback auf die per IMU gemessene Neigung (projizierte Gravitation) +
@@ -292,9 +313,12 @@ class LocoSim(Node):
         with self._lock:
             self.low_state = msg
             self.mode_machine = int(getattr(msg, "mode_machine", 0))
+            self._state_seq += 1   # Lockstep: signalisiert "frischer State da".
 
     def _on_start_balancing(self, msg: Bool):
-        # PRIMAER: modellbasierter Balance-Regler (am Platz stehen + ausgleichen).
+        # PRIMAER: RL-Policy als Balance-Regler mit cmd=0 (am Platz stehen +
+        # ausgleichen). Das ist exakt der Hardware-Deploy-Pfad (motion.pt deployt
+        # via dieselbe DDS-Schnittstelle), robust trainiert. cmd=0 -> station-keeping.
         if not msg.data:
             return
         if self.state == BALANCE:
@@ -303,11 +327,19 @@ class LocoSim(Node):
         if self.low_state is None:
             self.get_logger().warn("Kann nicht balancieren: keine rt/lowstate.")
             return
-        # Code 1 an die Bridge -> Stand-Pose setzen + Weld loesen -> der Balancer
-        # startet aus einem sauberen, aufrechten Zustand.
+        # Code 1 an die Bridge -> Stand-Pose setzen + Weld loesen -> die Policy
+        # startet aus einem sauberen, aufrechten Zustand. cmd=0, LSTM/Phase reset.
+        with self._lock:
+            self.cmd = np.zeros(3, dtype=np.float32)
+        self.counter = 0
         self.action[:] = 0.0
+        self._reset_policy_state()
         self.state = BALANCE
-        self.get_logger().info("START BALANCING -> BALANCE (modellbasiert: aufstehen + Basis freigeben).")
+        mode = str(self.get_parameter("bal_mode").value).lower()
+        how = ("modellbasierter Knoechel-/Hueft-PD, haelt Pose"
+               if mode == "pd" else "RL-Policy cmd=0")
+        self.get_logger().info(
+            f"START BALANCING -> BALANCE ({how}; bal_mode={mode}; aufstehen + Basis frei).")
 
     def _on_start_walking(self, msg: Bool):
         # BONUS: Walking-RL-Policy. Laufen via /g1pilot/loco_cmd_vel.
@@ -337,7 +369,10 @@ class LocoSim(Node):
             self.get_logger().info("START -> Standby (HOLD, steifer Stand).")
 
     def _on_cmd_vel(self, msg: Twist):
-        # Normierte Velocity [-1,1]; im ersten Schritt (Stehen) i.d.R. 0.
+        # Normierte Velocity [-1,1]. Nur im RUN-Zustand (Laufen) wirksam; BALANCE
+        # haelt cmd=0 (station-keeping) und ignoriert Velocity-Befehle.
+        if self.state != RUN:
+            return
         vx = max(-1.0, min(1.0, msg.linear.x))
         vy = max(-1.0, min(1.0, msg.linear.y))
         vyaw = max(-1.0, min(1.0, msg.angular.z))
@@ -369,7 +404,11 @@ class LocoSim(Node):
                 elif self.state == DAMP:
                     self._send_damp()
                 elif self.state == BALANCE:
-                    self._send_balance()
+                    # PRIMAER RL-Policy (cmd=0); "pd" = modellbasierter Fallback.
+                    if str(self.get_parameter("bal_mode").value).lower() == "pd":
+                        self._send_balance_pd()
+                    else:
+                        self._send_policy()
                 elif self.state == RUN:
                     self._send_policy()
             except Exception as e:
@@ -391,12 +430,20 @@ class LocoSim(Node):
                 if diag_n >= 100:        # ~2 s bei 50 Hz
                     span = time.perf_counter() - diag_period_last
                     hz = diag_n / span if span > 0 else 0.0
-                    # Effektive Sim-Zeit-Rate: bei gebremster Sim (factor<1) sieht die
-                    # Policy pro Wall-Clock-Schritt mehr Physik -> nur hz/factor muss 50.
-                    eff = hz / self.sim_factor
+                    # Effektive Sim-Zeit-Rate. Im LOCKSTEP per Konstruktion exakt
+                    # 1/control_dt (jede Iteration = decimation Physikschritte =
+                    # control_dt Sim-Zeit), unabhaengig von der Wall-Clock-Rate.
+                    # Sonst: bei gebremster Sim (factor<1) sieht die Policy pro
+                    # Wall-Clock-Schritt mehr Physik -> nur hz/factor muss 50.
+                    if self.lockstep:
+                        eff = 1.0 / self.control_dt
+                        mode_str = "LOCKSTEP"
+                    else:
+                        eff = hz / self.sim_factor
+                        mode_str = f"sim_factor={self.sim_factor:g}"
                     self.get_logger().info(
                         f"[timing] wall={hz:.1f}Hz, sim-effektiv={eff:.1f}Hz (soll=50, "
-                        f"sim_factor={self.sim_factor:g}), "
+                        f"{mode_str}), "
                         f"busy_mittel={1e3 * diag_busy_sum / diag_n:.1f}ms "
                         f"max={1e3 * diag_worst:.1f}ms, "
                         f"overruns={diag_over}/{diag_n} | "
@@ -430,9 +477,20 @@ class LocoSim(Node):
                 diag_gyro = np.zeros(3)
                 diag_act = np.zeros(self.num_actions)
                 diag_period_last = time.perf_counter()
-            dt = self.control_dt - busy
-            if dt > 0:
-                time.sleep(dt)
+            if self.lockstep:
+                # Lockstep: auf den NAECHSTEN frischen lowstate warten (genau ein
+                # Kommando pro State -> 1:1-Alternation mit der Sim). Kein
+                # Wall-Clock-Sleep; die Sim-Uhr bestimmt die Rate. Watchdog ~0.5 s,
+                # damit der Loop bei Sim-Stopp nicht ewig haengt.
+                target_seq = self._state_seq + 1
+                t_wait = time.perf_counter()
+                while (self._state_seq < target_seq and rclpy.ok()
+                       and (time.perf_counter() - t_wait) < 0.5):
+                    time.sleep(0.0002)
+            else:
+                dt = self.control_dt - busy
+                if dt > 0:
+                    time.sleep(dt)
 
     def _write(self):
         self.cmd_msg.mode_pr = 0
@@ -484,8 +542,11 @@ class LocoSim(Node):
             mc.kd = self.damp_kd
         self._write()
 
-    def _send_balance(self):
-        """Modellbasierter Balance-Regler (Knoechel-/Hueft-Strategie).
+    def _send_balance_pd(self):
+        """FALLBACK: Modellbasierter Balance-Regler (Knoechel-/Hueft-Strategie).
+
+        Standardmaessig NICHT aktiv (bal_mode=policy). Nur als hardware-ferner
+        Notnagel, live aktivierbar via `ros2 param set /loco_sim bal_mode pd`.
 
         Haelt den Roboter auf der festen Standpose (default_angles) mit einem
         Posture-PD und legt ein FEEDFORWARD-DREHMOMENT [Nm] auf Knoechel (primaer)
