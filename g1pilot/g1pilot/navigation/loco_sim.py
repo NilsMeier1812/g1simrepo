@@ -27,8 +27,11 @@ FSM (per Streamdeck-Topics); der Zustand wird auch der Bridge gemeldet (Weld):
             kompensiert Stoerungen ueber IMU-Feedback. Alternativ bal_mode=policy:
             RL-Policy mit cmd=0 (faellt nicht, laeuft aber bei cmd=0 weg -> nur
             bedingt station-keeping). Live umschaltbar via ros2 param set.
-  RUN     : BONUS. RL-Lauf-Policy (motion.pt), Geschwindigkeit via loco_cmd_vel
-            (Laufen). Beim Eintritt stellt die Bridge den Roboter auf und loest den Weld.
+  RUN     : Laufen. RL-Lauf-Policy (motion.pt), Geschwindigkeit via loco_cmd_vel.
+            Beim Eintritt stellt die Bridge den Roboter auf und loest den Weld.
+            AUTO-HANDOFF: zentriert man das Kommando (Joystick los, cmd~0), rollt die
+            Policy aus und loco_sim schaltet nach walk_stop_settle_s automatisch
+            zurueck nach BALANCE (PD-Stand) -> Zyklus Stehen->Gehen->Stehen geschlossen.
   Deterministik: im Lockstep-Modus (SIM_LOCKSTEP=1) taktet der Control-Loop auf den
   rt/lowstate-Eingang (ein Kommando pro State) -> die Policy sieht garantiert 50 Hz.
   DAMP    : Emergency. Alle Motoren kp=0, kd=damp -> weich, sanftes Hinsetzen.
@@ -131,6 +134,19 @@ class LocoSim(Node):
         self.declare_parameter("catch_settle_s", 1.5)       # so lange ruhig -> zurueck zu PD
         self._catch_active = False   # True, solange die Policy gerade einen Sturz abfaengt
         self._settle_t0 = None       # Zeitstempel, seit wann es nach dem Fang ruhig ist
+
+        # WALK-STOP-HANDOFF: der entscheidende Gehen->Stehen-Uebergang. Zentriert man
+        # im RUN den Joystick (Kommando ~0), bremst die Walking-Policy ab; nach
+        # walk_stop_settle_s Ausrollen schaltet loco_sim automatisch zurueck auf den
+        # PD-Stand (station-keeping) -> Zyklus Stehen->Gehen->Stehen ist geschlossen.
+        # ZEITBASIERT, weil rt/lowstate KEINE Basis-Linear-Geschwindigkeit liefert
+        # (nur IMU+Gelenke). Headless validiert (audit_timehandoff.py): settle 1.0-2.0s
+        # landen alle "steht am PD" mit Restdrift ~0.2 m/s, den der PD auffaengt; 1.3s
+        # ist der beste Kompromiss (niedrigste Restgeschwindigkeit, geringe Restdrift).
+        self.declare_parameter("walk_stop_settle_s", 1.3)   # cmd~0 so lange -> RUN->PD
+        self.declare_parameter("walk_stop_eps", 0.06)       # |cmd| darunter = "zentriert"
+        self._walk_moved = False     # True, sobald in dieser RUN-Episode wirklich gelaufen
+        self._walk_zero_t0 = None    # Zeitstempel, seit wann das Kommando ~0 ist
 
         interface = self.get_parameter("interface").get_parameter_value().string_value
         policy_name = self.get_parameter("policy").get_parameter_value().string_value
@@ -391,8 +407,12 @@ class LocoSim(Node):
         self._reset_policy_state()
         self._catch_active = False   # bewusstes Laufen -> kein Auto-Zurueck zu PD
         self._settle_t0 = None
+        self._walk_moved = False     # Auto-Stop erst scharf, wenn wirklich gelaufen
+        self._walk_zero_t0 = None
         self.state = RUN
-        self.get_logger().info("START WALKING -> RUN (Walking-Policy; Geschwindigkeit via loco_cmd_vel).")
+        self.get_logger().info(
+            "START WALKING -> RUN (Geschwindigkeit via loco_cmd_vel; Joystick "
+            "zentrieren -> automatischer Handoff zurueck zum PD-Stand).")
 
     def _on_catch_falls(self, msg: Bool):
         # Toggle "Stuerze abfangen". Setzt den Parameter (Wahrheit fuer die Schleife).
@@ -480,6 +500,40 @@ class LocoSim(Node):
         self.state = BALANCE
         self.get_logger().info(f"CATCH: {reason} -> zurueck zum PD-Stand (station-keeping).")
 
+    # ── Gehen -> Stehen (automatischer Handoff) ──────────────────────────────
+    def _walk_stop_step(self):
+        """Im RUN (bewusstes Laufen): ist das Velocity-Kommando ~0 (Joystick
+        zentriert) und der Roboter eine Weile ausgerollt, automatisch zurueck zum
+        PD-Stand. ZEITBASIERT, weil rt/lowstate keine Basis-Linear-Geschwindigkeit
+        liefert: cmd=0 fuer walk_stop_settle_s -> Policy bremst (Restdrift ~0.2 m/s,
+        headless validiert) -> PD uebernimmt. Greift NUR, wenn in dieser RUN-Episode
+        wirklich gelaufen wurde (_walk_moved) -> kein vorzeitiger Wechsel beim Start.
+        Ein laufender CATCH-Fang (_catch_active) hat Vorrang und wird nicht gestoert."""
+        if self.state != RUN or self._catch_active:
+            return
+        with self._lock:
+            cmd_mag = float(np.linalg.norm(self.cmd))
+        if cmd_mag > float(self.get_parameter("walk_stop_eps").value):
+            self._walk_moved = True            # es wurde ein echtes Kommando gegeben
+            self._walk_zero_t0 = None
+            return
+        if not self._walk_moved:
+            return                              # noch nie gelaufen -> nichts tun
+        now = time.perf_counter()
+        if self._walk_zero_t0 is None:
+            self._walk_zero_t0 = now            # ab jetzt ausrollen lassen
+        elif now - self._walk_zero_t0 > float(self.get_parameter("walk_stop_settle_s").value):
+            self._reset_policy_state()
+            self.action[:] = 0.0
+            self._walk_moved = False
+            self._walk_zero_t0 = None
+            with self._lock:
+                self.cmd = np.zeros(3, dtype=np.float32)
+            self.state = BALANCE
+            self.get_logger().info(
+                "WALK STOP: Kommando ~0 ausgerollt -> zurueck zum PD-Stand "
+                "(station-keeping, Oberkoerper frei fuer Tasks).")
+
     # ── Regelschleife ────────────────────────────────────────────────────────
     def _control_loop(self):
         # Timing-Diagnose: misst, ob die Schleife im RUN-Zustand wirklich 50 Hz
@@ -520,6 +574,7 @@ class LocoSim(Node):
             # Auffangen zu PD zurueckgekehrt werden muss.
             if self.low_state is not None:
                 self._catch_step()
+                self._walk_stop_step()
             busy = time.perf_counter() - t0
             if self.state in (RUN, BALANCE):
                 diag_n += 1

@@ -17,6 +17,18 @@ ros2 topic pub --once /g1pilot/emergency_stop std_msgs/msg/Bool "{data: true}"
 ros2 topic pub --once /g1pilot/start_balancing std_msgs/msg/Bool "{data: true}"
 ```
 
+### WALK (Laufen) + Gehen->Stehen-Handoff
+Aktiviert die Walking-Policy (RUN). Geschwindigkeit dann ueber `/g1pilot/loco_cmd_vel`
+(normiert [-1,1]; vx=1.0 ~ 0.8 m/s). Im Streamdeck: Button "WALK" + Bildschirm-Joystick.
+Zentriert man das Kommando (cmd~0), rollt die Policy aus und loco_sim schaltet nach
+`walk_stop_settle_s` (Default 1.3 s) automatisch zurueck zum PD-Stand.
+```bash
+ros2 topic pub --once /g1pilot/start_walking std_msgs/msg/Bool "{data: true}"
+ros2 topic pub /g1pilot/loco_cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.6}}"  # vorwaerts
+ros2 topic pub --once /g1pilot/loco_cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0}}"  # Stop -> Auto-Handoff zu PD
+```
+Ausroll-Zeit tunebar: `ros2 param set /loco_sim walk_stop_settle_s 1.3`.
+
 ### CATCH FALLS (Stuerze abfangen, Toggle — Default AN)
 Schaltet bei drohendem Sturz automatisch vom PD-Balancer auf die steppfaehige
 RL-Policy um (faengt ~80-150 N statt ~50 N) und kehrt nach dem Auffangen zum

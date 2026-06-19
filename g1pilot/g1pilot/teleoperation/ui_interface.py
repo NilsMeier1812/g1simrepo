@@ -1,16 +1,82 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import math
 import sys
 from PyQt6.QtWidgets import (
-    QApplication, QWidget, QGridLayout, QPushButton, QVBoxLayout
+    QApplication, QWidget, QGridLayout, QPushButton, QVBoxLayout,
+    QHBoxLayout, QSlider, QLabel
 )
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QTimer, Qt, QPointF
+from PyQt6.QtGui import QPainter, QColor, QPen, QBrush
 
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Bool, String
+from geometry_msgs.msg import Twist
 from g1pilot.utils.window_style import DarkStyle
+
+
+class VirtualJoystick(QWidget):
+    """Bildschirm-Joystick: mit der Maus ziehen -> normierte (vx, vy) in [-1,1].
+
+    Oben = vorwaerts (+vx), links = +vy (Roboter-Koordinaten). Loslassen zentriert
+    auf (0,0). loco_sim multipliziert mit max_cmd -> vx=1.0 entspricht ~0.8 m/s.
+    Wird im RUN-Zustand als Geschwindigkeitsbefehl ausgewertet; zentrieren loest den
+    automatischen Handoff zurueck zum PD-Stand aus."""
+
+    def __init__(self, size=180):
+        super().__init__()
+        self._size = size
+        self.setFixedSize(size, size)
+        self._radius = size / 2 - 16
+        self._knob = QPointF(0.0, 0.0)   # Offset vom Zentrum (Pixel)
+        self.vx = 0.0
+        self.vy = 0.0
+
+    def _update_vel(self):
+        r = self._radius
+        # Bildschirm-y zeigt nach unten -> oben (negatives dy) = vorwaerts.
+        self.vx = max(-1.0, min(1.0, -self._knob.y() / r))
+        self.vy = max(-1.0, min(1.0, -self._knob.x() / r))
+
+    def _set_from_pos(self, pos):
+        c = self._size / 2
+        dx = pos.x() - c
+        dy = pos.y() - c
+        d = math.hypot(dx, dy)
+        if d > self._radius and d > 0:
+            dx *= self._radius / d
+            dy *= self._radius / d
+        self._knob = QPointF(dx, dy)
+        self._update_vel()
+        self.update()
+
+    def mousePressEvent(self, e):
+        self._set_from_pos(e.position())
+
+    def mouseMoveEvent(self, e):
+        self._set_from_pos(e.position())
+
+    def mouseReleaseEvent(self, e):
+        self._knob = QPointF(0.0, 0.0)
+        self.vx = self.vy = 0.0
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        c = self._size / 2
+        p.setBrush(QBrush(QColor("#1e1e1e")))
+        p.setPen(QPen(QColor("#444"), 2))
+        p.drawEllipse(QPointF(c, c), self._radius + 10, self._radius + 10)
+        p.setPen(QPen(QColor("#333"), 1))
+        p.drawLine(int(c - self._radius), int(c), int(c + self._radius), int(c))
+        p.drawLine(int(c), int(c - self._radius), int(c), int(c + self._radius))
+        active = abs(self.vx) > 1e-3 or abs(self.vy) > 1e-3
+        p.setBrush(QBrush(QColor("#4CAF50") if active else QColor("#3c3c3c")))
+        p.setPen(QPen(QColor("#80ff80") if active else QColor("#666"), 2))
+        p.drawEllipse(QPointF(c + self._knob.x(), c + self._knob.y()), 15, 15)
 
 
 class StreamDeck(Node):
@@ -19,6 +85,8 @@ class StreamDeck(Node):
 
         self.pub_start = self.create_publisher(Bool, '/g1pilot/start', 10)
         self.pub_start_balancing = self.create_publisher(Bool, '/g1pilot/start_balancing', 10)
+        self.pub_start_walking = self.create_publisher(Bool, '/g1pilot/start_walking', 10)
+        self.pub_cmd_vel = self.create_publisher(Twist, '/g1pilot/loco_cmd_vel', 10)
         self.pub_arms_enabled = self.create_publisher(Bool, '/g1pilot/arms/enabled', 10)
         self.pub_arms_home = self.create_publisher(Bool, '/g1pilot/arms/home', 10)
         self.pub_marker_follow = self.create_publisher(Bool, '/g1pilot/marker_follow_ee', 10)
@@ -55,6 +123,13 @@ class ButtonGUI(QWidget):
         self.init_ui()
         self.apply_style()
 
+        # WALK-Geschwindigkeit kontinuierlich (~30 Hz) publizieren. loco_sim wertet
+        # /g1pilot/loco_cmd_vel nur im RUN-Zustand aus -> dauerhaftes Senden von 0 ist
+        # harmlos und liefert beim Loslassen sauber das Stop-Kommando (cmd=0).
+        self.cmd_timer = QTimer(self)
+        self.cmd_timer.timeout.connect(self.publish_cmd_vel)
+        self.cmd_timer.start(33)
+
     def init_ui(self):
         main_layout = QVBoxLayout()
         grid = QGridLayout()
@@ -65,6 +140,11 @@ class ButtonGUI(QWidget):
         button_actions = {
             (0, 0): ("START", lambda: self.flash_button((0, 0), self.node.pub_start)),
             (0, 1): ("START\nBALANCING", lambda: self.flash_button((0, 1), self.node.pub_start_balancing)),
+
+            # Laufen starten: aktiviert die Walking-Policy (RUN). Danach mit dem
+            # Joystick unten fahren; zentrieren -> automatischer Handoff zurueck zum
+            # PD-Stand. START BALANCING bringt ihn jederzeit sofort zurueck in den Stand.
+            (0, 3): ("WALK", lambda: self.flash_button((0, 3), self.node.pub_start_walking)),
 
             # Stuerze abfangen: schaltet bei drohendem Sturz automatisch PD->Policy
             # (Stepping). Toggle, standardmaessig AN (gruen, siehe set_button_active unten).
@@ -134,7 +214,36 @@ class ButtonGUI(QWidget):
         self.set_button_active((0, 2), True)
 
         main_layout.addLayout(grid)
+
+        # ── WALK-Steuerung: Bildschirm-Joystick (vx/vy) + Yaw-Slider ──────────
+        self.joystick = VirtualJoystick(180)
+        self.yaw_slider = QSlider(Qt.Orientation.Horizontal)
+        self.yaw_slider.setMinimum(-100)
+        self.yaw_slider.setMaximum(100)
+        self.yaw_slider.setValue(0)
+        # Beim Loslassen auf 0 zuruecksetzen (Lenkrad-Rueckstellung).
+        self.yaw_slider.sliderReleased.connect(lambda: self.yaw_slider.setValue(0))
+
+        walk_box = QVBoxLayout()
+        walk_box.addWidget(QLabel("WALK-Joystick  (oben = vorwaerts, links/rechts = seitwaerts) — zentrieren = Stop -> PD-Stand"))
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(self.joystick)
+        row.addStretch(1)
+        walk_box.addLayout(row)
+        walk_box.addWidget(QLabel("Drehen (Yaw)  — springt beim Loslassen auf 0"))
+        walk_box.addWidget(self.yaw_slider)
+        main_layout.addLayout(walk_box)
+
         self.setLayout(main_layout)
+
+    def publish_cmd_vel(self):
+        """Aktuellen Joystick-/Yaw-Zustand als normierte Velocity senden."""
+        msg = Twist()
+        msg.linear.x = float(self.joystick.vx)
+        msg.linear.y = float(self.joystick.vy)
+        msg.angular.z = float(self.yaw_slider.value()) / 100.0
+        self.node.pub_cmd_vel.publish(msg)
 
     def apply_style(self):
         self.setStyleSheet("""
@@ -162,6 +271,11 @@ class ButtonGUI(QWidget):
             }
             QWidget {
                 background-color: #111;
+            }
+            QLabel {
+                color: #aaa;
+                font-size: 12px;
+                font-weight: 400;
             }
         """)
 
@@ -216,6 +330,7 @@ class ButtonGUI(QWidget):
 
         self.node.publish_bool(self.node.pub_start, False)
         self.node.publish_bool(self.node.pub_start_balancing, False)
+        self.node.publish_bool(self.node.pub_start_walking, False)
         self.node.publish_bool(self.node.pub_arms_enabled, False)
         self.node.publish_bool(self.node.pub_arms_home, False)
         self.node.publish_bool(self.node.pub_emergency_stop, True)
