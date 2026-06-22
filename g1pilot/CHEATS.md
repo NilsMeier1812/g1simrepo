@@ -21,11 +21,15 @@ ros2 topic pub --once /g1pilot/start_balancing std_msgs/msg/Bool "{data: true}"
 Aktiviert die Walking-Policy (RUN). Geschwindigkeit dann ueber `/g1pilot/loco_cmd_vel`
 (normiert [-1,1]; vx=1.0 ~ 0.8 m/s). Im Streamdeck: Button "WALK" + Bildschirm-Joystick.
 Die rekurrente Policy laeuft im RUN DURCHGEHEND (kein Command-Gating — das machte den
-Gang instabil). Zentriert man das Kommando (cmd~0), rollt die Policy aus und loco_sim
-schaltet nach `walk_stop_settle_s` (Default 0.5 s) automatisch (sanfte Rampe) zurueck
-zum PD-Stand. Hinweis: der modellbasierte PD faengt einen VORWAERTS-Stopp robust; aus
-schnellem Seitwaerts-/Dreh-Gang ist der Catch grenzwertig — vor dem Stehen am besten
-kurz vorwaerts ausrollen. Alternativ jederzeit manuell START BALANCING.
+Gang instabil). Zentriert man das Kommando (cmd~0) nach echtem Laufen, BREMST loco_sim
+aktiv ueber die Policy ab (STEPPING-STOP: Gegen-Kommando ~ -brake_gain * Basis-
+Geschwindigkeit aus den Fuss-/v-Sensoren) und uebergibt erst im echten Stillstand
+(|v| < brake_vstop UND beide Fuesse belastet = Doppelstuetz) sanft an den PD-Stand.
+Das ist der robuste Weg, aus BELIEBIGER Richtung anzuhalten (headless 15-16/16, vorher
+nur vorwaerts). Sehr schnelle Diagonal-Stopps bleiben grenzwertig. Fehlt die Sensorik
+(reserve[] leer), Fallback auf den zeitbasierten Handoff (`walk_stop_settle_s`, 0.5 s).
+Tuning live: `ros2 param set /loco_sim brake_gain 2.5` (auch brake_vstop, brake_ds_force,
+brake_timeout). PD-Fang: `bal_vel_kv` (CoM-v-Daempfung), `bal_yaw_kd` (Yaw-Daempfung).
 ```bash
 ros2 topic pub --once /g1pilot/start_walking std_msgs/msg/Bool "{data: true}"
 ros2 topic pub /g1pilot/loco_cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.6}}"  # vorwaerts

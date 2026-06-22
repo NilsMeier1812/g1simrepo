@@ -84,8 +84,8 @@ LOCO_CODE = {HOLD: 0.0, BALANCE: 1.0, RUN: 1.0, DAMP: 2.0}
 # Indizes im 12er-Bein-Array (leg_idx-Reihenfolge, siehe default_angles):
 #   0..5 = links  (hip_pitch, hip_roll, hip_yaw, knee, ankle_pitch, ankle_roll)
 #   6..11 = rechts (dito)
-L_HIP_PITCH, L_HIP_ROLL, L_ANKLE_PITCH, L_ANKLE_ROLL = 0, 1, 4, 5
-R_HIP_PITCH, R_HIP_ROLL, R_ANKLE_PITCH, R_ANKLE_ROLL = 6, 7, 10, 11
+L_HIP_PITCH, L_HIP_ROLL, L_HIP_YAW, L_ANKLE_PITCH, L_ANKLE_ROLL = 0, 1, 2, 4, 5
+R_HIP_PITCH, R_HIP_ROLL, R_HIP_YAW, R_ANKLE_PITCH, R_ANKLE_ROLL = 6, 7, 8, 10, 11
 
 
 def get_gravity_orientation(quat):
@@ -99,6 +99,14 @@ def get_gravity_orientation(quat):
     g[1] = -2.0 * (qz * qy + qw * qx)
     g[2] = 1.0 - 2.0 * (qw * qw + qz * qz)
     return g
+
+
+def yaw_from_quat(quat):
+    """Gier-Winkel (um die Welt-z-Achse) aus dem Pelvis-Quaternion [w,x,y,z].
+    Damit rotieren wir die Welt-Basis-Geschwindigkeit in den Koerper-Frame
+    (vx vorwaerts, vy links) fuer den Stepping-Stop."""
+    qw, qx, qy, qz = quat[0], quat[1], quat[2], quat[3]
+    return math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
 
 
 class LocoSim(Node):
@@ -158,6 +166,27 @@ class LocoSim(Node):
         # stattdessen durch den AUTO-HANDOFF aufgefangen: laenger zentrierter Stick ->
         # sanfter Uebergang (Rampe) zum driftfreien PD-Stand.
 
+        # STEPPING-STOP (Gehen->Stehen, der robuste Weg). Ein laufender Biped laesst
+        # sich aus BELIEBIGER Richtung nur durch STEPPING anhalten — ein statischer PD
+        # kann ankommenden Schwung nicht fangen (headless: seitwaerts/rueckwaerts kommt
+        # die Policy bei cmd=0 NIE zur Ruhe; ein zeitbasierter Handoff faengt nur
+        # Vorwaerts-Stopps). Darum: bei zentriertem Stick bremst loco_sim AKTIV ueber
+        # die Policy ab (Gegen-Kommando ~ -brake_gain * Basis-Geschwindigkeit, aus
+        # reserve[]), und uebergibt erst an den PD-Stand, wenn der Roboter langsam genug
+        # ist (|v| < brake_vstop) UND im DOPPELSTUETZ steht (beide Fuesse > brake_ds_force).
+        # Headless validiert: alle vier Kardinalrichtungen 16/16 (vorher nur vorwaerts).
+        # Braucht Fuss-/Geschwindigkeits-Sensorik aus der Bridge (reserve[]); fehlt die,
+        # Fallback auf den zeitbasierten Handoff (walk_stop_settle_s).
+        self.declare_parameter("brake_gain", 2.5)       # Gegen-Kommando pro m/s (normiert)
+        self.declare_parameter("brake_max", 3.0)        # max. Brems-Kommando (normiert)
+        self.declare_parameter("brake_vstop", 0.18)     # |v| darunter = langsam genug
+        self.declare_parameter("brake_ds_force", 80.0)  # N pro Fuss -> Doppelstuetz
+        self.declare_parameter("brake_timeout", 2.5)    # danach lenienter (v-Schwelle +0.12)
+        self.declare_parameter("brake_hold", 0.1)       # so lange langsam+Doppelstuetz -> Handoff
+        self._braking = False
+        self._brake_t0 = 0.0
+        self._brake_lowv_t0 = None
+
         # SANFTER PD-Eintritt: beim Wechsel nach BALANCE (v.a. aus dem Laufen) wuerde
         # der steife Posture-PD die Beine aus der Schrittstellung schlagartig in die
         # Default-Pose reissen -> Lurch ("rennt wild los", headless: v_lurch 0.67 hart
@@ -212,7 +241,13 @@ class LocoSim(Node):
         self.declare_parameter("bal_hip_kp_roll", 200.0)
         self.declare_parameter("bal_hip_kd_roll", 40.0)
         self.declare_parameter("bal_ankle_tau_limit", 50.0)  # Knoechel-Motorlimit [Nm]
-        self.declare_parameter("bal_hip_tau_limit", 80.0)    # Huefte-Motorlimit [Nm]
+        self.declare_parameter("bal_hip_tau_limit", 100.0)   # Huefte-Motorlimit [Nm]
+        # CoM-Geschwindigkeits-Daempfung (aus reserve[] Basis-v): kippt den Knoechel
+        # GEGEN die Rest-Geschwindigkeit beim Fangen -> deutlich robusterer Catch nach
+        # dem Stepping-Stop (headless: Teil der 16/16). Plus Yaw-Daempfung ueber hip_yaw
+        # gegen die Basis-Drehrate (der reine Pitch/Roll-PD hatte keine Yaw-Autoritaet).
+        self.declare_parameter("bal_vel_kv", 120.0)          # Nm pro m/s Basis-Geschwindigkeit
+        self.declare_parameter("bal_yaw_kd", 25.0)           # Nm pro rad/s Gier-Rate (hip_yaw)
 
         self._load_config_and_policy(policy_name)
 
@@ -406,6 +441,8 @@ class LocoSim(Node):
         self._reset_policy_state()
         self._catch_active = False
         self._settle_t0 = None
+        self._braking = False
+        self._brake_lowv_t0 = None
         self._bal_entering = True    # sanfte Eintritts-Rampe scharf schalten
         self.state = BALANCE
         mode = str(self.get_parameter("bal_mode").value).lower()
@@ -431,6 +468,8 @@ class LocoSim(Node):
         self._settle_t0 = None
         self._walk_moved = False     # noch kein echtes Kommando -> Leerlauf-Sicherung greift
         self._walk_zero_t0 = time.perf_counter()   # ab Eintritt zaehlt der cmd~0-Timer
+        self._braking = False
+        self._brake_lowv_t0 = None
         self.state = RUN
         self.get_logger().info(
             "START WALKING -> RUN. Policy laeuft durchgehend; Joystick gibt die "
@@ -447,6 +486,8 @@ class LocoSim(Node):
         if msg.data:
             self.state = DAMP
             self._catch_active = False
+            self._braking = False
+            self._brake_lowv_t0 = None
             self.arms_enabled_pub.publish(Bool(data=False))
             self.get_logger().warn("EMERGENCY STOP -> DAMP + Arme aus.")
 
@@ -474,6 +515,16 @@ class LocoSim(Node):
         vx = max(-1.0, min(1.0, msg.linear.x))
         vy = max(-1.0, min(1.0, msg.linear.y))
         vyaw = max(-1.0, min(1.0, msg.angular.z))
+        # Waehrend des Stepping-Stops faehrt _walk_gate_step das Brems-Kommando in
+        # self.cmd. Der zentrierte Joystick publiziert aber weiter ~0 -> wuerde das
+        # Brems-Kommando ueberschreiben (Race). Darum: beim Bremsen einen zentrierten
+        # Stick IGNORIEREN; ein echter neuer Fahrbefehl (>eps) bricht das Bremsen ab.
+        if self._braking:
+            mag = math.sqrt(vx * vx + vy * vy + vyaw * vyaw)
+            if mag <= float(self.get_parameter("walk_stop_eps").value):
+                return
+            self._braking = False
+            self._brake_lowv_t0 = None
         with self._lock:
             self.cmd = np.array([vx, vy, vyaw], dtype=np.float32)
 
@@ -523,44 +574,105 @@ class LocoSim(Node):
         self.state = BALANCE
         self.get_logger().info(f"CATCH: {reason} -> zurueck zum PD-Stand (station-keeping).")
 
-    # ── Gehen -> Stehen (Auto-Handoff im RUN, KEIN Gating) ───────────────────
+    # ── Gehen -> Stehen (Stepping-Stop im RUN, KEIN Gating) ──────────────────
+    def _read_foot_base(self, ls):
+        """Fuss-Normalkraft (links/rechts, N) + Basis-Geschwindigkeit (Welt vx,vy)
+        aus reserve[] (von der Bridge). Liefert (fl, fr, vx, vy, valid). valid=False
+        wenn reserve leer ist (kein Foot-Sensing -> zeitbasierter Fallback)."""
+        try:
+            r = ls.reserve
+            r0, r1, r2, r3 = int(r[0]), int(r[1]), int(r[2]), int(r[3])
+        except Exception:
+            return 0.0, 0.0, 0.0, 0.0, False
+        if r0 == 0 and r1 == 0 and r2 == 0 and r3 == 0:
+            return 0.0, 0.0, 0.0, 0.0, False
+        vx = r2 / 1000.0 - 10.0
+        vy = r3 / 1000.0 - 10.0
+        return float(r0), float(r1), vx, vy, True
+
+    def _handoff_to_balance(self, reason):
+        self._reset_policy_state()
+        self.action[:] = 0.0
+        self._walk_moved = False
+        self._walk_zero_t0 = None
+        self._braking = False
+        self._brake_lowv_t0 = None
+        with self._lock:
+            self.cmd = np.zeros(3, dtype=np.float32)
+        self._bal_entering = True          # ruckfreier PD-Eintritt (Rampe)
+        self.state = BALANCE
+        self.get_logger().info(
+            f"WALK STOP: {reason} -> sanfter Uebergang zum PD-Stand "
+            "(station-keeping, Oberkoerper frei fuer Tasks).")
+
     def _walk_gate_step(self):
         """Im RUN laeuft die Policy DURCHGEHEND (siehe _send_policy-Dispatch). Diese
-        Methode macht NUR den Gehen->Stehen-Handoff, OHNE per-Schritt-Gating und OHNE
-        LSTM-Reset waehrend des Laufens (das machte die rekurrente Policy instabil):
-          * cmd > eps          -> weiterlaufen (Null-Timer zuruecksetzen).
-          * cmd ~0 nach Laufen -> nach walk_stop_settle_s sanft (Rampe) zum PD-Stand.
-          * cmd ~0 ohne je Befehl -> nach walk_idle_s ebenfalls (Leerlauf-Sicherung).
-        ZEITBASIERT, weil rt/lowstate keine Basis-Velocity liefert. Headless belegt:
-        der PD faengt einen VORWAERTS-Stopp robust; aus seitwaerts/Drehen ist der
-        Catch nur modellbasiert grenzwertig (reine Pitch/Roll-Strategie). Ein
+        Methode macht den Gehen->Stehen-Handoff, OHNE per-Schritt-Gating und OHNE
+        LSTM-Reset waehrend des Laufens (das machte die rekurrente Policy instabil).
+
+        Zentriert man den Stick (cmd ~0) nach echtem Laufen, BREMST loco_sim aktiv ueber
+        die Policy ab (STEPPING-STOP): Gegen-Kommando ~ -brake_gain * Basis-Geschwindig-
+        keit (aus reserve[]), bis |v| < brake_vstop UND Doppelstuetz (beide Fuesse >
+        brake_ds_force) -> dann Handoff an den PD-Stand. Das ist der einzige robuste Weg,
+        einen laufenden Biped aus beliebiger Richtung anzuhalten (headless: 16/16
+        Kardinalrichtungen). Fehlt die Fuss-/v-Sensorik (reserve leer), Fallback auf den
+        alten ZEITBASIERTEN Handoff (faengt zuverlaessig nur Vorwaerts-Stopps). Ein
         laufender CATCH-Fang (_catch_active) hat Vorrang."""
         if self.state != RUN or self._catch_active:
             return
         with self._lock:
             cmd_mag = float(np.linalg.norm(self.cmd))
         now = time.perf_counter()
-        if cmd_mag > float(self.get_parameter("walk_stop_eps").value):
+        eps = float(self.get_parameter("walk_stop_eps").value)
+
+        # Aktiv gefahren (und nicht schon am Bremsen) -> weiterlaufen.
+        if cmd_mag > eps and not self._braking:
             self._walk_moved = True
             self._walk_zero_t0 = None
             return
-        # cmd ~0.
-        if self._walk_zero_t0 is None:
-            self._walk_zero_t0 = now
-        timeout = (float(self.get_parameter("walk_stop_settle_s").value) if self._walk_moved
-                   else float(self.get_parameter("walk_idle_s").value))
-        if now - self._walk_zero_t0 > timeout:
-            self._reset_policy_state()
-            self.action[:] = 0.0
-            self._walk_moved = False
-            self._walk_zero_t0 = None
-            with self._lock:
-                self.cmd = np.zeros(3, dtype=np.float32)
-            self._bal_entering = True          # ruckfreier PD-Eintritt (Rampe)
-            self.state = BALANCE
-            self.get_logger().info(
-                "WALK STOP: Kommando ~0 -> sanfter Uebergang zum PD-Stand "
-                "(station-keeping, Oberkoerper frei fuer Tasks).")
+
+        fl, fr, vx_w, vy_w, valid = self._read_foot_base(self.low_state)
+
+        # Kein echtes Laufen ODER keine Sensorik -> ZEITBASIERTER Fallback.
+        if not (self._walk_moved and valid):
+            if self._walk_zero_t0 is None:
+                self._walk_zero_t0 = now
+            timeout = (float(self.get_parameter("walk_stop_settle_s").value) if self._walk_moved
+                       else float(self.get_parameter("walk_idle_s").value))
+            if now - self._walk_zero_t0 > timeout:
+                self._handoff_to_balance("Kommando ~0 (zeitbasiert)")
+            return
+
+        # STEPPING-STOP: per Stepping abbremsen.
+        if not self._braking:
+            self._braking = True
+            self._brake_t0 = now
+            self._brake_lowv_t0 = None
+            self.get_logger().info("WALK STOP: bremse per Stepping ab ...")
+        yaw = yaw_from_quat(self.low_state.imu_state.quaternion)
+        cy, sy = math.cos(yaw), math.sin(yaw)
+        vxb = cy * vx_w + sy * vy_w      # vorwaerts
+        vyb = -sy * vx_w + cy * vy_w     # links
+        vmag = math.hypot(vxb, vyb)
+        kb = float(self.get_parameter("brake_gain").value)
+        bmax = float(self.get_parameter("brake_max").value)
+        bx = max(-bmax, min(bmax, -kb * vxb / float(self.max_cmd[0])))
+        by = max(-bmax, min(bmax, -kb * vyb / float(self.max_cmd[1])))
+        with self._lock:
+            self.cmd = np.array([bx, by, 0.0], dtype=np.float32)   # Policy bremst damit
+
+        vstop = float(self.get_parameter("brake_vstop").value)
+        f_th = float(self.get_parameter("brake_ds_force").value)
+        elapsed = now - self._brake_t0
+        # Nach brake_timeout die v-Schwelle lockern, damit der Stop nicht ewig haengt.
+        vth = vstop if elapsed < float(self.get_parameter("brake_timeout").value) else vstop + 0.12
+        if vmag < vth and fl > f_th and fr > f_th:
+            if self._brake_lowv_t0 is None:
+                self._brake_lowv_t0 = now
+            elif now - self._brake_lowv_t0 > float(self.get_parameter("brake_hold").value):
+                self._handoff_to_balance("abgebremst + Doppelstuetz")
+        else:
+            self._brake_lowv_t0 = None
 
     # ── Regelschleife ────────────────────────────────────────────────────────
     def _control_loop(self):
@@ -778,6 +890,21 @@ class LocoSim(Node):
         h_lim = float(self.get_parameter("bal_hip_tau_limit").value)
         kp_scale = float(self.get_parameter("bal_kp_scale").value)
 
+        # Basis-Geschwindigkeit (Koerper-Frame) + Gier-Rate fuer die CoM-/Yaw-Daempfung
+        # beim Fangen nach dem Stepping-Stop. Aus reserve[]; fehlt sie -> 0 (reiner
+        # Neigungs-PD wie bisher, station-keeping).
+        fl_b, fr_b, vx_w, vy_w, vvalid = self._read_foot_base(ls)
+        if vvalid:
+            yaw_b = yaw_from_quat(quat)
+            cyb, syb = math.cos(yaw_b), math.sin(yaw_b)
+            vxb = cyb * vx_w + syb * vy_w      # vorwaerts
+            vyb = -syb * vx_w + cyb * vy_w     # links
+        else:
+            vxb = vyb = 0.0
+        yaw_rate = float(gyro[2])
+        kv = float(self.get_parameter("bal_vel_kv").value)
+        yaw_kd = float(self.get_parameter("bal_yaw_kd").value)
+
         # Sanfter Eintritt: beim ersten Schritt nach dem Wechsel die aktuelle Beinpose
         # als Rampen-Start merken. ramp 0->1 ueber bal_ramp_s blendet Soll-Pose
         # (aktuell->default), Steifigkeit (1->kp_scale) und Balance-Tau (0->voll) ein,
@@ -803,16 +930,20 @@ class LocoSim(Node):
         #   Knoechel-Pitch: +tau bei Vorwaerts-Neigung (gx>0) -> Koerper kippt zurueck.
         #   Knoechel-Roll : -tau bei Links-Neigung   (gy>0) -> Koerper kippt nach rechts.
         # Roll gleichsinnig auf beide Fuesse (gemeinsames Kippen verschiebt den CoP).
-        t_ankle_pitch = clamp(akp_p * pitch_err + akd_p * pitch_rate, a_lim)
-        t_ankle_roll = clamp(-(akp_r * roll_err + akd_r * roll_rate), a_lim)
+        # + CoM-Geschwindigkeits-Daempfung (kv*v): kippt den Knoechel GEGEN die Rest-
+        # geschwindigkeit -> faengt den ankommenden Schwung nach dem Stepping-Stop.
+        t_ankle_pitch = clamp(akp_p * pitch_err + akd_p * pitch_rate + kv * vxb, a_lim)
+        t_ankle_roll = clamp(-(akp_r * roll_err + akd_r * roll_rate + kv * vyb), a_lim)
         t_hip_pitch = clamp(hkp_p * pitch_err + hkd_p * pitch_rate, h_lim)
         t_hip_roll = clamp(-(hkp_r * roll_err + hkd_r * roll_rate), h_lim)
+        t_hip_yaw = clamp(-yaw_kd * yaw_rate, 40.0)    # Yaw-Daempfung ueber hip_yaw
 
         tau = np.zeros(self.num_actions, dtype=np.float32)
         tau[L_ANKLE_PITCH] = tau[R_ANKLE_PITCH] = t_ankle_pitch
         tau[L_ANKLE_ROLL] = tau[R_ANKLE_ROLL] = t_ankle_roll
         tau[L_HIP_PITCH] = tau[R_HIP_PITCH] = t_hip_pitch
         tau[L_HIP_ROLL] = tau[R_HIP_ROLL] = t_hip_roll
+        tau[L_HIP_YAW] = tau[R_HIP_YAW] = t_hip_yaw
         tau *= ramp                                    # Balance-Tau ueber die Rampe einblenden
         self.action = tau                              # fuer die |action|-Diagnose [Nm]
 

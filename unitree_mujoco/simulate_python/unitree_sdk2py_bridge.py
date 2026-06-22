@@ -126,6 +126,30 @@ class UnitreeSdk2Bridge:
             if name == "frame_pos":
                 self.have_frame_sensor = True
 
+        # FUSS-KONTAKT + BASIS-GESCHWINDIGKEIT fuer den Loco-Controller (loco_sim).
+        # LowState_ (unitree_hg) hat keine foot_force/base_vel-Felder -> wir
+        # transportieren beides ueber das sonst ungenutzte reserve[4] (uint32):
+        #   reserve[0/1] = Fuss-Normalkraft links/rechts [N]
+        #   reserve[2/3] = Basis-vx/vy (Welt) als Fixpoint int((v+10)*1000), Bereich +-10 m/s
+        # loco_sim nutzt das fuer den Stepping-Stop (per Stepping abbremsen, dann im
+        # Doppelstuetz an den PD-Stand uebergeben) — der einzige robuste Weg, einen
+        # laufenden Biped aus BELIEBIGER Richtung anzuhalten (headless validiert).
+        # Reine Sim-Instrumentierung; am echten G1 liefern das die Fusskraftsensoren +
+        # der State-Estimator. Fehlen die Geoms (anderer Roboter), bleibt reserve 0 und
+        # loco_sim faellt automatisch auf den zeitbasierten Handoff zurueck.
+        self._foot_floor_gid = mujoco.mj_name2id(
+            self.mj_model, mujoco.mjtObj.mjOBJ_GEOM, "floor")
+        self._foot_lbody = mujoco.mj_name2id(
+            self.mj_model, mujoco.mjtObj.mjOBJ_BODY, "left_ankle_roll_link")
+        self._foot_rbody = mujoco.mj_name2id(
+            self.mj_model, mujoco.mjtObj.mjOBJ_BODY, "right_ankle_roll_link")
+        self._have_foot_sensing = (
+            self._foot_floor_gid >= 0 and self._foot_lbody >= 0 and self._foot_rbody >= 0)
+        self._contact_force6 = np.zeros(6, dtype=np.float64)
+        if self._have_foot_sensing:
+            print("[BRIDGE] Fuss-Kontakt + Basis-Geschwindigkeit -> reserve[] "
+                  "(fuer loco_sim Stepping-Stop).", flush=True)
+
         # Unitree sdk2 message
         self.low_state = LowState_default()
         self.low_state_puber = ChannelPublisher(TOPIC_LOWSTATE, LowState_)
@@ -296,6 +320,28 @@ class UnitreeSdk2Bridge:
             else:
                 self.mj_data.ctrl[i] = 0.0
 
+    def _foot_forces_and_base_vel(self):
+        """Normalkraft links/rechts [N] aus den MuJoCo-Kontakten (Fuss<->Boden) +
+        Basis-Linear-Geschwindigkeit (Welt) aus qvel. Genau das, was am echten G1
+        die Fusskraftsensoren und der State-Estimator liefern."""
+        m, d = self.mj_model, self.mj_data
+        fl = fr = 0.0
+        for i in range(d.ncon):
+            c = d.contact[i]
+            if c.geom1 == self._foot_floor_gid:
+                other = m.geom_bodyid[c.geom2]
+            elif c.geom2 == self._foot_floor_gid:
+                other = m.geom_bodyid[c.geom1]
+            else:
+                continue
+            mujoco.mj_contactForce(m, d, i, self._contact_force6)
+            fn = abs(float(self._contact_force6[0]))   # Normalkomponente (Kontakt-Frame)
+            if other == self._foot_lbody:
+                fl += fn
+            elif other == self._foot_rbody:
+                fr += fn
+        return fl, fr, float(d.qvel[0]), float(d.qvel[1])
+
     def PublishLowState(self):
         if self.mj_data != None:
             for i in range(self.num_motor):
@@ -341,6 +387,13 @@ class UnitreeSdk2Bridge:
                 self.low_state.imu_state.accelerometer[2] = self.mj_data.sensordata[
                     self.dim_motor_sensor + 9
                 ]
+
+            if self._have_foot_sensing:
+                fl, fr, vx, vy = self._foot_forces_and_base_vel()
+                self.low_state.reserve[0] = int(min(max(fl, 0.0), 4.0e6))
+                self.low_state.reserve[1] = int(min(max(fr, 0.0), 4.0e6))
+                self.low_state.reserve[2] = int(round((min(max(vx, -10.0), 10.0) + 10.0) * 1000.0))
+                self.low_state.reserve[3] = int(round((min(max(vy, -10.0), 10.0) + 10.0) * 1000.0))
 
             if self.joystick != None:
                 pygame.event.get()
