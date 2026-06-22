@@ -20,14 +20,18 @@ ros2 topic pub --once /g1pilot/start_balancing std_msgs/msg/Bool "{data: true}"
 ### WALK (Laufen) + Gehen->Stehen-Handoff
 Aktiviert die Walking-Policy (RUN). Geschwindigkeit dann ueber `/g1pilot/loco_cmd_vel`
 (normiert [-1,1]; vx=1.0 ~ 0.8 m/s). Im Streamdeck: Button "WALK" + Bildschirm-Joystick.
-Zentriert man das Kommando (cmd~0), rollt die Policy aus und loco_sim schaltet nach
-`walk_stop_settle_s` (Default 1.3 s) automatisch zurueck zum PD-Stand.
+Die rekurrente Policy laeuft im RUN DURCHGEHEND (kein Command-Gating — das machte den
+Gang instabil). Zentriert man das Kommando (cmd~0), rollt die Policy aus und loco_sim
+schaltet nach `walk_stop_settle_s` (Default 0.5 s) automatisch (sanfte Rampe) zurueck
+zum PD-Stand. Hinweis: der modellbasierte PD faengt einen VORWAERTS-Stopp robust; aus
+schnellem Seitwaerts-/Dreh-Gang ist der Catch grenzwertig — vor dem Stehen am besten
+kurz vorwaerts ausrollen. Alternativ jederzeit manuell START BALANCING.
 ```bash
 ros2 topic pub --once /g1pilot/start_walking std_msgs/msg/Bool "{data: true}"
 ros2 topic pub /g1pilot/loco_cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.6}}"  # vorwaerts
 ros2 topic pub --once /g1pilot/loco_cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0}}"  # Stop -> Auto-Handoff zu PD
 ```
-Ausroll-Zeit tunebar: `ros2 param set /loco_sim walk_stop_settle_s 1.3`.
+Ausroll-Zeit tunebar: `ros2 param set /loco_sim walk_stop_settle_s 0.5`.
 
 ### CATCH FALLS (Stuerze abfangen, Toggle — Default AN)
 Schaltet bei drohendem Sturz automatisch vom PD-Balancer auf die steppfaehige

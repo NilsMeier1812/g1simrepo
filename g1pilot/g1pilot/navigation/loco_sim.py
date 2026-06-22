@@ -148,12 +148,15 @@ class LocoSim(Node):
         self.declare_parameter("walk_stop_eps", 0.06)       # |cmd| darunter = "zentriert"
         self._walk_moved = False     # True, sobald in dieser RUN-Episode wirklich gelaufen
         self._walk_zero_t0 = None    # Zeitstempel, seit wann das Kommando ~0 ist
-        # COMMAND-GATING: im RUN laeuft die Policy NUR bei echtem Geh-Kommando. Bei
-        # zentriertem Joystick (cmd~0) haelt stattdessen der PD-Stand -> der
-        # cmd=0-Eigendrift der Policy (driftet ~vorwaerts/rueckwaerts, da keine
-        # Linear-Velocity in der Obs) wird nie sichtbar. Push -> Policy; loslassen ->
-        # kurz ausrollen -> zurueck zum PD-Stand.
-        self._walk_active = False    # True = Policy laeuft gerade (es liegt ein Kommando an)
+        # KEIN Command-Gating mehr: im RUN laeuft die rekurrente Geh-Policy (motion.pt)
+        # DURCHGEHEND. Headless belegt (diag_gating.py): kontinuierlich uebersteht die
+        # Policy aggressives Joystick-Spiel in allen Richtungen ("steht durch"),
+        # waehrend per-Schritt-Gating sie zu Fall bringt — jedes Mal, wenn das Kommando
+        # unter eps sinkt (Stick durch die Mitte), wurde der LSTM-Zustand genullt und
+        # ein steifer PD mitten in den Schritt geworfen -> Sturz. Der cmd=0-Eigendrift
+        # (Policy marschiert auf der Stelle, da keine Linear-Velocity in der Obs) wird
+        # stattdessen durch den AUTO-HANDOFF aufgefangen: laenger zentrierter Stick ->
+        # sanfter Uebergang (Rampe) zum driftfreien PD-Stand.
 
         # SANFTER PD-Eintritt: beim Wechsel nach BALANCE (v.a. aus dem Laufen) wuerde
         # der steife Posture-PD die Beine aus der Schrittstellung schlagartig in die
@@ -427,13 +430,11 @@ class LocoSim(Node):
         self._catch_active = False   # bewusstes Laufen -> kein Auto-Zurueck zu PD
         self._settle_t0 = None
         self._walk_moved = False     # noch kein echtes Kommando -> Leerlauf-Sicherung greift
-        self._walk_active = False    # startet im PD-Stand-Hold (kein Drift), bis ein Kommando kommt
         self._walk_zero_t0 = time.perf_counter()   # ab Eintritt zaehlt der cmd~0-Timer
-        self._bal_entering = True    # PD-Hold ruckfrei aus der aktuellen Pose hochrampen
         self.state = RUN
         self.get_logger().info(
-            "START WALKING -> RUN (armiert). Joystick gibt Geschwindigkeit; bei "
-            "zentriertem Stick haelt der PD-Stand, beim Loslassen Handoff zurueck.")
+            "START WALKING -> RUN. Policy laeuft durchgehend; Joystick gibt die "
+            "Geschwindigkeit. Laenger zentrierter Stick -> sanfter Handoff zum PD-Stand.")
 
     def _on_catch_falls(self, msg: Bool):
         # Toggle "Stuerze abfangen". Setzt den Parameter (Wahrheit fuer die Schleife).
@@ -522,47 +523,40 @@ class LocoSim(Node):
         self.state = BALANCE
         self.get_logger().info(f"CATCH: {reason} -> zurueck zum PD-Stand (station-keeping).")
 
-    # ── Gehen <-> Stehen (Command-Gating im RUN) ─────────────────────────────
+    # ── Gehen -> Stehen (Auto-Handoff im RUN, KEIN Gating) ───────────────────
     def _walk_gate_step(self):
-        """Im RUN schaltet das Geh-Kommando die Policy ein/aus:
-          * cmd > eps         -> Policy laeuft (_walk_active=True).
-          * cmd ~0 nach Laufen -> nach walk_stop_settle_s zurueck zum vollen PD-Stand
-                                  (BALANCE, mit CATCH FALLS).
-          * cmd ~0 ohne je Befehl -> nach walk_idle_s ebenfalls zurueck (Leerlauf).
-        Solange _walk_active=False ist, haelt der Regelloop den PD-Stand (kein
-        cmd=0-Eigendrift). ZEITBASIERT, weil rt/lowstate keine Basis-Velocity
-        liefert (headless: 0.3-0.5s Ausrollen reicht, Restdrift ~0.3 m/s faengt der
-        PD). Ein laufender CATCH-Fang (_catch_active) hat Vorrang."""
+        """Im RUN laeuft die Policy DURCHGEHEND (siehe _send_policy-Dispatch). Diese
+        Methode macht NUR den Gehen->Stehen-Handoff, OHNE per-Schritt-Gating und OHNE
+        LSTM-Reset waehrend des Laufens (das machte die rekurrente Policy instabil):
+          * cmd > eps          -> weiterlaufen (Null-Timer zuruecksetzen).
+          * cmd ~0 nach Laufen -> nach walk_stop_settle_s sanft (Rampe) zum PD-Stand.
+          * cmd ~0 ohne je Befehl -> nach walk_idle_s ebenfalls (Leerlauf-Sicherung).
+        ZEITBASIERT, weil rt/lowstate keine Basis-Velocity liefert. Headless belegt:
+        der PD faengt einen VORWAERTS-Stopp robust; aus seitwaerts/Drehen ist der
+        Catch nur modellbasiert grenzwertig (reine Pitch/Roll-Strategie). Ein
+        laufender CATCH-Fang (_catch_active) hat Vorrang."""
         if self.state != RUN or self._catch_active:
             return
         with self._lock:
             cmd_mag = float(np.linalg.norm(self.cmd))
         now = time.perf_counter()
         if cmd_mag > float(self.get_parameter("walk_stop_eps").value):
-            if not self._walk_active:
-                # Stand-Hold -> Laufen: Policy frisch starten (LSTM/Phase/Action null).
-                self._reset_policy_state()
-                self.action[:] = 0.0
-                self.counter = 0
-                self._walk_active = True
-                self.get_logger().info("WALK: Kommando -> Policy laeuft.")
             self._walk_moved = True
             self._walk_zero_t0 = None
             return
         # cmd ~0.
         if self._walk_zero_t0 is None:
             self._walk_zero_t0 = now
-        timeout = (float(self.get_parameter("walk_stop_settle_s").value) if self._walk_active
+        timeout = (float(self.get_parameter("walk_stop_settle_s").value) if self._walk_moved
                    else float(self.get_parameter("walk_idle_s").value))
         if now - self._walk_zero_t0 > timeout:
             self._reset_policy_state()
             self.action[:] = 0.0
-            self._walk_active = False
             self._walk_moved = False
             self._walk_zero_t0 = None
             with self._lock:
                 self.cmd = np.zeros(3, dtype=np.float32)
-            self._bal_entering = True          # ruckfreier PD-Eintritt
+            self._bal_entering = True          # ruckfreier PD-Eintritt (Rampe)
             self.state = BALANCE
             self.get_logger().info(
                 "WALK STOP: Kommando ~0 -> sanfter Uebergang zum PD-Stand "
@@ -599,12 +593,10 @@ class LocoSim(Node):
                     else:
                         self._send_policy()
                 elif self.state == RUN:
-                    # Command-Gating: Policy nur bei anliegendem Kommando, sonst
-                    # PD-Stand-Hold (kein cmd=0-Eigendrift).
-                    if self._walk_active:
-                        self._send_policy()
-                    else:
-                        self._send_balance_pd()
+                    # KEIN Gating: die rekurrente Geh-Policy laeuft durchgehend (das
+                    # stabilste Laufen, alle Richtungen). Der Gehen->Stehen-Handoff
+                    # passiert ueber _walk_gate_step (Auto-Wechsel nach BALANCE).
+                    self._send_policy()
             except Exception as e:
                 self.get_logger().error(f"Regelschleife: {e}")
                 self.state = DAMP
