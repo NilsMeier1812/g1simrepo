@@ -19,23 +19,23 @@ Dieses Projekt ersetzt die echte Unitree G1 Hardware durch einen MuJoCo-Simulato
 │                                                                         │
 │  ┌──────────────────────────────┐   ┌────────────────────────────────┐  │
 │  │  Container: g1_mujoco_sim    │   │  Container: g1pilot_sim        │  │
-│  │  Image: g1pilot-mujoco:v1.0  │   │  Image: g1pilot-sim:v1.1.0    │  │
+│  │  Image: g1pilot-mujoco:v1.0  │   │  Image: g1pilot-sim:v1.1.0     │  │
 │  │                              │   │                                │  │
 │  │  ┌────────────────────────┐  │   │  ┌──────────────────────────┐  │  │
 │  │  │  MuJoCo Physics Engine │  │   │  │  ROS2 Humble             │  │  │
-│  │  │  (mj_step @ 200 Hz)   │  │   │  │                          │  │  │
+│  │  │  (mj_step @ 200 Hz)    │  │   │  │                          │  │  │
 │  │  └───────────┬────────────┘  │   │  │  robot_state.py          │  │  │
 │  │              │               │   │  │  arm_controller.py       │  │  │
 │  │  ┌───────────┴────────────┐  │   │  │  interactive_marker.py   │  │  │
 │  │  │  unitree_sdk2py_bridge │  │   │  │  loco_client.py          │  │  │
-│  │  │  (DDS ↔ MuJoCo)       │  │   │  │  joystick.py             │  │  │
+│  │  │  (DDS ↔ MuJoCo)        │  │   │  │  joystick.py             │  │  │
 │  │  └───────────┬────────────┘  │   │  │  rviz2                   │  │  │
 │  │              │               │   │  └──────────┬───────────────┘  │  │
 │  └──────────────┼───────────────┘   └─────────────┼──────────────────┘  │
-│                 │                                  │                     │
-│                 │     DDS über Loopback (lo)       │                     │
-│                 │     Domain 1, CycloneDDS         │                     │
-│                 └──────────────────────────────────┘                     │
+│                 │                                 │                     │
+│                 │     DDS über Loopback (lo)      │                     │
+│                 │     Domain 1, CycloneDDS        │                     │
+│                 └─────────────────────────────────┘                     │
 │                                                                         │
 │  Beide Container: network_mode: host                                    │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -187,60 +187,6 @@ Index  Joint                      Actuator              Typ
 Alle Aktuatoren: `gaintype=0, biastype=0` → reine Drehmoment-Motoren, `ctrlrange=[-25, 25]` Nm.
 
 MuJoCo qpos-Layout (nq=36): `qpos[0:3]` = Pelvis-Position, `qpos[3:7]` = Pelvis-Quaternion, `qpos[7:36]` = 29 Joint-Winkel (gleiche Reihenfolge wie oben).
-
----
-
-## Verzeichnisstruktur
-
-```
-~/g1_pilot_sim/
-├── g1pilot/                          ← G1Pilot ROS2 Package (Hauptprojekt)
-│   ├── Makefile                      ← Build/Start-Befehle (make sim, make stop, ...)
-│   ├── docker-compose.sim.yaml       ← Container-Definition für Simulation
-│   ├── docker/
-│   │   ├── Dockerfile.sim            ← G1Pilot Container (ROS2 Humble, kein Livox)
-│   │   ├── Dockerfile.mujoco         ← MuJoCo Container (Ubuntu 22.04, mujoco, unitree_sdk2py)
-│   │   └── cyclonedds.xml            ← DDS Config: Loopback, kein Multicast
-│   ├── launch/
-│   │   ├── bringup_sim.launch.py     ← ★ Haupt-Launchfile für Simulation
-│   │   ├── bringup_launcher.launch.py ← Haupt-Launchfile für echten Roboter
-│   │   ├── robot_state_launcher.launch.py
-│   │   ├── manipulation_launcher.launch.py
-│   │   ├── teleoperation_launcher.launch.py
-│   │   ├── livox_launcher.launch.py   ← (nur real, nicht im Sim)
-│   │   ├── mola_launcher.launch.py    ← (nur real)
-│   │   └── navigation_launcher.launch.py
-│   ├── config/
-│   │   ├── config.yaml               ← ROS2 Parameter
-│   │   └── 29dof.rviz                ← RViz Konfiguration
-│   ├── g1pilot/                      ← Python Source-Code
-│   │   ├── state/
-│   │   │   └── robot_state.py        ← DDS→ROS2 Bridge: LowState_ → /joint_states + /tf
-│   │   ├── manipulation/
-│   │   │   ├── arm_controller.py     ← IK + DDS: /hand_target → LowCmd_ auf rt/arm_sdk
-│   │   │   ├── interactive_marker.py ← RViz Marker → /hand_target
-│   │   │   └── dx3_hand.py           ← DX3 Hand-Controller (nicht verwendet)
-│   │   ├── navigation/
-│   │   │   └── loco_client.py        ← Locomotion (use_robot=false im Sim)
-│   │   ├── teleoperation/
-│   │   │   ├── joystick.py           ← Gamepad-Input
-│   │   │   └── joy_mux.py            ← Multiplex verschiedener Steuer-Inputs
-│   │   └── utils/
-│   │       ├── ik_solver.py          ← Pinocchio IK
-│   │       ├── joints_names.py       ← Joint-Definitionen
-│   │       └── common.py             ← Shared Konstanten
-│   └── description_files/
-│       └── meshes/                   ← STL Meshes für URDF/RViz
-│
-└── unitree_mujoco/                   ← MuJoCo Simulator (von Unitree, modifiziert)
-    ├── simulate_python/
-    │   ├── unitree_mujoco.py         ← ★ Hauptdatei: SimulationThread + PhysicsViewerThread
-    │   ├── unitree_sdk2py_bridge.py  ← ★ DDS↔MuJoCo Bridge: LowCmd→ctrl, sensordata→LowState
-    │   └── config.py                 ← Sim-Konfiguration (ROBOT, DOMAIN_ID, INTERFACE, HOLD_BASE)
-    └── unitree_robots/
-        └── g1/
-            └── scene.xml             ← MuJoCo Scene-Definition (MJCF)
-```
 
 ---
 
@@ -422,47 +368,7 @@ ip -br link show
 ping 192.168.123.161
 ```
 
-**3. `docker-compose.real.yaml` erstellen**
-
-⚠️ Die Datei existiert **noch nicht** im Projekt. Vorlage basierend auf der Sim-Variante:
-
-```yaml
-# ~/g1_pilot_sim/g1pilot/docker-compose.real.yaml
-services:
-  g1pilot_real:
-    image: g1pilot-real:v1.1.0
-    container_name: g1pilot_real
-    network_mode: host
-    privileged: true                  # für Hardware-Zugriff
-    environment:
-      - DISPLAY=${DISPLAY:-:0}
-      - ROS_DOMAIN_ID=0
-      - UNITREE_DOMAIN_ID=0           # Domain 0 für echten Roboter
-      - INTERFACE=${ROBOT_INTERFACE:-enp0s31f6}
-      - CYCLONEDDS_URI=file:///etc/cyclonedds.xml
-      # KEIN G1_SIM_MODE → Code läuft in Real-Modus
-    volumes:
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      - ./:/workspace/g1pilot
-      - /dev:/dev                     # USB für Livox/Gamepad
-    working_dir: /workspace/g1pilot
-    command: >
-      bash -c "
-        source /opt/ros/humble/setup.bash &&
-        source /ros2_ws/install/setup.bash &&
-        colcon build --symlink-install 2>&1 | tail -5 &&
-        source install/setup.bash &&
-        ros2 launch g1pilot bringup_launcher.launch.py
-      "
-    restart: unless-stopped
-    tty: true
-```
-
-⚠️ Die exakten Werte sind **Vorlage, nicht verifiziert**. Vor dem ersten Real-Betrieb prüfen ob:
-- `UNITREE_DOMAIN_ID=0` korrekt ist (Unitree default — sollte stimmen)
-- Sonstige Real-spezifische ENV-Variablen aus dem alten Original-Setup gebraucht werden
-
-**4. Build + Start**
+**3. Build + Start**
 
 ```bash
 cd ~/g1_pilot_sim/g1pilot
@@ -477,7 +383,7 @@ make build-real
 make real ROBOT_INTERFACE=enp0s31f6
 ```
 
-**5. Erste Schritte mit dem Roboter**
+**4. Erste Schritte mit dem Roboter**
 
 1. Beim Start: `loco_client` schickt automatisch einen Damping-Befehl → alle Motoren sind als Dämpfer aktiv, Roboter steht stabil
 2. Erst dann: Arm-Befehle via RViz/Interactive Marker
