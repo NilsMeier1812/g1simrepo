@@ -101,6 +101,46 @@ RViz, steht die Umgebung. Weiter geht es bei
 > **Hardware-Hinweis:** rein CPU-basiert (keine GPU/CUDA nötig). Empfohlen
 > ≥ 8 GB RAM und ~10 GB freier Plattenplatz für die Images.
 
+### Windows (WSL2)
+
+Läuft auf Windows — aber **innerhalb von WSL2**, nicht über „Docker Desktop für
+Windows" pur. Zwei Dinge im Setup sind Linux-spezifisch: `network_mode: host`
+(trägt die DDS-Kommunikation der beiden Container über `lo`) und die X11-GUIs
+(RViz + MuJoCo-Viewer). Beides funktioniert in WSL2 sauber, in Docker Desktop pur
+dagegen nicht zuverlässig. **GPU/CUDA wird nicht gebraucht** — der größte
+Windows-Docker-Schmerz entfällt damit.
+
+Empfohlen: **Windows 11** (WSLg für die GUIs ist eingebaut).
+
+```powershell
+# 1) In PowerShell (als Admin): WSL2 + Ubuntu installieren, dann neu starten
+wsl --install -d Ubuntu
+```
+
+Danach **im Ubuntu-Terminal (WSL)** weiter — ab hier ist alles **identisch zur
+Linux-Anleitung oben**:
+
+```bash
+# 2) Docker-Engine NATIV in der WSL-Distro installieren (Schritte 1–3 oben).
+#    Native Engine statt Docker-Desktop-Integration -> host-Networking klappt
+#    ohne Tricks. Docker-Dienst in WSL starten:
+sudo service docker start
+
+# 3) Repo INS WSL-Dateisystem klonen (NICHT nach /mnt/c/... — das ist lahm)
+cd ~
+git clone https://github.com/nilsmeier1812/g1simrepo.git
+cd g1simrepo/g1pilot
+make build-sim && make sim
+```
+
+WSLg setzt `DISPLAY` automatisch und stellt den X11-Socket bereit — MuJoCo-Fenster
+und RViz öffnen sich direkt auf dem Windows-Desktop.
+
+> **Windows 10:** geht ebenfalls über WSL2, aber WSLg ist nicht überall dabei —
+> dann einen X-Server (VcXsrv/X410) starten und `DISPLAY` von Hand setzen.
+> **Docker Desktop** statt nativer Engine ist möglich, aber `network_mode: host`
+> ist dort nur als (zu aktivierendes) Beta-Feature neuerer Versionen verfügbar.
+
 ---
 
 ## Schnellstart
