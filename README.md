@@ -30,9 +30,83 @@ in Sim und Real läuft.
 
 ---
 
+## Ersteinrichtung (frisches System)
+
+Anleitung für ein **frisches Linux** (getestet auf Ubuntu 22.04 / 24.04) ohne
+Vorinstallationen. Auf dem Host wird **nur Docker, Git und ein X11-Display**
+gebraucht — der gesamte ROS-2-/MuJoCo-Stack steckt in den Container-Images.
+
+**1 · System-Pakete (Git + X11-Tools)**
+
+```bash
+sudo apt update
+sudo apt install -y git x11-xserver-utils ca-certificates curl
+```
+
+> Ein laufender grafischer Desktop (X11) wird für RViz und die Teleop-GUI
+> benötigt. Unter reinem Wayland hilft meist `xhost` aus dem XWayland-Layer;
+> über SSH mit `ssh -X` verbinden.
+
+**2 · Docker Engine + Compose-Plugin installieren** (offizielles Repo)
+
+```bash
+# Docker-Repo eintragen
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+  sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+  https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io \
+  docker-buildx-plugin docker-compose-plugin
+```
+
+**3 · Docker ohne `sudo` nutzbar machen** (einmalig, dann neu einloggen)
+
+```bash
+sudo usermod -aG docker $USER
+newgrp docker          # oder: ab-/wieder anmelden
+docker run --rm hello-world   # Test: muss ohne sudo durchlaufen
+```
+
+**4 · Repository klonen**
+
+```bash
+git clone https://github.com/nilsmeier1812/g1simrepo.git
+cd g1simrepo/g1pilot
+```
+
+> Das Repo ist **eigenständig** (keine Git-Submodule) — die Unitree-Abhängigkeiten
+> `unitree_mujoco`, `unitree_ros2`, `unitree_sdk2_python` liegen mit im Baum.
+
+**5 · Images bauen** (erstmalig, ~8 min; lädt ROS 2 Humble, MuJoCo, Pinocchio …)
+
+```bash
+make build-sim         # baut g1pilot-sim:v1.1.0 + g1pilot-mujoco:v1.0
+```
+
+**6 · Starten**
+
+```bash
+make sim               # baut bei Bedarf nach und startet den Stack
+```
+
+Beim ersten `make sim` wird zusätzlich `xhost +local:docker` gesetzt, damit die
+Container auf das Display zugreifen dürfen. Erscheinen das MuJoCo-Fenster und
+RViz, steht die Umgebung. Weiter geht es bei
+[Bedienung](#bedienung-der-stehen--laufen--stehen-zyklus).
+
+> **Hardware-Hinweis:** rein CPU-basiert (keine GPU/CUDA nötig). Empfohlen
+> ≥ 8 GB RAM und ~10 GB freier Plattenplatz für die Images.
+
+---
+
 ## Schnellstart
 
-> Voraussetzungen: Docker + Docker Compose, ein X11-Display für die GUIs.
+> Setzt eine abgeschlossene [Ersteinrichtung](#ersteinrichtung-frisches-system)
+> voraus (Docker + X11-Display vorhanden).
 
 ```bash
 cd g1pilot
