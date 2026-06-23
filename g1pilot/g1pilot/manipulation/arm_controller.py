@@ -221,6 +221,16 @@ class ArmController(Node):
         self.home_left  = np.array(self.get_parameter("home_left").value,  dtype=float)
         self.home_right = np.array(self.get_parameter("home_right").value, dtype=float)
 
+        # WALK-Pose: waehrend WALK haelt der arm_controller die Arme HIER (= Policy-
+        # Default-Armpose des g1_wholebody-Policy). Headless validiert: die Lauf-Policy
+        # laeuft mit fixen Armen NUR stabil, wenn sie nahe dieser Pose sind (Arme unten
+        # am Koerper -> Sturz). Bei BALANCING sind die Arme wieder frei (rviz/Marker).
+        self.declare_parameter("walk_left",  [0.35,  0.18, 0.0, 0.87, 0.0, 0.0, 0.0])
+        self.declare_parameter("walk_right", [0.35, -0.18, 0.0, 0.87, 0.0, 0.0, 0.0])
+        self.walk_left  = np.array(self.get_parameter("walk_left").value,  dtype=float)
+        self.walk_right = np.array(self.get_parameter("walk_right").value, dtype=float)
+        self.walk_mode = False
+
         self.left_workspace_publisher = self.create_publisher(Marker, '/g1pilot/workspace/left', 10)
         self.right_workspace_publisher = self.create_publisher(Marker, '/g1pilot/workspace/right', 10)
 
@@ -230,6 +240,9 @@ class ArmController(Node):
         self.create_subscription(PoseStamped, "/g1pilot/hand_goal/left", self._left_goal_callback, 10)
         self.create_subscription(Bool, "/g1pilot/arms/enabled", self._arms_controlled_callback, 10)
         self.create_subscription(Bool, "/g1pilot/arms/home", self._homming_callback, 10)
+        # Loco-Zustand: bei WALK Arme in die Lauf-Pose, bei BALANCING wieder frei.
+        self.create_subscription(Bool, "/g1pilot/start_walking", self._on_walk_mode, 10)
+        self.create_subscription(Bool, "/g1pilot/start_balancing", self._on_balance_mode, 10)
 
         
         self._init_robot_interface()
@@ -658,9 +671,56 @@ class ArmController(Node):
             self.get_logger().info("Moving both arms to HOME position.")
             self.homing_active = True
             self.homing_reached = False
-            self._reset_after_home = False 
+            self._reset_after_home = False
             if hasattr(self.ik_solver, "clear_goals"):
                 self.ik_solver.clear_goals()
+
+    def _align_ik_to_config(self, left_q, right_q):
+        """IK-Ziele auf die gegebene Arm-Konfiguration setzen -> die Arme HALTEN dort,
+        bis der Nutzer einen Marker zieht (kein Sprung auf ein altes Ziel)."""
+        left_q = np.asarray(left_q, dtype=float); right_q = np.asarray(right_q, dtype=float)
+        try:
+            if hasattr(self.ik_solver, "clear_goals"):
+                self.ik_solver.clear_goals()
+            self.ik_solver.set_current_configuration({"left": left_q.copy(), "right": right_q.copy()})
+            q_full = pin.neutral(self.ik_solver.model)
+            for i, arm_i in enumerate(LEFT_JOINT_INDICES_LIST):
+                q_full[self.ik_solver._name_to_q_index[self.ik_solver._ros_joint_names[arm_i]]] = left_q[i]
+            for i, arm_i in enumerate(RIGHT_JOINT_INDICES_LIST):
+                q_full[self.ik_solver._name_to_q_index[self.ik_solver._ros_joint_names[arm_i]]] = right_q[i]
+            pin.forwardKinematics(self.ik_solver.model, self.ik_solver.data, q_full)
+            pin.updateFramePlacements(self.ik_solver.model, self.ik_solver.data)
+            T_left  = self.ik_solver.data.oMf[self.ik_solver._fid_left]
+            T_right = self.ik_solver.data.oMf[self.ik_solver._fid_right]
+            self._goal_left_filt  = T_left.copy()
+            self._goal_right_filt = T_right.copy()
+            if hasattr(self.ik_solver, "set_goal"):
+                self.ik_solver.set_goal("left",  T_left.copy())
+                self.ik_solver.set_goal("right", T_right.copy())
+            self._reset_after_home = True
+        except Exception as e:
+            self.get_logger().warning(f"IK-Align fehlgeschlagen: {e}")
+
+    def _on_walk_mode(self, msg: Bool):
+        """WALK: Arme sanft in die Lauf-Pose fahren und dort halten (Marker
+        werden waehrend WALK ignoriert), damit die Lauf-Policy stabil bleibt."""
+        if not msg.data or self.walk_mode:
+            return
+        self.walk_mode = True
+        self.homing_active = False
+        self.homing_reached = False
+        self.get_logger().info("WALK-Modus: Arme in Lauf-Pose halten.")
+
+    def _on_balance_mode(self, msg: Bool):
+        """BALANCING: Arme wieder freigeben (rviz/Marker). Sie HALTEN ihre aktuelle
+        Stellung, bis der Nutzer einen Marker zieht."""
+        if not msg.data or not self.walk_mode:
+            return
+        self.walk_mode = False
+        self.homing_active = False
+        self.homing_reached = False
+        self._align_ik_to_config(self._last_q_target[0:7], self._last_q_target[7:14])
+        self.get_logger().info("BALANCING-Modus: Arme frei (rviz/Marker).")
 
     def _transform_pose_to_world(self, ps: PoseStamped) -> PoseStamped:
         """
@@ -892,7 +952,12 @@ class ArmController(Node):
             self._hold_non_arm_joints()
             return
 
-        if self.homing_active:
+        if self.walk_mode:
+            # WALK: Arme auf die Lauf-Pose halten (Marker ignoriert). Die
+            # Geschwindigkeitsbegrenzung unten faehrt sie sanft dorthin (kein Teleport).
+            q_target = np.concatenate((self.walk_left, self.walk_right))
+
+        elif self.homing_active:
             q_target = np.concatenate((self.home_left, self.home_right))
             if np.linalg.norm(q_target - self._last_q_target) < self.homing_tolerance:
 
