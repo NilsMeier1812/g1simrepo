@@ -4,18 +4,24 @@
 #
 #  Fragt vor dem Start ab, WAS man haben will, setzt die passenden
 #  Umgebungsvariablen und startet den Stack. Ersetzt das manuelle Setzen
-#  von HOLD_BASE_MODE / SIM_LOCKSTEP / USE_RVIZ / BAL_MODE und das Merken
-#  der richtigen run_*.sh-Variante.
+#  von HOLD_BASE_MODE / SIM_LOCKSTEP / USE_RVIZ und das Merken der richtigen
+#  run_*.sh-Variante.
+#
+#  Abgefragt werden nur ECHTE Start-Entscheidungen (Launch-Zeit). Stehen vs.
+#  Laufen ist KEINE davon: das entscheidet zur Laufzeit das Streamdeck
+#  (START BALANCING -> Stehen/PD, START WALKING -> Laufen/Policy). Darum gibt
+#  es hier keine "Balance-Regler"-Frage mehr.
 #
 #  Abgefragt:
-#    1) Balance-Regler  -> BAL_MODE   (pd = steht perfekt | policy = RL)
-#    2) RViz mitstarten -> USE_RVIZ   (an/aus; dank Lockstep gefahrlos)
-#    3) Lockstep        -> SIM_LOCKSTEP (an = deterministische 50 Hz, empfohlen)
-#    4) Images neu bauen-> --build
+#    1) RViz mitstarten -> USE_RVIZ   (an/aus; dank Lockstep gefahrlos)
+#    2) Lockstep        -> SIM_LOCKSTEP (an = deterministische 50 Hz, empfohlen)
+#    3) Images neu bauen-> --build
 #
 #  Alles hat sinnvolle Defaults — einfach ENTER druecken nimmt den Default.
 #  Nicht-interaktiv nutzbar via Env, z.B.:
-#    BAL_MODE=policy USE_RVIZ=true ./start.sh --yes
+#    USE_RVIZ=true ./start.sh --yes
+#  Den BALANCE-Regler kann man bei Bedarf weiter per Env/Live-Param setzen
+#  (BAL_MODE=policy ./start.sh  bzw.  ros2 param set /loco_sim bal_mode policy).
 # ════════════════════════════════════════════════════════════════════════
 set -e
 cd "$(dirname "$0")"
@@ -73,41 +79,40 @@ echo -e "${B}║      G1 Simulation — Start-Menue              ║${R}"
 echo -e "${B}╚══════════════════════════════════════════════╝${R}"
 echo -e "${DIM}ENTER = markierter Default (*).${R}\n"
 
-# ── 1) Balance-Regler ───────────────────────────────────────────────────
-ask_menu "1) Balance-Regler?" 1 "${BAL_MODE:-}" \
-  "PD   — modellbasiert, steht perfekt am Platz (empfohlen)|pd" \
-  "Policy — RL-Policy (eher fuers Laufen)|policy"
-export BAL_MODE="$REPLY_VALUE"
-
-# ── 2) RViz ─────────────────────────────────────────────────────────────
-ask_menu "2) RViz mitstarten? (MuJoCo-Fenster kommt immer)" 2 "${USE_RVIZ:-}" \
+# ── 1) RViz ─────────────────────────────────────────────────────────────
+ask_menu "1) RViz mitstarten? (MuJoCo-Fenster kommt immer)" 2 "${USE_RVIZ:-}" \
   "Ja  — RViz an (CoM-/TF-Visualisierung; dank Lockstep gefahrlos)|true" \
   "Nein — nur MuJoCo-Fenster|false"
 export USE_RVIZ="$REPLY_VALUE"
 
-# ── 3) Lockstep ─────────────────────────────────────────────────────────
-ask_menu "3) Lockstep (deterministische 50-Hz-Regelrate)?" 1 "${SIM_LOCKSTEP:-}" \
+# ── 2) Lockstep ─────────────────────────────────────────────────────────
+ask_menu "2) Lockstep (deterministische 50-Hz-Regelrate)?" 1 "${SIM_LOCKSTEP:-}" \
   "An  — empfohlen, PC-unabhaengig stabil|1" \
   "Aus — alte Wall-Clock-Taktung (nur Debug)|0"
 export SIM_LOCKSTEP="$REPLY_VALUE"
 
-# ── 4) Rebuild ──────────────────────────────────────────────────────────
-ask_menu "4) Docker-Images vor dem Start neu bauen?" 1 "" \
+# ── 3) Rebuild ──────────────────────────────────────────────────────────
+ask_menu "3) Docker-Images vor dem Start neu bauen?" 1 "" \
   "Nein — vorhandene Images nutzen (schnell)|0" \
   "Ja  — --build (nach Code-/Dockerfile-Aenderungen)|1"
 if [ "$REPLY_VALUE" = "1" ]; then PASSTHRU+=("--build"); fi
 
 # ── Feste Sim-Voreinstellungen (Loco-Modus, Basis frei) ─────────────────
 export HOLD_BASE_MODE=off            # Basis frei -> Balancer regelt die Beine
+# BALANCE-Regler: Stehen laeuft immer modellbasiert (pd) — das ist die einzig
+# sinnvolle Wahl fuers Am-Platz-Stehen. Laufen ist ein eigener Zustand (RUN),
+# den das Streamdeck ausloest, unabhaengig davon. policy nur fuer Experimente
+# (BAL_MODE=policy ./start.sh  oder live  ros2 param set /loco_sim bal_mode policy).
+export BAL_MODE=${BAL_MODE:-pd}
 export SIM_REALTIME_FACTOR=${SIM_REALTIME_FACTOR:-1.0}  # im Lockstep irrelevant
 export G1_SIM_MODE=true
 
 # ── Zusammenfassung ─────────────────────────────────────────────────────
 echo -e "${B}Starte mit:${R}"
-echo -e "   Balance-Regler : ${G}BAL_MODE=${BAL_MODE}${R}"
 echo -e "   RViz           : ${G}USE_RVIZ=${USE_RVIZ}${R}"
 echo -e "   Lockstep       : ${G}SIM_LOCKSTEP=${SIM_LOCKSTEP}${R}"
 echo -e "   Basis          : ${G}HOLD_BASE_MODE=${HOLD_BASE_MODE}${R} (Loco-Modus)"
+echo -e "   Balance-Regler : ${G}BAL_MODE=${BAL_MODE}${R} ${DIM}(Stehen=pd; Laufen via Streamdeck)${R}"
 [ "${#PASSTHRU[@]}" -gt 0 ] && echo -e "   compose-Args   : ${G}${PASSTHRU[*]}${R}"
 echo
 
