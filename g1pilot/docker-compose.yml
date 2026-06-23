@@ -81,10 +81,8 @@ services:
       # Lockstep: loco_sim taktet dann auf den rt/lowstate-Eingang (ein Kommando
       # pro State) statt auf die Wall-Clock. MUSS zum mujoco-sim-Wert passen.
       - SIM_LOCKSTEP=${SIM_LOCKSTEP:-0}
-      # Start-Menue (start.sh): RViz mitstarten? Balance-Regler pd/policy?
-      # bringup_sim.launch.py liest beide. Defaults = bisheriges Verhalten.
+      # Start-Menue (start.sh): RViz mitstarten? bringup_sim.launch.py liest das.
       - USE_RVIZ=${USE_RVIZ:-false}
-      - BAL_MODE=${BAL_MODE:-pd}
     command: >
       bash -c "cd /ros2_ws &&
                source /opt/ros/humble/setup.bash &&

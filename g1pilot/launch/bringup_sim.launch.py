@@ -25,11 +25,7 @@ def generate_launch_description():
     #             (Regelrate haengt am rt/lowstate-Eingang, nicht an der Wall-Clock)
     #             bricht das Balancieren NICHT mehr ein, wenn RViz Kerne frisst —
     #             darum ist RViz jetzt wieder gefahrlos zuschaltbar.
-    #  BAL_MODE : "pd"/"policy" — BALANCE-Regler. pd = modellbasierter Knoechel-/
-    #             Hueft-PD (steht perfekt am Platz, Default). policy = RL-Policy.
-    #             Live weiter umschaltbar: ros2 param set /loco_sim bal_mode <wert>.
     use_rviz = os.environ.get('USE_RVIZ', 'false').strip().lower()
-    bal_mode = os.environ.get('BAL_MODE', 'pd').strip().lower()
 
     return LaunchDescription([
 
@@ -77,9 +73,10 @@ def generate_launch_description():
             ),
         ),
 
-        # ── 4. loco_sim: RL-Loco-/Balance-Controller (ersetzt das Onboard-
-        #    High-Level, das es in MuJoCo nicht gibt). Liest rt/lowstate,
-        #    schreibt rt/lowcmd (Beine). START BALANCING -> Stehen/Balancieren.
+        # ── 4. loco_sim: Whole-Body-Loco-/Balance-Controller (ersetzt das Onboard-
+        #    High-Level, das es in MuJoCo nicht gibt). Liest rt/lowstate, schreibt
+        #    rt/lowcmd (alle 29 Gelenke). Velocity-konditionierte Policy:
+        #    START BALANCING -> stehen (cmd=0), loco_cmd_vel -> laufen.
         #    Real-Bringup nutzt weiter loco_client (Unitree-High-Level).
         Node(
             package='g1pilot',
@@ -88,7 +85,7 @@ def generate_launch_description():
             output='screen',
             parameters=[{
                 'interface': 'lo',
-                'bal_mode':  bal_mode,
+                'policy':    'g1_wholebody',
             }]
         ),
     ])

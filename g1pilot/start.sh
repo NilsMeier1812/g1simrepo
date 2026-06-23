@@ -8,9 +8,8 @@
 #  run_*.sh-Variante.
 #
 #  Abgefragt werden nur ECHTE Start-Entscheidungen (Launch-Zeit). Stehen vs.
-#  Laufen ist KEINE davon: das entscheidet zur Laufzeit das Streamdeck
-#  (START BALANCING -> Stehen/PD, START WALKING -> Laufen/Policy). Darum gibt
-#  es hier keine "Balance-Regler"-Frage mehr.
+#  Laufen ist KEINE davon: die velocity-konditionierte Whole-Body-Policy macht
+#  beides (cmd=0 -> stehen, cmd!=0 -> laufen), zur Laufzeit per Streamdeck.
 #
 #  Abgefragt:
 #    1) RViz mitstarten -> USE_RVIZ   (an/aus; dank Lockstep gefahrlos)
@@ -20,8 +19,6 @@
 #  Alles hat sinnvolle Defaults — einfach ENTER druecken nimmt den Default.
 #  Nicht-interaktiv nutzbar via Env, z.B.:
 #    USE_RVIZ=true ./start.sh --yes
-#  Den BALANCE-Regler kann man bei Bedarf weiter per Env/Live-Param setzen
-#  (BAL_MODE=policy ./start.sh  bzw.  ros2 param set /loco_sim bal_mode policy).
 # ════════════════════════════════════════════════════════════════════════
 set -e
 cd "$(dirname "$0")"
@@ -98,12 +95,9 @@ ask_menu "3) Docker-Images vor dem Start neu bauen?" 1 "" \
 if [ "$REPLY_VALUE" = "1" ]; then PASSTHRU+=("--build"); fi
 
 # ── Feste Sim-Voreinstellungen (Loco-Modus, Basis frei) ─────────────────
-export HOLD_BASE_MODE=off            # Basis frei -> Balancer regelt die Beine
-# BALANCE-Regler: Stehen laeuft immer modellbasiert (pd) — das ist die einzig
-# sinnvolle Wahl fuers Am-Platz-Stehen. Laufen ist ein eigener Zustand (RUN),
-# den das Streamdeck ausloest, unabhaengig davon. policy nur fuer Experimente
-# (BAL_MODE=policy ./start.sh  oder live  ros2 param set /loco_sim bal_mode policy).
-export BAL_MODE=${BAL_MODE:-pd}
+export HOLD_BASE_MODE=off            # Basis frei -> die Policy regelt den Koerper
+# Eine velocity-konditionierte Whole-Body-Policy macht Stehen UND Laufen: cmd=0
+# -> stehen, cmd!=0 -> laufen. Kein separater Balance-Regler mehr zu waehlen.
 export SIM_REALTIME_FACTOR=${SIM_REALTIME_FACTOR:-1.0}  # im Lockstep irrelevant
 export G1_SIM_MODE=true
 
@@ -112,7 +106,7 @@ echo -e "${B}Starte mit:${R}"
 echo -e "   RViz           : ${G}USE_RVIZ=${USE_RVIZ}${R}"
 echo -e "   Lockstep       : ${G}SIM_LOCKSTEP=${SIM_LOCKSTEP}${R}"
 echo -e "   Basis          : ${G}HOLD_BASE_MODE=${HOLD_BASE_MODE}${R} (Loco-Modus)"
-echo -e "   Balance-Regler : ${G}BAL_MODE=${BAL_MODE}${R} ${DIM}(Stehen=pd; Laufen via Streamdeck)${R}"
+echo -e "   Loco-Policy    : ${G}g1_wholebody${R} ${DIM}(Stehen=cmd0; Laufen via Streamdeck)${R}"
 [ "${#PASSTHRU[@]}" -gt 0 ] && echo -e "   compose-Args   : ${G}${PASSTHRU[*]}${R}"
 echo
 

@@ -51,9 +51,10 @@ setup(
         (f'share/{package_name}/pipelines',
             expand(['pipelines/*.yaml'])),
 
-        # RL-Loco-Policy-Assets (motion.pt + g1.yaml) fuer loco_sim.
-        (f'share/{package_name}/policies/g1',
-            expand(['policies/g1/*.yaml', 'policies/g1/*.pt'])),
+        # Whole-Body-Loco-Policy fuer loco_sim (unitree_rl_mjlab G1 Velocity).
+        (f'share/{package_name}/policies/g1_wholebody',
+            expand(['policies/g1_wholebody/*.onnx', 'policies/g1_wholebody/*.yaml',
+                    'policies/g1_wholebody/*.md', 'policies/g1_wholebody/LICENSE'])),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
