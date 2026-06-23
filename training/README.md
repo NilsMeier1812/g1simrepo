@@ -71,11 +71,12 @@ python scripts/list_envs.py | grep -i boxcarry      # -> Unitree-G1-BoxCarry-Fla
 
 ## 4. Training starten
 
-**Empfohlen: 2-Phasen-Plan.** Phase 1 ist schon allein nützlich und hat die höchste
-Erfolgschance.
+**Ein einziger Lauf trainiert das komplette Zielszenario** (Laufen + Stehen bei v=0
+ohne Arm-Abhängigkeit + Front-Armposen + leere Kiste). Es gibt **keine manuellen
+Phasen**: das `arm_pose_levels`-Curriculum weitet den Arm-Bereich **automatisch
+innerhalb dieses Laufs** auf (≈Iter 0→4000) und trainiert danach das volle Ziel.
 
 ```bash
-# Phase 1 — Front-Arm-Robustheit OHNE Last (carry_payload-Range klein lassen, Default ok)
 python scripts/train.py Unitree-G1-BoxCarry-Flat --env.scene.num-envs=4096
 
 # (optional) Multi-GPU
@@ -86,8 +87,10 @@ python scripts/train.py Unitree-G1-BoxCarry-Flat --gpu-ids 0 1 --env.scene.num-e
 - Logs/Checkpoints: `logs/rsl_rl/g1_boxcarry/<datum_zeit>/model_<iter>.pt`
 - **`policy.onnx` wird während des Trainings automatisch mitexportiert.**
 
-**Phase 2 (volle Kiste später):** im `env_cfgs.py` die `carry_payload`-Ranges und
-ggf. echte Handmasse hochziehen und ein Curriculum dafür ergänzen (siehe Kommentare).
+> **Nur** falls du SPÄTER eine **schwere/volle** Kiste willst (nicht für die leere
+> nötig): im `env_cfgs.py` die `carry_payload`-Ranges hochziehen und mit einem
+> guten Checkpoint dieses Laufs warm-starten. Für die leere Kiste ist hier nichts
+> zu tun — sie ist bereits Teil dieses einen Laufs.
 
 ## 5. Training beobachten (worauf achten)
 
@@ -193,15 +196,17 @@ Range hochziehen (z.B. x bis 0.15) und ein Curriculum dafür ergänzen.
 
 ## 9. Realistische Erwartung
 
-- **Phase 1 (Front-Posen ohne Last): hohe Erfolgschance** — die Stock-Policy ist
-  nah dran; wir entfernen nur den Arm-Default-Pull und konditionieren auf die Pose.
-- **Leere Kiste:** der dominante Effekt ist die Vorwärts-Armpose (trainiert) +
-  minimale Last → ebenfalls gut machbar.
-- **Schwere/volle Kiste:** härter, eigenes Curriculum + mehr Tuning nötig.
+Dieser eine Lauf zielt direkt auf das komplette Szenario:
+- **Front-Posen + leere Kiste: hohe Erfolgschance** — die Stock-Policy ist nah dran;
+  wir entfernen den Arm-Default-Pull, konditionieren auf die Pose und der dominante
+  Effekt (Vorwärts-Armpose) + minimale Last ist gut lernbar.
+- **Schwere/volle Kiste (separat, optional):** härter, braucht hochgezogene Last +
+  ggf. mehr Tuning.
 
-Plane **mehrere Trainingsläufe** ein (Reward-Tuning ist der unkalkulierbare Teil,
-nicht das Coden). Mit Warm-Start von einem guten Phase-1-Checkpoint konvergiert
-Phase 2 schneller.
+Plane **mehrere Trainingsläufe** ein — der **Reward-/Curriculum-Tuning**-Teil ist
+der unkalkulierbare, nicht das Coden. Falls ein Lauf instabil wird, drehst du an
+den in §8 genannten Stellschrauben und startest neu (ggf. Warm-Start von einem
+guten Checkpoint).
 
 ## 10. Troubleshooting
 - **Task nicht in `list_envs`** → Overlay erneut anwenden; prüfen, dass
