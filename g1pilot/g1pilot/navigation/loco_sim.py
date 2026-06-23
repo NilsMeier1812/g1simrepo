@@ -19,12 +19,15 @@ Arm-Bewegung im Stand driftet sie progressiv weg (headless: ~0.15 m nach 6 s,
 ~0.9 m nach 13 s) — sie 'balanciert' Stoerungen per Schritt. Der PD haelt dagegen
 die Fuesse fest. Also: Policy fuers Laufen+Bremsen, PD fuers stationaere Stehen.
 
-Uebergaenge:
-  * START BALANCING -> STAND (PD, Fuesse geplant). cmd=0.
-  * STAND + cmd!=0 (Joystick) ODER START WALKING -> WALK (Policy).
-  * WALK + cmd zurueck auf 0 -> die Policy bremst aus; nach kurzer Ausschwing-Zeit
-    (settle) + aufrecht uebernimmt wieder der PD (STAND). Nahtloser Handoff per Rampe.
+Uebergaenge (NUR per Nutzer-Button, KEIN automatisches Umschalten):
+  * START BALANCING -> STAND (PD, Fuesse geplant, wirklich stationaer).
+  * START WALKING   -> WALK (Policy). Joystick=0 -> die Policy steht am Platz
+    (gait_phase=0); zum geplanten Stehen wechselt man bewusst zu BALANCING.
   * Sturz erkannt (IMU-Neigung > Schwelle) -> DAMP (limp), kein Gezappel mehr.
+
+ARME: loco_sim regelt sie NICHT. Sie gehoeren komplett dem arm_controller
+(rt/arm_sdk, via rviz/Marker). loco_sim schreibt nur Beine (0..11) + Taille
+(12..14) -> kein Arm-"Teleport" bei Zustandswechseln.
 
 FSM (per Streamdeck-Topics); der Zustand wird auch der Bridge gemeldet (Weld):
   HOLD   : Standby. Bridge haelt die Basis (Weld an), Gelenke auf Default-Pose.
@@ -78,15 +81,17 @@ LOCO_CODE = {HOLD: 0.0, STAND: 1.0, WALK: 1.0, DAMP: 2.0}
 
 NJ = 29            # G1: 29 Gelenke
 
-# ── PD-Stand: bewaehrte Bein-/Arm-Config (1:1 aus dem fruehestabilen g1.yaml) ──
+# ── PD-Stand: bewaehrte Bein-Config (1:1 aus dem fruehestabilen g1.yaml) ──
+# Die ARME (15..28) regelt loco_sim BEWUSST NICHT — sie gehoeren komplett dem
+# arm_controller (rt/arm_sdk, via rviz/Marker). loco_sim schreibt nur Beine (0..11)
+# und Taille (12..14). So koennen die Arme nie von loco_sim "teleportiert" werden.
 LEG_IDX = list(range(12))
 LEG_KP = np.array([100, 100, 100, 150, 40, 40, 100, 100, 100, 150, 40, 40], np.float32)
 LEG_KD = np.array([2, 2, 2, 4, 2, 2, 2, 2, 2, 4, 2, 2], np.float32)
-AW_IDX = list(range(12, 29))                       # Taille (12..14) + Arme (15..28)
-AW_KP = np.array([300, 300, 300, 100, 100, 50, 50, 20, 20, 20,
-                  100, 100, 50, 50, 20, 20, 20], np.float32)
-AW_KD = np.array([3, 3, 3, 2, 2, 2, 2, 1, 1, 1, 2, 2, 2, 2, 1, 1, 1], np.float32)
-AW_TARGET = np.zeros(17, np.float32)               # Taille aufrecht, Arme neutral (von arm_sdk ueberschrieben)
+WAIST_IDX = [12, 13, 14]                           # Taille: yaw, roll, pitch
+WAIST_KP = np.array([300, 300, 300], np.float32)
+WAIST_KD = np.array([3, 3, 3], np.float32)
+WAIST_TARGET = np.zeros(3, np.float32)             # aufrecht
 # Indizes im 12er-Bein-Array (hip_pitch,hip_roll,hip_yaw,knee,ankle_pitch,ankle_roll):
 L_HIP_PITCH, L_HIP_ROLL, L_HIP_YAW, L_ANKLE_PITCH, L_ANKLE_ROLL = 0, 1, 2, 4, 5
 R_HIP_PITCH, R_HIP_ROLL, R_HIP_YAW, R_ANKLE_PITCH, R_ANKLE_ROLL = 6, 7, 8, 10, 11
@@ -311,9 +316,8 @@ class LocoSim(Node):
         vyaw = nz * (self.cmd_yaw[1] if nz >= 0 else -self.cmd_yaw[0])
         with self._lock:
             self.cmd = np.array([vx, vy, vyaw], dtype=np.float32)
-        # Aus dem Stand losfahren: nonzero cmd -> WALK uebernimmt.
-        if self.state == STAND and float(np.linalg.norm(self.cmd)) >= self.stand_eps:
-            self._enter_walk("cmd!=0 im Stand")
+        # KEIN Auto-Umschalten: im STAND (PD) ignoriert der Roboter den Joystick und
+        # bleibt wirklich stationaer. Laufen startet nur per START WALKING-Button.
 
     # ── Sturz-Erkennung (IMU-only, gilt fuer STAND und WALK) ─────────────────
     def _fallen(self, gravity):
@@ -384,22 +388,21 @@ class LocoSim(Node):
         self.cmd_msg.crc = self.crc.Crc(self.cmd_msg)
         self.lowcmd_pub.Write(self.cmd_msg)
 
-    def _hold_arm_waist(self, waist_scale=1.0):
-        """Taille + Arme auf AW_TARGET halten (Fallback; von rt/arm_sdk ueberschrieben).
-        waist_scale steift die Taille (12,13,14) zusaetzlich an, damit der Oberkoerper
-        nicht nach vorn flopt."""
-        for k, idx in enumerate(AW_IDX):
+    def _hold_waist(self, waist_scale=1.0):
+        """Taille (12..14) aufrecht halten. waist_scale steift sie zusaetzlich an,
+        damit der Oberkoerper nicht nach vorn flopt. Die ARME bleiben unberuehrt
+        (arm_controller-Domaene)."""
+        for k, idx in enumerate(WAIST_IDX):
             mc = self.cmd_msg.motor_cmd[idx]
             mc.mode = 1
-            mc.q = float(AW_TARGET[k])
+            mc.q = float(WAIST_TARGET[k])
             mc.dq = 0.0
             mc.tau = 0.0
-            sc = waist_scale if idx in (12, 13, 14) else 1.0
-            mc.kp = float(AW_KP[k]) * sc
-            mc.kd = float(AW_KD[k]) * math.sqrt(sc)
+            mc.kp = float(WAIST_KP[k]) * waist_scale
+            mc.kd = float(WAIST_KD[k]) * math.sqrt(waist_scale)
 
     def _send_hold(self):
-        # Steifer Stand: Beine auf Default (weiche Gains), Taille/Arme gehalten.
+        # Steifer Stand: Beine auf Default (weiche Gains), Taille gehalten. Arme: frei.
         for k, idx in enumerate(LEG_IDX):
             mc = self.cmd_msg.motor_cmd[idx]
             mc.mode = 1
@@ -408,7 +411,7 @@ class LocoSim(Node):
             mc.tau = 0.0
             mc.kp = float(LEG_KP[k])
             mc.kd = float(LEG_KD[k])
-        self._hold_arm_waist()
+        self._hold_waist()
         self._write()
 
     def _send_damp(self):
@@ -500,7 +503,7 @@ class LocoSim(Node):
             mc.tau = float(tau[k])
             mc.kp = float(LEG_KP[k]) * kp_scale_eff
             mc.kd = float(LEG_KD[k]) * kd_scale
-        self._hold_arm_waist(waist_scale=kp_scale_eff)
+        self._hold_waist(waist_scale=kp_scale_eff)
         self._write()
 
     def _build_obs(self):
@@ -541,21 +544,14 @@ class LocoSim(Node):
             self.get_logger().warn("STURZ erkannt (Walk) -> DAMP + Arme aus.")
             return self._send_damp()
 
-        # WALK->STAND: cmd zurueck auf 0 -> Policy bremst aus; nach settle_s + aufrecht
-        # uebernimmt der PD (Fuesse geplant).
-        if float(np.linalg.norm(cmd)) < self.stand_eps:
-            if self._cmd_zero_since is None:
-                self._cmd_zero_since = time.perf_counter()
-            elif (time.perf_counter() - self._cmd_zero_since > self.settle_s
-                  and float(gravity[2]) < -0.85):
-                self._enter_stand("ausgebremst")
-                return
-        else:
-            self._cmd_zero_since = None
-
+        # KEIN Auto-Umschalten mehr: bei cmd=0 STEHT die Policy einfach am Platz
+        # (gait_phase=0). Zu wirklich stationaer (Fuesse geplant) wechselt nur der
+        # Nutzer per START BALANCING.
         self.action = self.sess.run(None, {self.in_name: obs})[0][0].astype(np.float32)
         target = self.default + self.action * self.action_scale
-        for i in range(NJ):
+        # NUR Beine (0..11) + Taille (12..14) aktuieren. Arme (15..28) bleiben dem
+        # arm_controller (rt/arm_sdk) ueberlassen -> kein Arm-Teleport beim Laufen.
+        for i in range(15):
             mc = self.cmd_msg.motor_cmd[i]
             mc.mode = 1
             mc.q = float(target[i])

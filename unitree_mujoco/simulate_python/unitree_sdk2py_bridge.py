@@ -309,16 +309,24 @@ class UnitreeSdk2Bridge:
         for i in range(n):
             q = sd[i]
             dq = sd[i + n]
-            if self.ARM_LO <= i <= self.ARM_HI and arm is not None:
-                tau_a = self._pd(arm.motor_cmd[i], q, dq)
-                tau_l = self._pd(legs.motor_cmd[i], q, dq) if legs is not None else 0.0
-                self.mj_data.ctrl[i] = w * tau_a + (1.0 - w) * tau_l
+            if self.ARM_LO <= i <= self.ARM_HI:
+                # Arme (15..28): NUR aus rt/arm_sdk (arm_controller). loco_sim fasst
+                # die Arme nicht an. Solange noch KEIN arm_sdk kam, im Startup-Hold
+                # halten (nicht limp), egal ob loco_sim schon laeuft -> keine
+                # haengenden/teleportierenden Arme.
+                if arm is not None:
+                    tau_a = self._pd(arm.motor_cmd[i], q, dq)
+                    tau_l = self._pd(legs.motor_cmd[i], q, dq) if legs is not None else 0.0
+                    self.mj_data.ctrl[i] = w * tau_a + (1.0 - w) * tau_l
+                elif self.startup_hold_active:
+                    self.mj_data.ctrl[i] = self._startup_pd(i, q, dq)
+                else:
+                    self.mj_data.ctrl[i] = 0.0
             elif legs is not None:
                 self.mj_data.ctrl[i] = self._pd(legs.motor_cmd[i], q, dq)
             elif use_startup:
-                # Startfenster: ALLE Gelenke (Beine/Taille UND Arme) auf der Startpose
-                # halten, solange noch kein Loco-/Arm-Befehl kommt -> Arme fallen nicht
-                # limp durch, bevor loco_sim/arm_controller verbunden sind.
+                # Startfenster: Beine/Taille auf der Startpose halten, bis der erste
+                # rt/lowcmd-Befehl kommt.
                 self.mj_data.ctrl[i] = self._startup_pd(i, q, dq)
             else:
                 self.mj_data.ctrl[i] = 0.0

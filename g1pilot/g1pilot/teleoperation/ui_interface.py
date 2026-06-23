@@ -130,6 +130,12 @@ class ButtonGUI(QWidget):
         self.cmd_timer.timeout.connect(self.publish_cmd_vel)
         self.cmd_timer.start(33)
 
+        # Nach kurzer Anlaufzeit (DDS/loco_sim/arm_controller verbunden) automatisch
+        # die Arme aktivieren und in den BALANCING-Stand gehen. Zweimal feuern (3s/6s),
+        # falls beim ersten Mal der Subscriber noch nicht verbunden war (DDS late-join).
+        QTimer.singleShot(3000, self._auto_start)
+        QTimer.singleShot(6000, self._auto_start)
+
     def init_ui(self):
         main_layout = QVBoxLayout()
         grid = QGridLayout()
@@ -139,16 +145,15 @@ class ButtonGUI(QWidget):
 
         button_actions = {
             (0, 0): ("START", lambda: self.flash_button((0, 0), self.node.pub_start)),
-            (0, 1): ("START\nBALANCING", lambda: self.flash_button((0, 1), self.node.pub_start_balancing)),
 
-            # Laufen starten: aktiviert die Walking-Policy (RUN). Danach mit dem
-            # Joystick unten fahren; zentrieren -> automatischer Handoff zurueck zum
-            # PD-Stand. START BALANCING bringt ihn jederzeit sofort zurueck in den Stand.
-            (0, 3): ("WALK", lambda: self.flash_button((0, 3), self.node.pub_start_walking)),
+            # BALANCING und WALK liegen nebeneinander und sind GEGENSEITIG EXKLUSIV
+            # (Radio): immer genau einer gruen. KEIN automatisches Umschalten mehr —
+            # der Nutzer entscheidet. BALANCING = wirklich stationaer (PD, Fuesse
+            # geplant, Arme frei bewegbar). WALK = Policy (Joystick faehrt; zentriert
+            # steht die Policy am Platz).
+            (0, 1): ("START\nBALANCING", lambda: self.radio_loco((0, 1), self.node.pub_start_balancing)),
+            (0, 2): ("WALK", lambda: self.radio_loco((0, 2), self.node.pub_start_walking)),
 
-            # Stuerze abfangen: schaltet bei drohendem Sturz automatisch PD->Policy
-            # (Stepping). Toggle, standardmaessig AN (gruen, siehe set_button_active unten).
-            (0, 2): ("CATCH\nFALLS", lambda: self.toggle_button((0, 2), self.node.pub_catch_falls)),
             (1, 1): ("HOMING\nARMS", lambda: self.flash_button((1, 1), self.node.pub_arms_home)),
 
             (1, 0): ("ENABLE\nMANIPULATION", lambda: self.toggle_button((1, 0), self.node.pub_arms_enabled)),
@@ -207,11 +212,12 @@ class ButtonGUI(QWidget):
                 self.buttons[(r, c)] = btn
                 self.button_states[(r, c)] = False
 
+        # Loco-Radio-Gruppe: BALANCING (0,1) und WALK (0,2) — immer nur einer gruen.
+        self.loco_group = [(0, 1), (0, 2)]
+
         # Marker-Follow ist per Default aktiv -> Button gruen anzeigen, damit der
         # angezeigte Zustand zum Default des interactive_marker-Node passt.
         self.set_button_active((0, 4), True)
-        # CATCH FALLS ist per Default aktiv (loco_sim catch_falls=True) -> gruen anzeigen.
-        self.set_button_active((0, 2), True)
 
         main_layout.addLayout(grid)
 
@@ -315,6 +321,21 @@ class ButtonGUI(QWidget):
         new_state = not self.button_states[pos]
         self.set_button_active(pos, new_state)
         self.node.publish_bool(pub, new_state)
+
+    def radio_loco(self, pos, pub):
+        """Loco-Radio: genau EINEN der Loco-Buttons (BALANCING/WALK) gruen schalten
+        und True publizieren. Kein automatisches Umschalten — nur dieser Klick."""
+        for p in self.loco_group:
+            self.set_button_active(p, p == pos)
+        self.node.publish_bool(pub, True)
+
+    def _auto_start(self):
+        """Direkt nach Launch: Arme aktivieren (werden ab jetzt dauerhaft vom
+        arm_controller gehalten und sind per rviz bewegbar) und in den BALANCING-
+        Stand gehen. So steht der Roboter sofort stabil, ohne Knopfdruck."""
+        self.set_button_active((1, 0), True)
+        self.node.publish_bool(self.node.pub_arms_enabled, True)
+        self.radio_loco((0, 1), self.node.pub_start_balancing)
 
     def toggle_hand(self, hand_side, action, pub):
         hand_pair = self.hand_pairs[hand_side]
