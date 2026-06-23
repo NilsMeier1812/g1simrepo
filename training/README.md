@@ -92,6 +92,45 @@ python scripts/train.py Unitree-G1-BoxCarry-Flat --gpu-ids 0 1 --env.scene.num-e
 > guten Checkpoint dieses Laufs warm-starten. Für die leere Kiste ist hier nichts
 > zu tun — sie ist bereits Teil dieses einen Laufs.
 
+## 4b. Lange Läufe & Unterbrechungen (Checkpoints / Resume)
+
+**Ist längeres Training sinnvoll?** Ja. Diese arm-konditionierte Aufgabe ist härter
+als der Stock-Walker (10k Iter), darum ist `max_iterations` hier auf **30 000**
+gesetzt — ein gutes Wochenend-Budget für eine 4090. Mehr hilft (Robustheit über den
+ganzen Arm-Envelope), aber mit **abnehmendem Ertrag**; jenseits ~40–50k lohnt es
+selten, und PPO kann spät sogar leicht degradieren (Reward-Hacking, std-Kollaps).
+**Wichtig:** nicht blind den letzten Checkpoint nehmen — mehrere späte Checkpoints
+mit `play.py` prüfen und den **besten** wählen.
+Iter/Stunde siehst du in den ersten Minuten im Runner-Log → hochrechnen.
+Budget per CLI ohne Code-Edit ändern: `--agent.max-iterations=40000`.
+
+**Geht bei Stromausfall/Abschalten alles verloren? Nein.** Der Runner schreibt
+automatisch alle **50 Iterationen** (≈ wenige Minuten) `model_<iter>.pt` nach
+`logs/rsl_rl/g1_boxcarry/<datum_zeit>/` — jeder davon ist ein **vollständiger
+Resume-Punkt** (und `policy.onnx` wird mitexportiert). Ein harter Shutdown verliert
+also höchstens die letzten ~50 Iterationen; alle älteren Checkpoints bleiben.
+
+**So machst du den Lauf robust gegen Unterbrechungen:**
+
+1. **In `tmux`/`screen` starten** (überlebt SSH-Trennung — der häufigste „Abbruch"):
+   ```bash
+   tmux new -s g1train
+   python scripts/train.py Unitree-G1-BoxCarry-Flat --env.scene.num-envs=4096
+   # abkoppeln: Ctrl-b d   |   später: tmux attach -t g1train
+   ```
+2. **Nach einem Abschalten fortsetzen** (vom neuesten gültigen Checkpoint):
+   ```bash
+   python scripts/train.py Unitree-G1-BoxCarry-Flat --env.scene.num-envs=4096 \
+     --agent.resume=True --agent.load-run=<datum_zeit-Ordner> --agent.load-checkpoint=model_<iter>.pt
+   ```
+   (Ordner = der Unterordner unter `logs/rsl_rl/g1_boxcarry/`. Genaue Flag-Namen:
+   `python scripts/train.py Unitree-G1-BoxCarry-Flat --help`.)
+3. Sollte der **allerletzte** Checkpoint durch einen Crash mitten im Schreiben
+   beschädigt sein: einfach den vorherigen (`model_<iter-50>.pt`) als
+   `--agent.load-checkpoint` nehmen.
+
+TensorBoard-/wandb-Logs liegen ebenfalls auf der Platte und überleben den Abbruch.
+
 ## 5. Training beobachten (worauf achten)
 
 TensorBoard:
@@ -188,7 +227,8 @@ Range hochziehen (z.B. x bis 0.15) und ein Curriculum dafür ergänzen.
 
 ### Sonstiges (unverändert übernommen, gut für G1)
 - `num_envs=4096`, `num_steps_per_env=24`, PPO `lr=1e-3` adaptive, `gamma=0.99`,
-  `clip=0.2`, MLP (512,256,128), `max_iterations=15000`.
+  `clip=0.2`, MLP (512,256,128), `max_iterations=30000`, `save_interval=50`
+  (häufige Resume-Punkte).
 - `push_robot` (±0.5 m/s alle 5–6 s), `foot_friction` 0.3–1.6, `base_com`-Jitter,
   `encoder_bias` — die bestehende Domain-Randomization bleibt aktiv.
 
