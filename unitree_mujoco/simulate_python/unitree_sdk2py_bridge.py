@@ -315,7 +315,10 @@ class UnitreeSdk2Bridge:
                 self.mj_data.ctrl[i] = w * tau_a + (1.0 - w) * tau_l
             elif legs is not None:
                 self.mj_data.ctrl[i] = self._pd(legs.motor_cmd[i], q, dq)
-            elif use_startup and i < self.ARM_LO:
+            elif use_startup:
+                # Startfenster: ALLE Gelenke (Beine/Taille UND Arme) auf der Startpose
+                # halten, solange noch kein Loco-/Arm-Befehl kommt -> Arme fallen nicht
+                # limp durch, bevor loco_sim/arm_controller verbunden sind.
                 self.mj_data.ctrl[i] = self._startup_pd(i, q, dq)
             else:
                 self.mj_data.ctrl[i] = 0.0

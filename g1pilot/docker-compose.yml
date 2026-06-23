@@ -42,7 +42,7 @@ services:
       - SIM_REALTIME_FACTOR=${SIM_REALTIME_FACTOR:-1.0}
       # Lockstep: deterministische Regelrate (decimation Physikschritte pro
       # rt/lowcmd). run_sim_loco.sh setzt 1 -> garantierte 50 Hz fuer die Policy.
-      - SIM_LOCKSTEP=${SIM_LOCKSTEP:-0}
+      - SIM_LOCKSTEP=${SIM_LOCKSTEP:-1}
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ../unitree_mujoco:/unitree_mujoco:ro   # Mountet dein lokales Repo!
@@ -80,7 +80,7 @@ services:
       - SIM_REALTIME_FACTOR=${SIM_REALTIME_FACTOR:-1.0}
       # Lockstep: loco_sim taktet dann auf den rt/lowstate-Eingang (ein Kommando
       # pro State) statt auf die Wall-Clock. MUSS zum mujoco-sim-Wert passen.
-      - SIM_LOCKSTEP=${SIM_LOCKSTEP:-0}
+      - SIM_LOCKSTEP=${SIM_LOCKSTEP:-1}
       # Start-Menue (start.sh): RViz mitstarten? bringup_sim.launch.py liest das.
       - USE_RVIZ=${USE_RVIZ:-false}
     command: >

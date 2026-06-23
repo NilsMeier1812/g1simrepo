@@ -99,6 +99,8 @@ LOCO_STARTUP_HOLD_POSE = [
     -0.1, 0.0, 0.0, 0.3, -0.2, 0.0,   # linkes Bein:  hip_pitch, hip_roll, hip_yaw, knee, ankle_pitch, ankle_roll
     -0.1, 0.0, 0.0, 0.3, -0.2, 0.0,   # rechtes Bein: dito
     0.0, 0.0, 0.0,                    # Taille: yaw, roll, pitch
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  # linker Arm  (15..21): gehalten -> kein Limp-Fall beim Laden
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  # rechter Arm (22..28); 0 = loco_sims HOLD-Ziel -> kein Sprung
 ]
 LOCO_STARTUP_HOLD_KP = 100.0
 LOCO_STARTUP_HOLD_KD = 2.0
