@@ -593,6 +593,17 @@ function setWs(ok, lbl) {
 // ── Init ──
 buildDOF('left');
 buildDOF('right');
+
+// Auto-Connect via URL-Param (?autoconnect=1[&ws=ws://host:port]). Genutzt vom
+// start.sh-Auto-Open; ohne den Parameter sieht/verhaelt sich die UI unveraendert.
+(function () {
+  try {
+    const p = new URLSearchParams(location.search);
+    const wsParam = p.get('ws');
+    if (wsParam) document.getElementById('wsUrl').value = wsParam;
+    if (p.get('autoconnect') === '1') setTimeout(toggleConn, 300);
+  } catch (e) {}
+})();
 </script>
 </body>
 </html>

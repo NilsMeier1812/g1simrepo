@@ -90,6 +90,16 @@ ask_menu "1b) Inspire-FTP-Hand-Bridge mitstarten? (GUIs :8766/:8765, Finger in R
   "Nein — keine Hand-Bridge (robot_state zeigt Finger als Default 0)|false"
 export USE_HANDS="$REPLY_VALUE"
 
+# ── 1c) Hand-GUIs automatisch im Browser oeffnen (nur mit Hand-Bridge) ────
+if [ "$USE_HANDS" = "true" ]; then
+  ask_menu "1c) Hand-GUIs automatisch im Browser oeffnen (und verbinden)?" 1 "${OPEN_GUIS:-}" \
+    "Ja  — Controller + Viewer oeffnen sich selbst und verbinden|true" \
+    "Nein — GUIs manuell oeffnen (web/*.html)|false"
+  export OPEN_GUIS="$REPLY_VALUE"
+else
+  export OPEN_GUIS=false
+fi
+
 # ── 2) Rebuild ──────────────────────────────────────────────────────────
 ask_menu "2) Docker-Images vor dem Start neu bauen?" 1 "" \
   "Nein — vorhandene Images nutzen (schnell)|0" \
@@ -110,6 +120,7 @@ export G1_SIM_MODE=true
 echo -e "${B}Starte mit:${R}"
 echo -e "   RViz           : ${G}USE_RVIZ=${USE_RVIZ}${R}"
 echo -e "   Inspire-Haende : ${G}USE_HANDS=${USE_HANDS}${R} ${DIM}(Bridge :8766/:8765)${R}"
+echo -e "   Hand-GUIs      : ${G}OPEN_GUIS=${OPEN_GUIS}${R} ${DIM}(Browser-Auto-Open)${R}"
 echo -e "   Lockstep       : ${G}SIM_LOCKSTEP=${SIM_LOCKSTEP}${R} ${DIM}(immer an, auf Echtzeit gedeckelt)${R}"
 echo -e "   Basis          : ${G}HOLD_BASE_MODE=${HOLD_BASE_MODE}${R} (Loco-Modus)"
 echo -e "   Loco-Policy    : ${G}g1_wholebody${R} ${DIM}(Stehen=cmd0; Laufen via Streamdeck)${R}"
@@ -119,6 +130,44 @@ echo
 # ── X11 freigeben (MuJoCo-Viewer + ggf. RViz brauchen den X-Server) ─────
 xhost +local:root >/dev/null 2>&1 || \
   echo -e "${Y}[start] WARN: 'xhost' nicht verfuegbar - laeuft hier ein X-Server?${R}"
+
+# ── Hand-GUIs nach dem Hochfahren automatisch oeffnen ───────────────────
+#  start.sh laeuft auf dem HOST (nicht im Container), kann also direkt einen
+#  Browser oeffnen. Wir warten im Hintergrund, bis die Controller-Bridge auf
+#  :8766 lauscht (colcon-Build im Container kann dauern), und oeffnen dann beide
+#  GUIs mit ?autoconnect=1, sodass sie sich von selbst verbinden.
+open_guis_when_ready() {
+  local web="$PWD/g1pilot/manipulation/inspire_ftp/web"
+  local ctrl="file://$web/hand_controller_viewer.html?autoconnect=1"
+  local view="file://$web/inspire_hand_viewer.html?autoconnect=1"
+
+  local opener=""
+  local c
+  for c in xdg-open sensible-browser x-www-browser firefox google-chrome chromium chromium-browser; do
+    command -v "$c" >/dev/null 2>&1 && { opener="$c"; break; }
+  done
+  if [ -z "$opener" ]; then
+    echo -e "${Y}[start] Kein Browser-Opener gefunden - GUIs bitte manuell oeffnen:${R}"
+    echo -e "   ${C}$ctrl${R}"
+    echo -e "   ${C}$view${R}"
+    return
+  fi
+
+  # Warten bis die Bridge lauscht (max ~5 min, deckt auch den ersten Build ab).
+  local i=0
+  while [ $i -lt 600 ]; do
+    if (exec 3<>"/dev/tcp/127.0.0.1/8766") 2>/dev/null; then break; fi
+    sleep 0.5; i=$((i+1))
+  done
+
+  "$opener" "$ctrl" >/dev/null 2>&1 &
+  sleep 1
+  "$opener" "$view" >/dev/null 2>&1 &
+}
+
+if [ "$OPEN_GUIS" = "true" ]; then
+  ( open_guis_when_ready ) &
+fi
 
 # ── Reste eines frueheren Laufs sauber entfernen ────────────────────────
 docker compose --profile sim down --remove-orphans

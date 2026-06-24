@@ -60,9 +60,15 @@ ros2 launch g1pilot hand_launcher.launch.py
 # manuell dann robot_state mit publish_hand_joints:=false starten!
 ```
 
-**GUIs**: Die HTML-Dateien aus `web/` im Browser oeffnen und verbinden auf
+**GUIs**: Im `start.sh`-Menue kann man die GUIs **automatisch oeffnen** lassen
+(`OPEN_GUIS=true`). Da `start.sh` auf dem Host laeuft, oeffnet es nach dem
+Hochfahren beide HTML-Seiten im Standard-Browser und verbindet sie selbst (per
+`?autoconnect=1`); es wartet dabei, bis die Bridge auf `:8766` lauscht.
+
+Manuell: Die HTML-Dateien aus `web/` im Browser oeffnen und verbinden auf
 `ws://localhost:8766` (Controller) bzw. `ws://localhost:8765` (Viewer). Der
-Container nutzt `network_mode: host`, daher ist `localhost` korrekt.
+Container nutzt `network_mode: host`, daher ist `localhost` korrekt. Optionaler
+Auto-Connect auch manuell: `…/hand_controller_viewer.html?autoconnect=1`.
 
 ## Hinweise zur Sim (Stufe 1)
 
