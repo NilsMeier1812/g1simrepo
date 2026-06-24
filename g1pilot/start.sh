@@ -13,8 +13,10 @@
 #
 #  Abgefragt:
 #    1) RViz mitstarten -> USE_RVIZ   (an/aus; dank Lockstep gefahrlos)
-#    2) Lockstep        -> SIM_LOCKSTEP (an = deterministische 50 Hz, empfohlen)
-#    3) Images neu bauen-> --build
+#    2) Images neu bauen-> --build
+#
+#  Lockstep (deterministische 50-Hz-Regelrate, auf Echtzeit gedeckelt) ist im
+#  Betrieb IMMER an und daher nicht mehr abgefragt.
 #
 #  Alles hat sinnvolle Defaults — einfach ENTER druecken nimmt den Default.
 #  Nicht-interaktiv nutzbar via Env, z.B.:
@@ -82,29 +84,26 @@ ask_menu "1) RViz mitstarten? (MuJoCo-Fenster kommt immer)" 2 "${USE_RVIZ:-}" \
   "Nein — nur MuJoCo-Fenster|false"
 export USE_RVIZ="$REPLY_VALUE"
 
-# ── 2) Lockstep ─────────────────────────────────────────────────────────
-ask_menu "2) Lockstep (deterministische 50-Hz-Regelrate)?" 1 "${SIM_LOCKSTEP:-}" \
-  "An  — empfohlen, PC-unabhaengig stabil|1" \
-  "Aus — alte Wall-Clock-Taktung (nur Debug)|0"
-export SIM_LOCKSTEP="$REPLY_VALUE"
-
-# ── 3) Rebuild ──────────────────────────────────────────────────────────
-ask_menu "3) Docker-Images vor dem Start neu bauen?" 1 "" \
+# ── 2) Rebuild ──────────────────────────────────────────────────────────
+ask_menu "2) Docker-Images vor dem Start neu bauen?" 1 "" \
   "Nein — vorhandene Images nutzen (schnell)|0" \
   "Ja  — --build (nach Code-/Dockerfile-Aenderungen)|1"
 if [ "$REPLY_VALUE" = "1" ]; then PASSTHRU+=("--build"); fi
 
 # ── Feste Sim-Voreinstellungen (Loco-Modus, Basis frei) ─────────────────
 export HOLD_BASE_MODE=off            # Basis frei -> die Policy regelt den Koerper
+# Lockstep ist im Betrieb IMMER an (deterministische 50-Hz-Regelrate, PC-unabhaengig).
+export SIM_LOCKSTEP=1
 # Eine velocity-konditionierte Whole-Body-Policy macht Stehen UND Laufen: cmd=0
 # -> stehen, cmd!=0 -> laufen. Kein separater Balance-Regler mehr zu waehlen.
-export SIM_REALTIME_FACTOR=${SIM_REALTIME_FACTOR:-1.0}  # im Lockstep irrelevant
+# Lockstep ist auf Echtzeit gedeckelt; SIM_REALTIME_FACTOR steuert das Tempo (1.0=Echtzeit).
+export SIM_REALTIME_FACTOR=${SIM_REALTIME_FACTOR:-1.0}
 export G1_SIM_MODE=true
 
 # ── Zusammenfassung ─────────────────────────────────────────────────────
 echo -e "${B}Starte mit:${R}"
 echo -e "   RViz           : ${G}USE_RVIZ=${USE_RVIZ}${R}"
-echo -e "   Lockstep       : ${G}SIM_LOCKSTEP=${SIM_LOCKSTEP}${R}"
+echo -e "   Lockstep       : ${G}SIM_LOCKSTEP=${SIM_LOCKSTEP}${R} ${DIM}(immer an, auf Echtzeit gedeckelt)${R}"
 echo -e "   Basis          : ${G}HOLD_BASE_MODE=${HOLD_BASE_MODE}${R} (Loco-Modus)"
 echo -e "   Loco-Policy    : ${G}g1_wholebody${R} ${DIM}(Stehen=cmd0; Laufen via Streamdeck)${R}"
 [ "${#PASSTHRU[@]}" -gt 0 ] && echo -e "   compose-Args   : ${G}${PASSTHRU[*]}${R}"
