@@ -272,6 +272,15 @@ class LocoSim(Node):
         if self.low_state is None:
             self.get_logger().warn(f"Kann nicht STAND ({reason}): keine rt/lowstate.")
             return
+        if self.state == STAND:
+            # Schon im Stand: die Eintritts-Rampe NICHT neu starten. Sonst faellt
+            # kp_scale_eff schlagartig von voller (10x) auf 1x zurueck und das
+            # aufrichtende Feedforward-Moment (tau*ramp) auf 0 -> der Balancer wird
+            # fuer bal_ramp_s "weich" -> Ruck/Sturz. Ein zweiter BALANCING-Befehl darf
+            # den laufenden Stand nicht stoeren -> nur bestaetigen.
+            self._walk_pending = False
+            self.get_logger().info(f"{reason}: bereits im STAND, balanciere weiter.")
+            return
         with self._lock:
             self.cmd = np.zeros(3, dtype=np.float32)
         self._bal_entering = True           # Rampe: aktuelle Beinpose -> default

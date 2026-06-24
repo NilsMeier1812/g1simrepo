@@ -131,10 +131,9 @@ class ButtonGUI(QWidget):
         self.cmd_timer.start(33)
 
         # Nach kurzer Anlaufzeit (DDS/loco_sim/arm_controller verbunden) automatisch
-        # die Arme aktivieren und in den BALANCING-Stand gehen. Zweimal feuern (3s/6s),
-        # falls beim ersten Mal der Subscriber noch nicht verbunden war (DDS late-join).
+        # die Arme aktivieren und in den BALANCING-Stand gehen. NUR EINMAL feuern (3s):
+        # ein zweiter Auto-Start (frueher 6s) loeste einen Ruck/Sturz aus.
         QTimer.singleShot(3000, self._auto_start)
-        QTimer.singleShot(6000, self._auto_start)
 
     def init_ui(self):
         main_layout = QVBoxLayout()
