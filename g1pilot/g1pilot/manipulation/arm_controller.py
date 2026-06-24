@@ -230,9 +230,17 @@ class ArmController(Node):
         self.walk_left  = np.array(self.get_parameter("walk_left").value,  dtype=float)
         self.walk_right = np.array(self.get_parameter("walk_right").value, dtype=float)
         self.walk_mode = False
+        # Sobald die Arme die Lauf-Pose erreicht haben, meldet der Controller das per
+        # /g1pilot/arms/walk_ready -> loco_sim laeuft erst DANN los (Arme aufgeraeumt).
+        # Toleranz etwas lockerer als die Homing-Toleranz (die Haltepose muss nicht
+        # exakt sitzen, nur "im Wesentlichen aufgeraeumt").
+        self.declare_parameter("walk_ready_tolerance", 0.05)
+        self.walk_ready_tolerance = float(self.get_parameter("walk_ready_tolerance").value)
+        self._walk_ready_sent = False
 
         self.left_workspace_publisher = self.create_publisher(Marker, '/g1pilot/workspace/left', 10)
         self.right_workspace_publisher = self.create_publisher(Marker, '/g1pilot/workspace/right', 10)
+        self.walk_ready_publisher = self.create_publisher(Bool, '/g1pilot/arms/walk_ready', 1)
 
 
         self.joint_pub = self.create_publisher(JointState, "/joint_states", 10)
@@ -709,7 +717,8 @@ class ArmController(Node):
         self.walk_mode = True
         self.homing_active = False
         self.homing_reached = False
-        self.get_logger().info("WALK-Modus: Arme in Lauf-Pose halten.")
+        self._walk_ready_sent = False    # erst melden, wenn die Lauf-Pose erreicht ist
+        self.get_logger().info("WALK-Modus: Arme in Lauf-Pose aufraeumen, dann walk_ready.")
 
     def _on_balance_mode(self, msg: Bool):
         """BALANCING: Arme wieder freigeben (rviz/Marker). Sie HALTEN ihre aktuelle
@@ -719,6 +728,9 @@ class ArmController(Node):
         self.walk_mode = False
         self.homing_active = False
         self.homing_reached = False
+        if self._walk_ready_sent:
+            self._walk_ready_sent = False
+            self.walk_ready_publisher.publish(Bool(data=False))
         self._align_ik_to_config(self._last_q_target[0:7], self._last_q_target[7:14])
         self.get_logger().info("BALANCING-Modus: Arme frei (rviz/Marker).")
 
@@ -956,6 +968,13 @@ class ArmController(Node):
             # WALK: Arme auf die Lauf-Pose halten (Marker ignoriert). Die
             # Geschwindigkeitsbegrenzung unten faehrt sie sanft dorthin (kein Teleport).
             q_target = np.concatenate((self.walk_left, self.walk_right))
+            # Sobald die Arme die Lauf-Pose erreicht haben: einmalig walk_ready melden,
+            # damit loco_sim erst dann mit dem Laufen beginnt (Arme aufgeraeumt).
+            if (not self._walk_ready_sent
+                    and np.linalg.norm(q_target - self._last_q_target) < self.walk_ready_tolerance):
+                self._walk_ready_sent = True
+                self.walk_ready_publisher.publish(Bool(data=True))
+                self.get_logger().info("Lauf-Pose erreicht -> walk_ready (Arme aufgeraeumt).")
 
         elif self.homing_active:
             q_target = np.concatenate((self.home_left, self.home_right))

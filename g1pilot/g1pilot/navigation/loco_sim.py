@@ -123,6 +123,18 @@ class LocoSim(Node):
         # ueber fall_debounce_s -> DAMP.
         self.declare_parameter("fall_gz", -0.5)
         self.declare_parameter("fall_debounce_s", 0.3)
+        # HOLD: Daempfungs-Faktor auf die Bein-kd. Standard-kd ist fuer das aktive
+        # Balancieren ausgelegt und im (verschweissten) HOLD viel zu schwach -> die
+        # frei haengenden Beine schwingen hin und her (Fuesse erreichen knapp nicht
+        # den Boden). Hoehere kd haelt sie ruhig auf der Default-Standpose, OHNE sie
+        # in einer ausgelenkten Schwungpose festzuhalten -> sauberer Balance-Eintritt.
+        self.declare_parameter("hold_kd_scale", 6.0)
+        # WALK erst freigeben, wenn der arm_controller die Arme in die Lauf-Pose
+        # aufgeraeumt hat (/g1pilot/arms/walk_ready). Bis dahin bleibt loco_sim im
+        # stationaeren PD-STAND -> der Roboter laeuft nicht mit weit abstehenden
+        # Armen los. Fallback nach walk_arm_timeout_s, falls keine Meldung kommt.
+        self.declare_parameter("walk_arm_wait", True)
+        self.declare_parameter("walk_arm_timeout_s", 4.0)
 
         # PD-Balancer-Gains (live tunebar via ros2 param set). Bewaehrte Defaults.
         self.declare_parameter("bal_kp_scale", 10.0)         # Posture-Steifigkeit (Haupthebel)
@@ -188,6 +200,8 @@ class LocoSim(Node):
         self._bal_entering = False         # PD-Eintritts-Rampe
         self._bal_q_start = None
         self._bal_t0 = 0.0
+        self._walk_pending = False         # WALK angefordert, warte auf Arme
+        self._walk_pending_t0 = 0.0
         self._dbg_grav = np.array([0.0, 0.0, -1.0], dtype=np.float32)
         self._dbg_gyro = np.zeros(3, dtype=np.float32)
 
@@ -196,6 +210,7 @@ class LocoSim(Node):
         self.create_subscription(Bool, "/g1pilot/emergency_stop", self._on_emergency, 10)
         self.create_subscription(Bool, "/g1pilot/start", self._on_start, 10)
         self.create_subscription(Twist, "/g1pilot/loco_cmd_vel", self._on_cmd_vel, 10)
+        self.create_subscription(Bool, "/g1pilot/arms/walk_ready", self._on_arms_walk_ready, 10)
         self.arms_enabled_pub = self.create_publisher(Bool, "/g1pilot/arms/enabled", 1)
 
         self._push_port = int(os.environ.get("SIM_PUSH_PORT", "47900"))
@@ -263,6 +278,7 @@ class LocoSim(Node):
         self._bal_q_start = None
         self._cmd_zero_since = None
         self._fall_since = None
+        self._walk_pending = False          # ein STAND bricht eine WALK-Anforderung ab
         self.state = STAND
         self.get_logger().info(f"{reason} -> STAND (PD, Fuesse geplant).")
 
@@ -274,6 +290,7 @@ class LocoSim(Node):
         self.action[:] = 0.0
         self._cmd_zero_since = None
         self._fall_since = None
+        self._walk_pending = False
         self.state = WALK
         self.get_logger().info(f"{reason} -> WALK (Policy).")
 
@@ -282,18 +299,40 @@ class LocoSim(Node):
             self._enter_stand("START BALANCING")
 
     def _on_start_walking(self, msg: Bool):
-        if msg.data:
+        if not msg.data:
+            return
+        # WALK angefordert: erst die Arme aufraeumen lassen (der arm_controller faehrt
+        # sie auf dieselbe start_walking-Nachricht hin in die Lauf-Pose). Solange im
+        # stationaeren PD-STAND bleiben -> der Roboter laeuft nicht mit abstehenden
+        # Armen los. Sobald /g1pilot/arms/walk_ready True ist (oder der Timeout greift),
+        # geht es nach WALK. Abschaltbar via walk_arm_wait=false.
+        if not bool(self.get_parameter("walk_arm_wait").value):
             self._enter_walk("START WALKING")
+            return
+        # Stationaer stehen bleiben (Fuesse geplant), waehrend die Arme aufraeumen.
+        # _enter_stand zuerst (loescht u.a. ein altes pending-Flag), DANACH scharf
+        # schalten, damit walk_ready/Timeout den Wechsel nach WALK ausloesen.
+        if self.state != STAND:
+            self._enter_stand("START WALKING (warte auf Arme)")
+        self._walk_pending = True
+        self._walk_pending_t0 = time.perf_counter()
+        self.get_logger().info("START WALKING -> warte, bis die Arme aufgeraeumt sind ...")
+
+    def _on_arms_walk_ready(self, msg: Bool):
+        if msg.data and self._walk_pending:
+            self._enter_walk("Arme aufgeraeumt")
 
     def _on_emergency(self, msg: Bool):
         if msg.data:
             self.state = DAMP
+            self._walk_pending = False
             self.arms_enabled_pub.publish(Bool(data=False))
             self.get_logger().warn("EMERGENCY STOP -> DAMP + Arme aus.")
 
     def _on_start(self, msg: Bool):
         if msg.data:
             self.state = HOLD
+            self._walk_pending = False
             self.get_logger().info("START -> Standby (HOLD).")
 
     def _on_push(self, msg: Bool):
@@ -352,6 +391,15 @@ class LocoSim(Node):
                 self.state = DAMP
             busy = time.perf_counter() - t0
 
+            # WALK-Anforderung haengt? Falls keine arms/walk_ready-Meldung kommt
+            # (arm_controller aus/anderer Modus), nach Timeout trotzdem loslaufen.
+            if self._walk_pending:
+                if (time.perf_counter() - self._walk_pending_t0
+                        > float(self.get_parameter("walk_arm_timeout_s").value)):
+                    self.get_logger().warn(
+                        "WALK: keine arms/walk_ready-Meldung -> Timeout, laufe trotzdem los.")
+                    self._enter_walk("Arme-Timeout")
+
             if self.state in (STAND, WALK):
                 diag_n += 1
                 if diag_n >= 100:
@@ -402,7 +450,12 @@ class LocoSim(Node):
             mc.kd = float(WAIST_KD[k]) * math.sqrt(waist_scale)
 
     def _send_hold(self):
-        # Steifer Stand: Beine auf Default (weiche Gains), Taille gehalten. Arme: frei.
+        # Steifer Stand: Beine auf Default-Standpose, Taille gehalten. Arme: frei.
+        # Erhoehte Daempfung (hold_kd_scale), damit die im (verschweissten) HOLD frei
+        # haengenden Beine NICHT hin- und herschwingen, sondern ruhig auf der Default-
+        # Pose sitzen. Ziel bleibt bewusst die natuerliche Standpose (default), nicht
+        # die zufaellige Auslenkung -> der Balance-Eintritt startet aus der Ruhe.
+        kd_scale = float(self.get_parameter("hold_kd_scale").value)
         for k, idx in enumerate(LEG_IDX):
             mc = self.cmd_msg.motor_cmd[idx]
             mc.mode = 1
@@ -410,7 +463,7 @@ class LocoSim(Node):
             mc.dq = 0.0
             mc.tau = 0.0
             mc.kp = float(LEG_KP[k])
-            mc.kd = float(LEG_KD[k])
+            mc.kd = float(LEG_KD[k]) * kd_scale
         self._hold_waist()
         self._write()
 

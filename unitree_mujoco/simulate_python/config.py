@@ -103,7 +103,11 @@ LOCO_STARTUP_HOLD_POSE = [
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  # rechter Arm (22..28); 0 = loco_sims HOLD-Ziel -> kein Sprung
 ]
 LOCO_STARTUP_HOLD_KP = 100.0
-LOCO_STARTUP_HOLD_KD = 2.0
+# Kraeftig gedaempft: die im verschweissten Startup-Hold frei haengenden Beine
+# (Fuesse knapp ueber dem Boden) sollen NICHT schwingen, sondern ruhig auf der
+# Startpose sitzen. kd=2 ist dafuer zu schwach (untergedaempft). Passt zur
+# erhoehten HOLD-Daempfung in loco_sim (hold_kd_scale).
+LOCO_STARTUP_HOLD_KD = 12.0
 # === LOCO STARTUP HOLD END ===
 
 
