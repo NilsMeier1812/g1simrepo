@@ -105,7 +105,15 @@ def SimulationLockstep(unitree):
     """Deterministische Sim: GENAU decimation Physikschritte pro empfangenem
     rt/lowcmd, danach EIN frischer rt/lowstate. Die Regelrate ist damit an die
     Sim-Uhr gekoppelt (nicht Wall-Clock) -> eine 50-Hz-Policy sieht auf jedem PC
-    exakt ihre trainierten 20 ms Physik/Schritt. Kein SIM_REALTIME_FACTOR-Sleep.
+    exakt ihre trainierten 20 ms Physik/Schritt.
+
+    ECHTZEIT-PACING: pro Regelzyklus werden decimation*timestep Sekunden SIM-Zeit
+    simuliert; der Zyklus wird auf die entsprechende WANDZEIT (geteilt durch
+    SIM_REALTIME_FACTOR) gestreckt. Sonst laeuft die Sim so schnell wie die CPU kann
+    (auf schnellen PCs 2-3x Echtzeit -> wirkt wie ein vorgespultes Video). Das Pacing
+    DECKELT nur die Geschwindigkeit; auf langsamen PCs darf der Zyklus laenger dauern
+    (Physik/Schritt bleibt identisch -> Determinismus unangetastet). factor<=0 -> kein
+    Pacing (so schnell wie moeglich).
 
     Watchdog: kommt kein neues Kommando (Controller noch nicht verbunden oder
     abgestuerzt), wird nach SIM_LOCKSTEP_WATCHDOG_S trotzdem geschritten, damit
@@ -113,8 +121,12 @@ def SimulationLockstep(unitree):
     global mj_data, mj_model
     decimation = int(getattr(config, "SIM_LOCKSTEP_DECIMATION", 20))
     watchdog = float(getattr(config, "SIM_LOCKSTEP_WATCHDOG_S", 0.2))
+    factor = float(getattr(config, "SIM_REALTIME_FACTOR", 1.0))
+    # Soll-Wandzeit pro Regelzyklus (decimation Schritte = SIM_CONTROL_DT Sim-Zeit).
+    cycle_wall = (decimation * mj_model.opt.timestep / factor) if factor > 0 else 0.0
     last_cmd_seq = -1
     while viewer.is_running():
+        cycle_start = time.perf_counter()
         # Auf ein NEUES Kommando warten (oder Watchdog), ohne die CPU zu blockieren.
         t_wait = time.perf_counter()
         while (unitree.cmd_seq == last_cmd_seq
@@ -149,6 +161,13 @@ def SimulationLockstep(unitree):
         # Frischen State NACH den Schritten publizieren -> der Controller reagiert
         # immer auf den Post-Step-Zustand (strikte 1:1-Alternation).
         unitree.PublishLowState()
+
+        # Echtzeit-Pacing: Rest des Zyklus bis zur Soll-Wandzeit abwarten, damit die
+        # Sim NIE schneller als Echtzeit laeuft (deckelt, verlangsamt nie die Physik).
+        if cycle_wall > 0.0:
+            remaining = cycle_wall - (time.perf_counter() - cycle_start)
+            if remaining > 0:
+                time.sleep(remaining)
 
 
 def PhysicsViewerThread():

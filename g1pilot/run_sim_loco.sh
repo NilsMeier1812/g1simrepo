@@ -22,12 +22,13 @@ echo "[run_sim_loco] HOLD_BASE_MODE=off -> Basis ist FREI (Loco-Modus)."
 # Physikschritte pro rt/lowcmd und publiziert danach EINEN frischen rt/lowstate;
 # loco_sim rechnet ein Kommando pro State. Damit sieht die 50-Hz-Policy auf JEDEM
 # PC exakt ihre trainierten 20 ms Physik/Schritt - ohne das fragile per-PC-Tuning
-# von SIM_REALTIME_FACTOR. Der Realtime-Faktor ist im Lockstep irrelevant (kein
-# Wall-Clock-Sleep). Der Roboter laeuft auf langsamen PCs optisch langsamer, regelt
-# aber korrekt. Abschaltbar mit SIM_LOCKSTEP=0 (dann gilt wieder der Faktor unten).
+# der Regelrate. Der Lockstep-Loop wird zusaetzlich auf ECHTZEIT gedeckelt
+# (SIM_REALTIME_FACTOR=1.0 -> Echtzeit; sonst lief die Sim auf schnellen PCs 2-3x zu
+# schnell). Auf langsamen PCs darf der Zyklus laenger dauern (Physik bleibt korrekt).
+# Schneller/langsamer per SIM_REALTIME_FACTOR; abschaltbar mit SIM_LOCKSTEP=0.
 export SIM_LOCKSTEP=${SIM_LOCKSTEP:-1}
 export SIM_REALTIME_FACTOR=${SIM_REALTIME_FACTOR:-1.0}
-echo "[run_sim_loco] SIM_LOCKSTEP=$SIM_LOCKSTEP (1=deterministische 50-Hz-Regelrate; Faktor=$SIM_REALTIME_FACTOR, im Lockstep irrelevant)."
+echo "[run_sim_loco] SIM_LOCKSTEP=$SIM_LOCKSTEP (1=deterministische 50-Hz-Regelrate, auf Echtzeit gedeckelt; SIM_REALTIME_FACTOR=$SIM_REALTIME_FACTOR)."
 
 G1_SIM_MODE=true HOLD_BASE_MODE=off SIM_LOCKSTEP=$SIM_LOCKSTEP SIM_REALTIME_FACTOR=$SIM_REALTIME_FACTOR \
   docker compose --profile sim up "$@"

@@ -77,7 +77,7 @@ class UnitreeSdk2Bridge:
         if self.lockstep:
             print(f"[BRIDGE] Lockstep aktiv: {self.decimation} Physikschritte pro "
                   f"rt/lowcmd, lowstate inline danach (deterministische 50-Hz-Regelrate, "
-                  f"SIM_REALTIME_FACTOR irrelevant).", flush=True)
+                  f"auf Echtzeit gedeckelt via SIM_REALTIME_FACTOR).", flush=True)
 
         # Loco-Startup-Hold: im off-Modus Beine/Taille in einer Standpose halten,
         # SOLANGE noch kein Loco-Controller auf rt/lowcmd kommandiert hat (legs is
