@@ -8,7 +8,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 import os
 
 package_name = "g1pilot"
-urdf_file_name = "29dof.urdf"
+urdf_file_name = "g1_29dof_inspire_ftp.urdf"
 rviz_config_file_name = "29dof.rviz"
 
 def generate_launch_description():

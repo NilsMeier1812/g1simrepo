@@ -86,7 +86,7 @@ class G1IKSolver:
         try:
             if urdf_path is None or mesh_dir is None:
                 pkg_share = get_package_share_directory('g1pilot')
-                urdf_path = urdf_path or os.path.join(pkg_share, 'description_files', 'urdf', '29dof.urdf')
+                urdf_path = urdf_path or os.path.join(pkg_share, 'description_files', 'urdf', 'g1_29dof_inspire_ftp.urdf')
                 mesh_dir = mesh_dir or os.path.join(pkg_share, 'description_files', 'meshes')
 
             # Load kinematic + collision models
