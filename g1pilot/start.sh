@@ -84,6 +84,12 @@ ask_menu "1) RViz mitstarten? (MuJoCo-Fenster kommt immer)" 2 "${USE_RVIZ:-}" \
   "Nein — nur MuJoCo-Fenster|false"
 export USE_RVIZ="$REPLY_VALUE"
 
+# ── 1b) Inspire-FTP-Haende ───────────────────────────────────────────────
+ask_menu "1b) Inspire-FTP-Hand-Bridge mitstarten? (GUIs :8766/:8765, Finger in RViz)" 1 "${USE_HANDS:-}" \
+  "Ja  — Hand-Bridge an (robot_state gibt Finger an die Bridge ab)|true" \
+  "Nein — keine Hand-Bridge (robot_state zeigt Finger als Default 0)|false"
+export USE_HANDS="$REPLY_VALUE"
+
 # ── 2) Rebuild ──────────────────────────────────────────────────────────
 ask_menu "2) Docker-Images vor dem Start neu bauen?" 1 "" \
   "Nein — vorhandene Images nutzen (schnell)|0" \
@@ -103,6 +109,7 @@ export G1_SIM_MODE=true
 # ── Zusammenfassung ─────────────────────────────────────────────────────
 echo -e "${B}Starte mit:${R}"
 echo -e "   RViz           : ${G}USE_RVIZ=${USE_RVIZ}${R}"
+echo -e "   Inspire-Haende : ${G}USE_HANDS=${USE_HANDS}${R} ${DIM}(Bridge :8766/:8765)${R}"
 echo -e "   Lockstep       : ${G}SIM_LOCKSTEP=${SIM_LOCKSTEP}${R} ${DIM}(immer an, auf Echtzeit gedeckelt)${R}"
 echo -e "   Basis          : ${G}HOLD_BASE_MODE=${HOLD_BASE_MODE}${R} (Loco-Modus)"
 echo -e "   Loco-Policy    : ${G}g1_wholebody${R} ${DIM}(Stehen=cmd0; Laufen via Streamdeck)${R}"

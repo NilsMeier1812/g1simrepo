@@ -79,6 +79,7 @@ To run the docker image in the robot with the following command:
 - **robot_state**: Publishes the state of the robot, including joint positions, velocities, and efforts and custom message to visualize the temperature and voltage of each motor.
 - **interactive_marker**: Provides an interactive marker in RViz to control the end-effector position and orientation in Cartesian space.
 - **dx3_controller**: Node to control the DEX3 Unitree hand, allowing to open and close the hand using ROS2 commands.
+- **inspire_hand**: Inspire RH56DFTP-2 hand bridge for the MuJoCo sim. Serves the (unchanged) HTML control/force GUIs over WebSocket (`:8766` / `:8765`) and drives the URDF finger joints via `/joint_states` (RViz). Replaces the Modbus-over-LAN path of the standalone `ftp_hand_controller`. Two-stage design (RViz now, MuJoCo physics + faked tactile later) — see [`g1pilot/manipulation/inspire_ftp/README.md`](g1pilot/manipulation/inspire_ftp/README.md). Toggle with `USE_HANDS` in `start.sh`.
 - **joystick**: Node to teleoperate the robot using a joystick, mapping joystick inputs to robot commands.
 - **joy_mux**: Multiplexer for joystick inputs, allowing to switch between different control modes, specifcally made to provide autonomous navigation and teleoperation using the same joystick.
 - **loco_client**: Client node to communicate with the Unitree loco controller, providing high-level commands for walking and balancing and low-level commands for joint control and cartesian control.

@@ -27,7 +27,14 @@ def generate_launch_description():
     #             darum ist RViz jetzt wieder gefahrlos zuschaltbar.
     use_rviz = os.environ.get('USE_RVIZ', 'false').strip().lower()
 
-    return LaunchDescription([
+    #  USE_HANDS : "true"/"false" — Inspire-FTP-Hand-Bridge mitstarten (Default an).
+    #              Wenn an, uebernimmt die Bridge die Finger-Gelenke auf /joint_states,
+    #              also publiziert robot_state sie NICHT mehr selbst (publish_hand_joints
+    #              = false), sonst kollidieren beide Quellen.
+    use_hands = os.environ.get('USE_HANDS', 'true').strip().lower()
+    hands_on = use_hands in ('1', 'true', 'yes', 'on')
+
+    nodes = [
 
         # ── 1. robot_state: liest LowState_ von MuJoCo über DDS lo ──────
         IncludeLaunchDescription(
@@ -38,6 +45,8 @@ def generate_launch_description():
                 'use_robot':            'true',
                 'interface':            'lo',
                 'publish_joint_states': 'true',
+                # Finger gibt robot_state nur ab, wenn die Hand-Bridge sie uebernimmt.
+                'publish_hand_joints':  'false' if hands_on else 'true',
                 'sim_rate_hz':          '50.0',
                 # rviz2 standardmaessig AUS (USE_RVIZ=false). Frueher brach RViz die
                 # 50-Hz-Regelschleife ein; unter LOCKSTEP ist das nicht mehr der Fall
@@ -88,4 +97,24 @@ def generate_launch_description():
                 'policy':    'g1_wholebody',
             }]
         ),
-    ])
+    ]
+
+    # ── 5. Inspire-FTP-Hand-Bridge (optional, Default an) ───────────────
+    #    Bedient die HTML-GUIs (Controller :8766 / Viewer :8765) und bewegt die
+    #    Finger-Gelenke in RViz (/joint_states). Modbus-frei -> redet mit der Sim.
+    if hands_on:
+        nodes.append(Node(
+            package='g1pilot',
+            executable='inspire_hand',
+            name='inspire_ftp_bridge',
+            output='screen',
+            parameters=[{
+                'ws_host':        '0.0.0.0',
+                'controller_port': 8766,
+                'viewer_port':     8765,
+                'update_rate_hz':  50.0,
+                'backend':         'sim',
+            }]
+        ))
+
+    return LaunchDescription(nodes)

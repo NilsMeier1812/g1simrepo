@@ -15,6 +15,7 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
     use_robot = LaunchConfiguration("use_robot")
     publish_joint_states = LaunchConfiguration("publish_joint_states")
+    publish_hand_joints = LaunchConfiguration("publish_hand_joints")
     interface = LaunchConfiguration("interface")
     sim_rate_hz = LaunchConfiguration("sim_rate_hz")
     use_rviz = LaunchConfiguration("use_rviz")
@@ -32,6 +33,10 @@ def generate_launch_description():
                               description="Connect to real robot if true"),
         DeclareLaunchArgument("publish_joint_states", default_value="true",
                               description="Publish joint_states from node"),
+        DeclareLaunchArgument("publish_hand_joints", default_value="true",
+                              description="Finger-Gelenke als Default 0.0 mitpublizieren. "
+                                          "Auf false setzen, wenn die Inspire-FTP-Bridge "
+                                          "(inspire_hand) die Finger uebernimmt."),
         DeclareLaunchArgument("interface", default_value="eth0",
                               description="Network interface for Unitree SDK"),
         DeclareLaunchArgument("sim_rate_hz", default_value="50.0",
@@ -52,6 +57,7 @@ def generate_launch_description():
                 'use_robot': ParameterValue(use_robot, value_type=bool),
                 'sim_rate_hz': ParameterValue(sim_rate_hz, value_type=float),
                 'publish_joint_states': ParameterValue(publish_joint_states, value_type=bool),
+                'publish_hand_joints': ParameterValue(publish_hand_joints, value_type=bool),
             }],
             output='screen'
         ),

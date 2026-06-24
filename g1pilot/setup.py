@@ -26,10 +26,15 @@ setup(
             'launch/mola_launcher.launch.py',
             'launch/livox_launcher.launch.py',
             'launch/manipulation_launcher.launch.py',
+            'launch/hand_launcher.launch.py',
 
             'launch/bringup_launcher.launch.py',
             'launch/bringup_sim.launch.py',
         ]),
+
+        # Inspire-FTP-Hand HTML-GUIs (Controller/Viewer) – im Browser zu oeffnen.
+        (f'share/{package_name}/manipulation/inspire_ftp/web',
+            expand(['g1pilot/manipulation/inspire_ftp/web/*.html'])),
 
         # URDF / XML
         (f'share/{package_name}/description_files/urdf',
@@ -72,6 +77,7 @@ setup(
             'interactive_marker = g1pilot.manipulation.interactive_marker:main',
             'dx3_controller = g1pilot.manipulation.dx3_hand:main',
             'arm_controller = g1pilot.manipulation.arm_controller:main',
+            'inspire_hand = g1pilot.manipulation.inspire_ftp.bridge:main',
 
             # Teleoperation Nodes
             'joystick = g1pilot.teleoperation.joystick:main',

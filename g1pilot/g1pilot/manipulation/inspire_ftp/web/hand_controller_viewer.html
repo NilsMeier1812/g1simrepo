@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>RH56DFTP-2 · Hand Controller</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap');
+
+:root {
+  --bg:      #060810;
+  --surface: #0b0f1a;
+  --panel:   #0e1420;
+  --card:    #101828;
+  --border:  #1e2e44;
+  --accent:  #00e5ff;
+  --accentR: #ff6d00;
+  --green:   #00e676;
+  --red:     #ff1744;
+  --yellow:  #ffd740;
+  --purple:  #c97eff;
+  --dim:     #4a6880;       /* heller als vorher für Lesbarkeit */
+  --text:    #d0e4f4;       /* heller */
+  --textlo:  #8aaac8;       /* "schwache" Texte – trotzdem lesbar */
+  --mono:    'Share Tech Mono', monospace;
+  --display: 'Orbitron', sans-serif;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--text); font-family: var(--mono); min-height: 100vh; }
+body::before {
+  content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 999;
+  background: repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.04) 2px,rgba(0,0,0,.04) 4px);
+}
+
+/* ── Header ── */
+header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 11px 22px; border-bottom: 1px solid var(--border);
+  background: #08101e; position: relative;
+}
+header::after {
+  content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent); opacity: .3;
+}
+.logo { display: flex; align-items: center; gap: 14px; }
+.logo-mark {
+  width: 38px; height: 38px; border: 1px solid var(--accent); border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--display); font-size: 9px; font-weight: 900; color: var(--accent);
+  text-align: center; line-height: 1.1; letter-spacing: 1px;
+  box-shadow: 0 0 12px rgba(0,229,255,.12), inset 0 0 10px rgba(0,229,255,.04);
+}
+.logo-text { font-family: var(--display); font-size: .82rem; font-weight: 700; color: var(--accent); letter-spacing: 3px; }
+.logo-sub  { font-size: .58rem; color: var(--textlo); letter-spacing: 2px; margin-top: 2px; }
+
+.hdr-r { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+input.url {
+  background: var(--surface); border: 1px solid var(--border); color: var(--text);
+  font-family: var(--mono); font-size: .7rem; padding: 5px 9px; border-radius: 4px; width: 185px;
+}
+.btn {
+  font-family: var(--mono); font-size: .67rem; letter-spacing: 1px; padding: 5px 13px;
+  border-radius: 4px; cursor: pointer; background: transparent;
+  border: 1px solid var(--accent); color: var(--accent); transition: all .15s;
+}
+.btn:hover { background: var(--accent); color: #000; }
+.ws-badge {
+  display: flex; align-items: center; gap: 7px; font-size: .67rem; color: var(--textlo);
+  padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
+}
+.ws-led { width: 8px; height: 8px; border-radius: 50%; background: var(--red); flex-shrink: 0; }
+.ws-led.live { background: var(--green); box-shadow: 0 0 8px var(--green); animation: blink 2s infinite; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+/* ── Global Bar ── */
+.global-bar {
+  display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  padding: 11px 22px; border-bottom: 1px solid var(--border); background: #090d18;
+}
+.g-label { font-size: .65rem; color: var(--textlo); letter-spacing: 1px; white-space: nowrap; }
+
+/* Master Switch */
+.master-row { display: flex; align-items: center; gap: 10px; }
+.sw-wrap { position: relative; width: 52px; height: 26px; flex-shrink: 0; }
+.sw-wrap input { opacity: 0; width: 0; height: 0; position: absolute; }
+.sw-track {
+  position: absolute; cursor: pointer; inset: 0; background: #162030;
+  border-radius: 26px; transition: .3s; border: 1px solid var(--border);
+}
+.sw-track::before {
+  content: ''; position: absolute; width: 18px; height: 18px; left: 3px; bottom: 3px;
+  background: var(--dim); border-radius: 50%; transition: .3s;
+}
+input:checked ~ .sw-track { background: rgba(0,229,255,.12); border-color: var(--accent); }
+input:checked ~ .sw-track::before { transform: translateX(26px); background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+.sw-label { font-family: var(--display); font-size: .68rem; letter-spacing: 2px; min-width: 90px; }
+.sw-label.on  { color: var(--accent); }
+.sw-label.off { color: var(--textlo); }
+
+/* Speed */
+.speed-row { display: flex; align-items: center; gap: 10px; }
+input.hrange {
+  -webkit-appearance: none; height: 5px; border-radius: 3px; outline: none; cursor: pointer;
+  background: linear-gradient(90deg, var(--accent) var(--pct,50%), var(--border) var(--pct,50%));
+}
+input.hrange::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 8px rgba(0,229,255,.5); cursor: pointer;
+}
+input.hrange::-moz-range-thumb {
+  width: 16px; height: 16px; border-radius: 50%; border: none;
+  background: var(--accent); cursor: pointer;
+}
+.speed-val { font-family: var(--display); font-size: .75rem; color: var(--accent); min-width: 38px; text-align: right; }
+
+.sep { width: 1px; height: 24px; background: var(--border); flex-shrink: 0; }
+
+/* Quick Buttons */
+.qbtn {
+  font-family: var(--mono); font-size: .65rem; padding: 5px 12px; border-radius: 4px;
+  cursor: pointer; background: transparent; transition: all .15s; letter-spacing: 1px;
+  white-space: nowrap;
+}
+.qbtn.open  { border: 1px solid var(--green);  color: var(--green); }
+.qbtn.open:hover  { background: var(--green);  color: #000; }
+.qbtn.close { border: 1px solid var(--yellow); color: var(--yellow); }
+.qbtn.close:hover { background: var(--yellow); color: #000; }
+.qbtn:disabled { opacity: .35; cursor: not-allowed; }
+
+/* ── Main ── */
+main {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 14px; padding: 14px 22px; max-width: 1800px; margin: 0 auto;
+}
+.hand-panel {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 10px; overflow: hidden;
+}
+.p-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 16px; border-bottom: 1px solid var(--border); background: #080e1a;
+}
+.p-badge {
+  width: 24px; height: 24px; border-radius: 5px; font-family: var(--display);
+  font-size: .62rem; font-weight: 700; display: flex; align-items: center; justify-content: center;
+}
+.p-badge.L { border: 1px solid var(--accent);  color: var(--accent);  background: rgba(0,229,255,.04); }
+.p-badge.R { border: 1px solid var(--accentR); color: var(--accentR); background: rgba(255,109,0,.04); }
+.p-title { font-family: var(--display); font-size: .75rem; letter-spacing: 3px; margin-left: 9px; }
+.p-conn  { display: flex; align-items: center; gap: 7px; font-size: .62rem; color: var(--textlo); }
+.c-led   { width: 7px; height: 7px; border-radius: 50%; background: var(--red); }
+.c-led.ok { background: var(--green); box-shadow: 0 0 6px var(--green); animation: blink 2s infinite; }
+
+/* ── DOF Grid: 6 Spalten ── */
+.dof-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  border-top: none;
+}
+.dof-card {
+  padding: 12px 8px 14px;
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+}
+.dof-card:last-child { border-right: none; }
+
+.dof-name {
+  font-family: var(--display); font-size: .55rem; font-weight: 700;
+  color: var(--accent); letter-spacing: 1px; text-align: center;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%;
+}
+.sec-label {
+  font-size: .58rem; color: var(--textlo); letter-spacing: 1px; text-transform: uppercase;
+}
+
+/* ── Vertikaler Slider ──
+   Trick: horizontaler Input wird in einem Container mit overflow:hidden
+   per rotate(-90deg) vertikal gemacht. Der Container definiert die sichtbare Höhe.
+   Der Input selbst ist breiter/höher als der Container und wird geclipt.
+*/
+.vslider-wrap {
+  position: relative;
+  width: 32px;
+  height: 160px;
+  overflow: visible;   /* damit Thumb sichtbar ist */
+  display: flex; align-items: center; justify-content: center;
+}
+input.vslider {
+  -webkit-appearance: none; appearance: none;
+  width: 160px; height: 6px;
+  transform: rotate(-90deg);
+  transform-origin: center center;
+  border-radius: 3px; outline: none; cursor: pointer;
+  background: linear-gradient(90deg, var(--accent) var(--pct,0%), var(--border) var(--pct,0%));
+  /* Pointer-Events über die gesamte gedrehte Länge */
+  touch-action: none;
+}
+input.vslider::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 20px; height: 20px; border-radius: 50%;
+  background: var(--card); border: 2px solid var(--accent);
+  box-shadow: 0 0 10px rgba(0,229,255,.5); cursor: grab;
+}
+input.vslider:active::-webkit-slider-thumb { cursor: grabbing; box-shadow: 0 0 16px rgba(0,229,255,.8); }
+input.vslider::-moz-range-thumb {
+  width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--accent);
+  background: var(--card); cursor: grab;
+}
+
+/* Ist-Winkel Marker (gelbe horizontale Linie auf dem Slider) */
+.vmarker {
+  position: absolute; left: 50%; transform: translateX(-50%);
+  width: 28px; height: 3px;
+  background: var(--yellow); border-radius: 2px; pointer-events: none;
+  box-shadow: 0 0 8px var(--yellow); transition: bottom .12s ease;
+}
+
+.angle-vals { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.aset { font-family: var(--display); font-size: .78rem; color: var(--accent); }
+.aact { font-size: .62rem; color: var(--yellow); }
+
+/* ── Kraft-Sektion ── */
+.force-section { width: 100%; display: flex; flex-direction: column; gap: 5px; align-items: stretch; }
+
+input.fslider {
+  -webkit-appearance: none; width: 100%; height: 5px;
+  border-radius: 3px; outline: none; cursor: pointer;
+  background: linear-gradient(90deg, var(--purple) var(--pct,17%), var(--border) var(--pct,17%));
+}
+input.fslider::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%;
+  background: var(--purple); box-shadow: 0 0 7px var(--purple); cursor: pointer;
+}
+input.fslider::-moz-range-thumb {
+  width: 14px; height: 14px; border-radius: 50%; border: none;
+  background: var(--purple); cursor: pointer;
+}
+
+/* Live-Kraft Balken */
+.fbar-wrap {
+  width: 100%; height: 30px; background: #070d1a;
+  border: 1px solid var(--border); border-radius: 3px;
+  position: relative; overflow: hidden;
+}
+.fbar-fill {
+  height: 100%; border-radius: 2px; transition: width .1s;
+  background: linear-gradient(90deg, #00c853 0%, #ffd740 60%, #ff1744 100%);
+}
+.fbar-line {
+  position: absolute; top: 0; bottom: 0; width: 2px;
+  background: var(--purple); opacity: .85; transition: left .15s;
+}
+.fbar-text {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: .62rem; color: rgba(255,255,255,.9); pointer-events: none;
+  text-shadow: 0 1px 3px rgba(0,0,0,.8);
+}
+
+.force-nums {
+  display: flex; justify-content: space-between; width: 100%;
+  font-size: .58rem;
+}
+.fnum-set { color: var(--purple); }
+.fnum-act { color: var(--green); }
+
+/* ── Footer ── */
+footer {
+  text-align: center; padding: 8px 16px; font-size: .58rem; color: var(--textlo);
+  border-top: 1px solid var(--border); line-height: 1.8;
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-mark">RH<br>56</div>
+    <div>
+      <div class="logo-text">DFTP · CONTROL</div>
+      <div class="logo-sub">INSPIRE ROBOTS · HAND CONTROLLER</div>
+    </div>
+  </div>
+  <div class="hdr-r">
+    <input class="url" id="wsUrl" type="text" value="ws://localhost:8766">
+    <button class="btn" id="btnConn" onclick="toggleConn()">VERBINDEN</button>
+    <div class="ws-badge">
+      <div class="ws-led" id="wsLed"></div>
+      <span id="wsLabel">GETRENNT</span>
+    </div>
+  </div>
+</header>
+
+<!-- Global Controls -->
+<div class="global-bar">
+
+  <!-- Links Ein/Aus -->
+  <div class="master-row">
+    <label class="sw-wrap">
+      <input type="checkbox" id="swL" onchange="setEnabled('left',this.checked)">
+      <span class="sw-track"></span>
+    </label>
+    <span class="sw-label off" id="lblL">LINKS AUS</span>
+  </div>
+
+  <div class="sep"></div>
+
+  <!-- Rechts Ein/Aus -->
+  <div class="master-row">
+    <label class="sw-wrap">
+      <input type="checkbox" id="swR" onchange="setEnabled('right',this.checked)">
+      <span class="sw-track"></span>
+    </label>
+    <span class="sw-label off" id="lblR">RECHTS AUS</span>
+  </div>
+
+  <div class="sep"></div>
+
+  <!-- Globaler Geschwindigkeitsregler -->
+  <div class="speed-row">
+    <span class="g-label">GESCHWINDIGKEIT</span>
+    <input type="range" class="hrange" id="speedSlider"
+           min="0" max="1000" value="500" style="width:150px;--pct:50%"
+           oninput="onSpeed(this.value)">
+    <span class="speed-val" id="speedVal">500</span>
+  </div>
+
+  <div class="sep"></div>
+
+  <!-- Schnellaktionen Links -->
+  <span class="g-label">L:</span>
+  <button class="qbtn open"  id="openL"  onclick="openHand('left')"  disabled>ÖFFNEN</button>
+  <button class="qbtn close" id="closeL" onclick="closeHand('left')" disabled>SCHLIESSEN</button>
+
+  <div class="sep"></div>
+
+  <!-- Schnellaktionen Rechts -->
+  <span class="g-label">R:</span>
+  <button class="qbtn open"  id="openR"  onclick="openHand('right')"  disabled>ÖFFNEN</button>
+  <button class="qbtn close" id="closeR" onclick="closeHand('right')" disabled>SCHLIESSEN</button>
+
+</div>
+
+<main>
+  <!-- LINKE HAND -->
+  <div class="hand-panel">
+    <div class="p-head">
+      <div style="display:flex;align-items:center">
+        <div class="p-badge L">L</div><span class="p-title">LINKE HAND</span>
+      </div>
+      <div class="p-conn">
+        <div class="c-led" id="led-left"></div>
+        <span id="ip-left">192.168.123.210</span>
+      </div>
+    </div>
+    <div class="dof-grid" id="dof-left"></div>
+  </div>
+
+  <!-- RECHTE HAND -->
+  <div class="hand-panel">
+    <div class="p-head">
+      <div style="display:flex;align-items:center">
+        <div class="p-badge R">R</div><span class="p-title">RECHTE HAND</span>
+      </div>
+      <div class="p-conn">
+        <div class="c-led" id="led-right"></div>
+        <span id="ip-right">192.168.123.211</span>
+      </div>
+    </div>
+    <div class="dof-grid" id="dof-right"></div>
+  </div>
+</main>
+
+<footer>
+  angleSet 1486 · forceSet 1498 · speedSet 1522 · angleAct 1546 · forceAct 1582<br>
+  <span style="color:var(--accent)">━</span> Soll-Winkel &nbsp;
+  <span style="color:var(--yellow)">━</span> Ist-Winkel (Marker) &nbsp;
+  <span style="color:var(--purple)">━</span> Kraft-Schwelle &nbsp;
+  <span style="color:var(--green)">━</span> Ist-Kraft (Balken)
+</footer>
+
+<script>
+// ═══════════════════════════════════════════════════════
+//  KONFIGURATION
+//  6 DOF: Kleiner, Ring, Mittel, Zeige, Daumen-Beugung, Daumen-Rotation
+// ═══════════════════════════════════════════════════════
+let DOF_NAMES = ["Kleiner", "Ring", "Mittel", "Zeige", "Daumen-B", "Daumen-R"];
+const MAX_FORCE  = 3000;
+const MAX_ANGLE  = 1000;
+
+// ═══════════════════════════════════════════════════════
+//  DOM AUFBAUEN
+// ═══════════════════════════════════════════════════════
+function buildDOF(side) {
+  const grid = document.getElementById(`dof-${side}`);
+  grid.innerHTML = '';
+
+  const indices = side === 'right' ? [...DOF_NAMES.keys()].reverse() : [...DOF_NAMES.keys()];
+indices.forEach((i) => {
+    const name = DOF_NAMES[i];
+    const card = document.createElement('div');
+    card.className = 'dof-card';
+    card.innerHTML = `
+      <!-- Finger-Name -->
+      <div class="dof-name" title="${name}">${name}</div>
+
+      <!-- Winkel -->
+      <div class="sec-label">WINKEL</div>
+      <div class="vslider-wrap">
+        <input type="range" class="vslider" id="as-${side}-${i}"
+               min="0" max="${MAX_ANGLE}" value="0"
+               style="--pct:0%"
+               oninput="onAngle('${side}',${i},+this.value)">
+        <div class="vmarker" id="am-${side}-${i}" style="bottom:0%"></div>
+      </div>
+      <div class="angle-vals">
+        <div class="aset" id="av-${side}-${i}">0</div>
+        <div class="aact" id="aa-${side}-${i}">~0</div>
+      </div>
+
+      <!-- Kraft -->
+      <div class="sec-label">KRAFT-LIMIT</div>
+      <div class="force-section">
+        <input type="range" class="fslider" id="fs-${side}-${i}"
+               min="0" max="${MAX_FORCE}" value="500"
+               style="--pct:16.7%"
+               oninput="onForce('${side}',${i},+this.value)">
+        <div class="fbar-wrap">
+          <div class="fbar-fill" id="fb-${side}-${i}" style="width:0%"></div>
+          <div class="fbar-line" id="fl-${side}-${i}" style="left:16.7%"></div>
+          <div class="fbar-text" id="ft-${side}-${i}">0 g</div>
+        </div>
+        <div class="force-nums">
+          <span class="fnum-set" id="fs2-${side}-${i}">Limit: 500g</span>
+          <span class="fnum-act" id="fa-${side}-${i}">Ist: 0g</span>
+        </div>
+      </div>
+    `;
+    grid.appendChild(card);
+  });
+}
+
+// ═══════════════════════════════════════════════════════
+//  EVENT HANDLER
+// ═══════════════════════════════════════════════════════
+function onAngle(side, dof, val) {
+  const pct = val / MAX_ANGLE * 100;
+  const el = document.getElementById(`as-${side}-${dof}`);
+  el.style.setProperty('--pct', pct + '%');
+  // Update gradient manuell (Firefox braucht das)
+  el.style.background = `linear-gradient(90deg, var(--accent) ${pct}%, var(--border) ${pct}%)`;
+  document.getElementById(`av-${side}-${dof}`).textContent = val;
+  send({ type: 'set_angle', side, dof, value: val });
+}
+
+function onForce(side, dof, val) {
+  const pct = val / MAX_FORCE * 100;
+  const el = document.getElementById(`fs-${side}-${dof}`);
+  el.style.background = `linear-gradient(90deg, var(--purple) ${pct}%, var(--border) ${pct}%)`;
+  document.getElementById(`fs2-${side}-${dof}`).textContent = `Limit: ${val}g`;
+  document.getElementById(`fl-${side}-${dof}`).style.left = pct + '%';
+  send({ type: 'set_force', side, dof, value: val });
+}
+
+function onSpeed(val) {
+  val = parseInt(val);
+  const pct = val / 10;
+  const el = document.getElementById('speedSlider');
+  el.style.background = `linear-gradient(90deg, var(--accent) ${pct}%, var(--border) ${pct}%)`;
+  document.getElementById('speedVal').textContent = val;
+  send({ type: 'set_speed', value: val });
+}
+
+function setEnabled(side, enabled) {
+  const isL = side === 'left';
+  const lbl = document.getElementById(isL ? 'lblL' : 'lblR');
+  lbl.textContent = enabled
+    ? (isL ? 'LINKS AN' : 'RECHTS AN')
+    : (isL ? 'LINKS AUS' : 'RECHTS AUS');
+  lbl.className = `sw-label ${enabled ? 'on' : 'off'}`;
+  const suffix = isL ? 'L' : 'R';
+  document.getElementById(`open${suffix}`).disabled  = !enabled;
+  document.getElementById(`close${suffix}`).disabled = !enabled;
+  send({ type: 'set_enabled', side, value: enabled });
+}
+
+// ÖFFNEN = Winkel 0 (Finger gerade / offen)
+// SCHLIESSEN = Winkel 1000 (Finger gebeugt / geschlossen)
+function openHand(side) {
+  DOF_NAMES.forEach((_, i) => {
+    document.getElementById(`as-${side}-${i}`).value = 1000;
+    onAngle(side, i, 0);
+  });
+  send({ type: 'open_hand', side });
+}
+
+function closeHand(side) {
+  DOF_NAMES.forEach((_, i) => {
+    document.getElementById(`as-${side}-${i}`).value = 0;
+    document.getElementById(`as-${side}-${4}`).value = 200;
+    document.getElementById(`as-${side}-${5}`).value = 100;
+
+    onAngle(side, i, 1000);
+  });
+  send({ type: 'close_hand', side });
+}
+
+// ═══════════════════════════════════════════════════════
+//  STATE VOM SERVER → UI AKTUALISIEREN
+// ═══════════════════════════════════════════════════════
+function updateHand(side, data) {
+  if (!data) return;
+
+  document.getElementById(`led-${side}`).className =
+    'c-led' + (data.connected ? ' ok' : '');
+  document.getElementById(`ip-${side}`).textContent = data.host || '–';
+
+  const angleAct = data.angle_act || [];
+  const forceAct = data.force_act || [];
+
+  DOF_NAMES.forEach((_, i) => {
+    const aa = Math.max(0, Math.min(MAX_ANGLE, angleAct[i] ?? 0));
+    const fa = Math.abs(forceAct[i] ?? 0);
+
+    // Ist-Winkel Marker: sitzt bei 0% (unten) bis 100% (oben)
+    // Slider: min=0 unten, max=1000 oben → marker bottom = aa/MAX_ANGLE * 100%
+    const markerPct = aa / MAX_ANGLE * 100;
+    const marker = document.getElementById(`am-${side}-${i}`);
+    if (marker) marker.style.bottom = markerPct + '%';
+
+    // Ist-Winkel Text
+    const ael = document.getElementById(`aa-${side}-${i}`);
+    if (ael) ael.textContent = `~${aa}`;
+
+    // Live-Kraft Balken
+    const barpct = Math.min(100, fa / MAX_FORCE * 100);
+    const fb = document.getElementById(`fb-${side}-${i}`);
+    const ft = document.getElementById(`ft-${side}-${i}`);
+    const fa2 = document.getElementById(`fa-${side}-${i}`);
+    if (fb) fb.style.width = barpct + '%';
+    if (ft) ft.textContent = `${fa} g`;
+    if (fa2) fa2.textContent = `Ist: ${fa}g`;
+  });
+}
+
+// ═══════════════════════════════════════════════════════
+//  WEBSOCKET
+// ═══════════════════════════════════════════════════════
+let ws = null;
+
+function toggleConn() {
+  if (ws && ws.readyState === WebSocket.OPEN) { ws.close(); return; }
+  setWs(null, 'VERBINDE…');
+  try { ws = new WebSocket(document.getElementById('wsUrl').value.trim()); }
+  catch(e) { setWs(false, 'FEHLER'); return; }
+
+  ws.onopen = () => {
+    setWs(true, 'VERBUNDEN');
+    document.getElementById('btnConn').textContent = 'TRENNEN';
+    // Aktuellen Speed senden
+    send({ type: 'set_speed', value: parseInt(document.getElementById('speedSlider').value) });
+  };
+  ws.onclose = () => {
+    setWs(false, 'GETRENNT');
+    document.getElementById('btnConn').textContent = 'VERBINDEN';
+    ws = null;
+  };
+  ws.onerror = () => setWs(false, 'FEHLER');
+  ws.onmessage = e => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'config') {
+        if (msg.dof_names) {
+          DOF_NAMES = msg.dof_names;
+          buildDOF('left'); buildDOF('right');
+        }
+        updateHand('left',  msg.left);
+        updateHand('right', msg.right);
+      } else if (msg.type === 'state') {
+        updateHand('left',  msg.left);
+        updateHand('right', msg.right);
+      }
+    } catch(ex) { console.error(ex); }
+  };
+}
+
+function send(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+}
+
+function setWs(ok, lbl) {
+  document.getElementById('wsLed').className = 'ws-led' + (ok === true ? ' live' : '');
+  document.getElementById('wsLabel').textContent = lbl;
+}
+
+// ── Init ──
+buildDOF('left');
+buildDOF('right');
+</script>
+</body>
+</html>
