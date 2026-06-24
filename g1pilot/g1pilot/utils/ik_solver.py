@@ -47,6 +47,7 @@ class G1IKSolver:
                  max_ori_step_rad=0.35,
                  goal_filter_alpha=0.25,
                  orientation_mode="full",
+                 null_space_gain=0.15,
                  debug=False,
                  enable_collision_avoidance=True,
                  collision_distance_thresh=0.05,
@@ -65,6 +66,12 @@ class G1IKSolver:
         self.max_ori_step_rad = max_ori_step_rad
         self.goal_filter_alpha = goal_filter_alpha
         self.orientation_mode = orientation_mode
+        # Nullraum-Regularisierung: zieht die redundante (7. DOF) Armhaltung sanft zu
+        # einer Ruhe-Pose, OHNE die Hand-Pose zu aendern -> der Arm faellt nicht in
+        # den "gefalteten" (zum Koerper geklappten) IK-Zweig. 0 = aus.
+        self.null_space_gain = null_space_gain
+        self._rest_right = None
+        self._rest_left = None
         self.debug = debug
         self.world_frame = world_frame
         self.frame_left = frame_left
@@ -186,8 +193,10 @@ class G1IKSolver:
                 continue
 
             d = res.distance
-            # Ignore far-away pairs and degenerate near-zero distances.
-            if d <= 1e-1 or d > self.collision_distance_thresh:
+            # Ignore degenerate near-zero distances and pairs beyond the threshold.
+            # (Frueher 1e-1: zusammen mit thresh=0.05 war das akzeptierte Band leer ->
+            # Abstossung nie aktiv. 1e-4 laesst echte Naeherungen wieder durch.)
+            if d <= 1e-4 or d > self.collision_distance_thresh:
                 continue
 
             collision_detected = True
@@ -261,6 +270,15 @@ class G1IKSolver:
         ])
 
 
+    def set_rest_posture(self, side, q7):
+        """Ruhe-Pose (7 DOF) fuer die Nullraum-Regularisierung setzen. Der redundante
+        Freiheitsgrad wird sanft hierhin gezogen, ohne die Hand-Pose zu beeinflussen."""
+        arr = np.array(q7, dtype=float).copy()
+        if side == "right":
+            self._rest_right = arr
+        elif side == "left":
+            self._rest_left = arr
+
     def set_goal(self, side, T_goal: SE3):
         """Set a new SE3 target for the given side ('left' or 'right')."""
         if side == "right":
@@ -327,9 +345,23 @@ class G1IKSolver:
                     frac = clamp((self.sigma_min_thresh - sigma_min) / self.sigma_min_thresh, 0, 1)
                     lam = self.lambda_base + frac * (self.lambda_max - self.lambda_base)
 
-            # Damped least squares
+            # Damped least squares (Primaeraufgabe: Hand-Pose). Pseudo-Inverse explizit,
+            # damit wir denselben Operator fuer die Nullraum-Projektion wiederverwenden.
             JJt = J_eff @ J_eff.T
-            dq_red = J_eff.T @ np.linalg.solve(JJt + lam * np.eye(J_eff.shape[0]), err6)
+            M_inv = np.linalg.inv(JJt + lam * np.eye(J_eff.shape[0]))
+            J_pinv = J_eff.T @ M_inv                      # 7x6
+            dq_red = J_pinv @ err6
+
+            # Nullraum-Haltungs-Regularisierung: zieht die redundante Armhaltung zur
+            # Ruhe-Pose, PROJIZIERT in den Nullraum der Hand-Aufgabe (N = I - J^+ J) ->
+            # die Hand-Pose bleibt unveraendert, aber der Arm faellt nicht in den zum
+            # Koerper gefalteten Zweig (Ursache fuer das "faehrt in falsche Richtung").
+            rest = self._rest_right if side == 'right' else self._rest_left
+            if rest is not None and self.null_space_gain > 0.0:
+                q_arm = np.array(
+                    [q[self._name_to_q_index[self._ros_joint_names[i]]] for i in arm_ids])
+                N = np.eye(len(arm_ids)) - J_pinv @ J_eff
+                dq_red += N @ (self.null_space_gain * (rest - q_arm))
 
             # Collision avoidance (joint-space correction)
             if getattr(self, "enable_collision_avoidance", False):

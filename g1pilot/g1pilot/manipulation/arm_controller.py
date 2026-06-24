@@ -146,6 +146,10 @@ class ArmController(Node):
         self.declare_parameter("ik_goal_filter_alpha", 0.25)
         self.declare_parameter("ik_orientation_mode", "full")
         self.declare_parameter("ik_max_ori_step_rad", 0.35)
+        # Staerke der IK-Nullraum-Regularisierung zur Ruhe-Pose (0 = aus). Verhindert,
+        # dass der redundante Arm beim Marker-Ziehen in den zum Koerper gefalteten
+        # Zweig faellt. Live tunebar.
+        self.declare_parameter("ik_null_space_gain", 0.15)
         self.declare_parameter("ee_auto_calibrate", True)
 
 
@@ -220,6 +224,14 @@ class ArmController(Node):
         self.declare_parameter("home_right", [0.3, -0.2, 0.0, 0.5, 0.0, 0.0, 0.0])
         self.home_left  = np.array(self.get_parameter("home_left").value,  dtype=float)
         self.home_right = np.array(self.get_parameter("home_right").value, dtype=float)
+
+        # Ruhe-Pose fuer die IK-Nullraum-Regularisierung = Home-Pose. Haelt den
+        # redundanten (7. DOF) Ellbogen-Swivel natuerlich -> der Arm faellt beim
+        # Marker-Ziehen nicht in den zum Koerper gefalteten IK-Zweig.
+        if hasattr(self.ik_solver, "set_rest_posture"):
+            self.ik_solver.set_rest_posture("left",  self.home_left)
+            self.ik_solver.set_rest_posture("right", self.home_right)
+        self.ik_solver.null_space_gain = float(self.get_parameter("ik_null_space_gain").value)
 
         # WALK-Pose: waehrend WALK haelt der arm_controller die Arme HIER (= Policy-
         # Default-Armpose des g1_wholebody-Policy). Headless validiert: die Lauf-Policy
