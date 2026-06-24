@@ -141,17 +141,39 @@ open_guis_when_ready() {
   local ctrl="file://$web/hand_controller_viewer.html?autoconnect=1"
   local view="file://$web/inspire_hand_viewer.html?autoconnect=1"
 
-  local opener=""
-  local c
-  for c in xdg-open sensible-browser x-www-browser firefox google-chrome chromium chromium-browser; do
-    command -v "$c" >/dev/null 2>&1 && { opener="$c"; break; }
-  done
-  if [ -z "$opener" ]; then
-    echo -e "${Y}[start] Kein Browser-Opener gefunden - GUIs bitte manuell oeffnen:${R}"
-    echo -e "   ${C}$ctrl${R}"
-    echo -e "   ${C}$view${R}"
-    return
-  fi
+  # WSL2-Erkennung (Kernel-Release enthaelt "microsoft")
+  local is_wsl=0
+  grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null && is_wsl=1
+
+  # Oeffnet eine URL im System-Browser; gibt 0 zurueck wenn erfolgreich.
+  _open_url() {
+    local url="$1"
+    if [ "$is_wsl" = "1" ]; then
+      # WSL2: wslview (aus dem wslu-Paket) ist die sauberste Loesung
+      if command -v wslview >/dev/null 2>&1; then
+        wslview "$url" >/dev/null 2>&1; return 0
+      fi
+      # Fallback: Linux-Pfad in Windows-Datei-URL umwandeln, per cmd.exe oeffnen
+      if command -v wslpath >/dev/null 2>&1 && command -v cmd.exe >/dev/null 2>&1; then
+        local fpath="${url#file://}"
+        local query="${fpath#*\?}"; [ "$query" = "$fpath" ] && query=""
+        fpath="${fpath%%\?*}"
+        local winraw; winraw=$(wslpath -w "$fpath" 2>/dev/null) || return 1
+        local winurl="file:///${winraw//\\//}"  # Backslash -> Slash fuer file-URL
+        [ -n "$query" ] && winurl="${winurl}?${query}"
+        cmd.exe /c start "" "$winurl" >/dev/null 2>&1; return 0
+      fi
+      command -v explorer.exe >/dev/null 2>&1 && { explorer.exe "$url" >/dev/null 2>&1; return 0; }
+    else
+      local c
+      for c in xdg-open sensible-browser x-www-browser \
+               microsoft-edge microsoft-edge-stable msedge \
+               firefox google-chrome chromium chromium-browser; do
+        command -v "$c" >/dev/null 2>&1 && { "$c" "$url" >/dev/null 2>&1; return 0; }
+      done
+    fi
+    return 1
+  }
 
   # Warten bis die Bridge lauscht (max ~5 min, deckt auch den ersten Build ab).
   local i=0
@@ -160,9 +182,14 @@ open_guis_when_ready() {
     sleep 0.5; i=$((i+1))
   done
 
-  "$opener" "$ctrl" >/dev/null 2>&1 &
+  if ! _open_url "$ctrl"; then
+    echo -e "${Y}[start] Kein Browser-Opener gefunden - GUIs bitte manuell oeffnen:${R}"
+    echo -e "   ${C}$ctrl${R}"
+    echo -e "   ${C}$view${R}"
+    return
+  fi
   sleep 1
-  "$opener" "$view" >/dev/null 2>&1 &
+  _open_url "$view" >/dev/null 2>&1 || true
 }
 
 if [ "$OPEN_GUIS" = "true" ]; then
