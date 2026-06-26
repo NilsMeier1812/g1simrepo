@@ -2,7 +2,10 @@
 # -*- coding: utf-8 -*-
 
 import math
+import os
+import subprocess
 import sys
+import threading
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QGridLayout, QPushButton, QVBoxLayout,
     QHBoxLayout, QSlider, QLabel
@@ -168,6 +171,7 @@ class ButtonGUI(QWidget):
             (2, 1): ("CLOSE\nLEFT\nHAND", lambda: self.toggle_hand("left", "close", self.node.pub_left_hand)),
             (2, 2): ("OPEN\nRIGHT\nHAND", lambda: self.toggle_hand("right", "open", self.node.pub_right_hand)),
             (2, 3): ("CLOSE\nRIGHT\nHAND", lambda: self.toggle_hand("right", "close", self.node.pub_right_hand)),
+            (2, 4): ("INSPIRE\nFTP\nGUIs", self.open_hand_guis),
 
             (4, 4): ("EMERGENCY\nSTOP", self.emergency_stop),
         }
@@ -335,6 +339,47 @@ class ButtonGUI(QWidget):
         self.set_button_active((1, 0), True)
         self.node.publish_bool(self.node.pub_arms_enabled, True)
         self.radio_loco((0, 1), self.node.pub_start_balancing)
+
+    def open_hand_guis(self):
+        """Open the Inspire FTP hand controller and viewer HTML files in a browser."""
+        self.set_button_active((2, 4), True)
+        QTimer.singleShot(700, lambda: self.set_button_active((2, 4), False))
+
+        try:
+            from ament_index_python.packages import get_package_share_directory
+            web_dir = os.path.join(
+                get_package_share_directory('g1pilot'),
+                'manipulation', 'inspire_ftp', 'web'
+            )
+        except Exception:
+            web_dir = os.path.join(os.path.dirname(__file__), '..', 'manipulation', 'inspire_ftp', 'web')
+
+        web_dir = os.path.abspath(web_dir)
+        ctrl = f"file://{web_dir}/hand_controller_viewer.html?autoconnect=1"
+        view = f"file://{web_dir}/inspire_hand_viewer.html?autoconnect=1"
+
+        opener = None
+        for cmd in ('xdg-open', 'sensible-browser', 'x-www-browser',
+                    'microsoft-edge', 'microsoft-edge-stable', 'msedge',
+                    'firefox', 'google-chrome', 'chromium', 'chromium-browser'):
+            if subprocess.run(['which', cmd], capture_output=True).returncode == 0:
+                opener = cmd
+                break
+
+        if opener is None:
+            self.node.get_logger().warn(
+                f"[FTP-GUIs] Kein Browser gefunden. Manuell oeffnen:\n  {ctrl}\n  {view}"
+            )
+            return
+
+        subprocess.Popen([opener, ctrl], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        def _open_viewer():
+            import time
+            time.sleep(1)
+            subprocess.Popen([opener, view], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        threading.Thread(target=_open_viewer, daemon=True).start()
 
     def toggle_hand(self, hand_side, action, pub):
         hand_pair = self.hand_pairs[hand_side]
