@@ -84,8 +84,14 @@ ask_menu "1) RViz mitstarten? (MuJoCo-Fenster kommt immer)" 2 "${USE_RVIZ:-}" \
   "Nein — nur MuJoCo-Fenster|false"
 export USE_RVIZ="$REPLY_VALUE"
 
-# ── 2) Rebuild ──────────────────────────────────────────────────────────
-ask_menu "2) Docker-Images vor dem Start neu bauen?" 1 "" \
+# ── 2) Inspire-Haende ───────────────────────────────────────────────────
+ask_menu "2) Inspire-FTP-Haende? (sonst Rubber-Hand)" 2 "${G1_INSPIRE_HANDS:-}" \
+  "Ja  — Inspire-Modell + Finger steuerbar (inspire_hand-Node, /joint_states)|1" \
+  "Nein — bisheriges Rubber-Hand-Modell|0"
+export G1_INSPIRE_HANDS="$REPLY_VALUE"
+
+# ── 3) Rebuild ──────────────────────────────────────────────────────────
+ask_menu "3) Docker-Images vor dem Start neu bauen?" 1 "" \
   "Nein — vorhandene Images nutzen (schnell)|0" \
   "Ja  — --build (nach Code-/Dockerfile-Aenderungen)|1"
 if [ "$REPLY_VALUE" = "1" ]; then PASSTHRU+=("--build"); fi
@@ -103,6 +109,8 @@ export G1_SIM_MODE=true
 # ── Zusammenfassung ─────────────────────────────────────────────────────
 echo -e "${B}Starte mit:${R}"
 echo -e "   RViz           : ${G}USE_RVIZ=${USE_RVIZ}${R}"
+_hands_lbl=$( [ "${G1_INSPIRE_HANDS}" = "1" ] && echo "Inspire-FTP (Finger steuerbar)" || echo "Rubber-Hand" )
+echo -e "   Haende         : ${G}G1_INSPIRE_HANDS=${G1_INSPIRE_HANDS}${R} ${DIM}(${_hands_lbl})${R}"
 echo -e "   Lockstep       : ${G}SIM_LOCKSTEP=${SIM_LOCKSTEP}${R} ${DIM}(immer an, auf Echtzeit gedeckelt)${R}"
 echo -e "   Basis          : ${G}HOLD_BASE_MODE=${HOLD_BASE_MODE}${R} (Loco-Modus)"
 echo -e "   Loco-Policy    : ${G}g1_wholebody${R} ${DIM}(Stehen=cmd0; Laufen via Streamdeck)${R}"

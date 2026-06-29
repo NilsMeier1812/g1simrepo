@@ -27,6 +27,11 @@ def generate_launch_description():
     #             darum ist RViz jetzt wieder gefahrlos zuschaltbar.
     use_rviz = os.environ.get('USE_RVIZ', 'false').strip().lower()
 
+    #  G1_INSPIRE_HANDS : "1" -> Inspire-FTP-Haende. Dann uebernimmt der inspire_hand-
+    #  Node die Finger-/joint_states; robot_state publiziert KEINE Finger-Defaults mehr
+    #  (publish_hand_joints=false), sonst gaebe es zwei Quellen fuer dieselben Gelenke.
+    inspire_hands = os.environ.get('G1_INSPIRE_HANDS', '0').strip().lower() in ('1', 'true', 'yes', 'on')
+
     return LaunchDescription([
 
         # ── 1. robot_state: liest LowState_ von MuJoCo über DDS lo ──────
@@ -38,6 +43,9 @@ def generate_launch_description():
                 'use_robot':            'true',
                 'interface':            'lo',
                 'publish_joint_states': 'true',
+                # Inspire-Haende: Finger kommen vom inspire_hand-Node -> hier KEINE
+                # Finger-Defaults publizieren (sonst doppelte /joint_states-Quelle).
+                'publish_hand_joints':  'false' if inspire_hands else 'true',
                 'sim_rate_hz':          '50.0',
                 # rviz2 standardmaessig AUS (USE_RVIZ=false). Frueher brach RViz die
                 # 50-Hz-Regelschleife ein; unter LOCKSTEP ist das nicht mehr der Fall
@@ -88,4 +96,15 @@ def generate_launch_description():
                 'policy':    'g1_wholebody',
             }]
         ),
+
+        # ── 5. inspire_hand: nur bei Inspire-Haenden. Bruecke GUI(ROS2) <-> Sim-DDS
+        #    (rt/inspire/cmd|state) und publiziert die Finger als /joint_states
+        #    (RViz bewegt die Finger). Ohne Inspire-Haende nicht gestartet.
+        *([Node(
+            package='g1pilot',
+            executable='inspire_hand',
+            name='inspire_hand',
+            output='screen',
+            parameters=[{'interface': 'lo'}],
+        )] if inspire_hands else []),
     ])
