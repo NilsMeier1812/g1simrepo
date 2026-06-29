@@ -1,7 +1,12 @@
 import os
 
 ROBOT = "g1" # Robot name, "go2", "b2", "b2w", "h1", "go2w", "g1"
-ROBOT_SCENE = "../unitree_robots/" + ROBOT + "/scene.xml" # Robot scene
+# Inspire-FTP-Haende (Phase 0): opt-in via Env G1_INSPIRE_HANDS=1. Laedt das Modell
+# mit den Inspire-Fingern (passiv, nur Visualisierung; nu bleibt 29 -> Bridge/Loco
+# unveraendert). Default = bisheriges Rubber-Hand-Modell.
+_INSPIRE = str(os.environ.get("G1_INSPIRE_HANDS", "")).strip().lower() in ("1", "true", "yes", "on")
+_SCENE = "scene_inspire_ftp.xml" if _INSPIRE else "scene.xml"
+ROBOT_SCENE = "../unitree_robots/" + ROBOT + "/" + _SCENE # Robot scene
 DOMAIN_ID = 1 # Domain id
 INTERFACE = "lo" # Interface 
 
