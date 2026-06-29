@@ -49,6 +49,13 @@ FINGER_JOINTS = [
 ]
 NJ = len(FINGER_JOINTS)  # 24
 
+# Fingerspitzen-Kraftsensoren (Phase 2), kanonische Reihenfolge = Bridge/MJCF.
+# Kraefte liegen im rt/inspire/state in motor_state[24 + i].q (i = Index hier).
+FORCE_NAMES = [f"{side}_{finger}" for side in ("left", "right")
+               for finger in ("thumb", "index", "middle", "ring", "little")]
+NF = len(FORCE_NAMES)   # 10
+FORCE_OFFSET = NJ       # Kraft-Slots beginnen hinter den 24 Finger-Winkeln
+
 
 class InspireHand(Node):
     def __init__(self):
@@ -72,6 +79,7 @@ class InspireHand(Node):
         self.idx = {name: k for k, name in enumerate(FINGER_JOINTS)}
         self.targets = self.lo.copy()      # Start: offene Hand
         self.state_q = np.zeros(NJ, dtype=float)
+        self.force = np.zeros(NF, dtype=float)   # Fingerspitzen-Kraefte [N]
 
         init_dds(interface, self.get_logger())
         self.cmd_pub = ChannelPublisher("rt/inspire/cmd", LowCmd_)
@@ -84,6 +92,8 @@ class InspireHand(Node):
         self.create_subscription(Float64MultiArray, "/g1pilot/inspire/grip", self._on_grip, 10)
         self.js_pub = self.create_publisher(JointState, "/joint_states", 10)
         self.state_pub = self.create_publisher(JointState, "/g1pilot/inspire/state", 10)
+        # Fingerspitzen-Kraefte [N] fuer die GUI (Reihenfolge = FORCE_NAMES).
+        self.force_pub = self.create_publisher(Float64MultiArray, "/g1pilot/inspire/force", 10)
 
         self.create_timer(1.0 / max(rate, 1.0), self._tick)
         self.get_logger().info(
@@ -131,6 +141,8 @@ class InspireHand(Node):
     def _on_dds_state(self, msg: LowState_):
         for k in range(NJ):
             self.state_q[k] = float(msg.motor_state[k].q)
+        for i in range(NF):
+            self.force[i] = float(msg.motor_state[FORCE_OFFSET + i].q)
 
     def _tick(self):
         # Ziele -> DDS cmd (Bridge faehrt die Position-Servos)
@@ -144,6 +156,8 @@ class InspireHand(Node):
         js.position = [float(x) for x in self.state_q]
         self.js_pub.publish(js)
         self.state_pub.publish(js)
+        # Fingerspitzen-Kraefte (Reihenfolge FORCE_NAMES) -> GUI
+        self.force_pub.publish(Float64MultiArray(data=[float(x) for x in self.force]))
 
 
 def main(args=None):

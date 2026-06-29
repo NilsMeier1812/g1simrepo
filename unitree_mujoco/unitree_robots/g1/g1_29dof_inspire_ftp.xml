@@ -241,6 +241,8 @@
                                     <joint name="left_thumb_4_joint" pos="0 0 0" axis="0 0 -1" range="0 3.14" damping="0.05" frictionloss="0.002" />
                                     <inertial pos="-0.016321356 0.0052192864 -0.0073510444" quat="1 0 0 0" mass="0.00972" fullinertia="5.9489721e-07 7.7920235e-07 8.9982419e-07 2.5425136e-07 5.5408599e-11 8.8965112e-11" />
                                     <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.55 0.55 0.6 1" mesh="left_thumb_4" />
+                                    <geom type="sphere" size="0.008" pos="-0.028987 0.017301 -0.0073513" contype="2" conaffinity="2" group="3" rgba="0.9 0.2 0.2 1" />
+                                    <site name="left_thumb_pad" type="sphere" size="0.012" pos="-0.028987 0.017301 -0.0073513" group="4" rgba="1 0 0 0.3" />
                                   </body>
                                 </body>
                               </body>
@@ -253,6 +255,8 @@
                                 <joint name="left_index_2_joint" pos="0 0 0" axis="0 0 1" range="0 3.14" damping="0.05" frictionloss="0.002" />
                                 <inertial pos="0.00053323396 0.025340835 0.0060926519" quat="1 0 0 0" mass="0.01218" fullinertia="2.1115223e-06 3.7046768e-07 2.1435697e-06 3.7837859e-07 4.1804398e-10 -2.7870579e-09" />
                                 <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.55 0.55 0.6 1" mesh="left_index_2" />
+                                <geom type="sphere" size="0.008" pos="-0.0086237 0.052572 0.0060954" contype="2" conaffinity="2" group="3" rgba="0.9 0.2 0.2 1" />
+                                <site name="left_index_pad" type="sphere" size="0.012" pos="-0.0086237 0.052572 0.0060954" group="4" rgba="1 0 0 0.3" />
                               </body>
                             </body>
                             <body name="left_middle_1" pos="0.0171 0.00056467 0.157" quat="0.49999816 0.5 -0.50000184 -0.5">
@@ -263,6 +267,8 @@
                                 <joint name="left_middle_2_joint" pos="0 0 0" axis="0 0 1" range="0 3.14" damping="0.05" frictionloss="0.002" />
                                 <inertial pos="-9.2413536e-05 0.027034515 0.0061005905" quat="1 0 0 0" mass="0.01561" fullinertia="2.5865805e-06 4.1032735e-07 2.6295429e-06 4.5326271e-07 5.5510751e-12 -8.4374127e-12" />
                                 <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.55 0.55 0.6 1" mesh="left_middle_2" />
+                                <geom type="sphere" size="0.008" pos="-0.0098294 0.056051 0.0061006" contype="2" conaffinity="2" group="3" rgba="0.9 0.2 0.2 1" />
+                                <site name="left_middle_pad" type="sphere" size="0.012" pos="-0.0098294 0.056051 0.0061006" group="4" rgba="1 0 0 0.3" />
                               </body>
                             </body>
                             <body name="left_ring_1" pos="-0.0045302 0.00056467 0.15683" quat="0.48672806 0.51292685 -0.51292874 -0.48672985">
@@ -273,6 +279,8 @@
                                 <joint name="left_ring_2_joint" pos="0 0 0" axis="0 0 1" range="0 3.14" damping="0.05" frictionloss="0.002" />
                                 <inertial pos="0.0005332299 0.025340821 0.0060926603" quat="1 0 0 0" mass="0.01281" fullinertia="2.1115233e-06 3.7046795e-07 2.1435708e-06 3.7837877e-07 4.176461e-10 -2.7892824e-09" />
                                 <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.55 0.55 0.6 1" mesh="left_ring_2" />
+                                <geom type="sphere" size="0.008" pos="-0.0086237 0.052572 0.0060954" contype="2" conaffinity="2" group="3" rgba="0.9 0.2 0.2 1" />
+                                <site name="left_ring_pad" type="sphere" size="0.012" pos="-0.0086237 0.052572 0.0060954" group="4" rgba="1 0 0 0.3" />
                               </body>
                             </body>
                             <body name="left_little_1" pos="-0.025916 0.00056467 0.15365" quat="0.47315015 0.52547798 -0.52547991 -0.47315188">
@@ -283,6 +291,8 @@
                                 <joint name="left_little_2_joint" pos="0 0 0" axis="0 0 1" range="0 3.14" damping="0.05" frictionloss="0.002" />
                                 <inertial pos="0.0014296431 0.02063939 0.0060997995" quat="1 0 0 0" mass="0.00957" fullinertia="1.1469143e-06 2.6617113e-07 1.1505423e-06 2.2223633e-07 -2.329879e-11 2.7789342e-11" />
                                 <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.55 0.55 0.6 1" mesh="left_little_2" />
+                                <geom type="sphere" size="0.008" pos="-0.0063973 0.042707 0.0061154" contype="2" conaffinity="2" group="3" rgba="0.9 0.2 0.2 1" />
+                                <site name="left_little_pad" type="sphere" size="0.012" pos="-0.0063973 0.042707 0.0061154" group="4" rgba="1 0 0 0.3" />
                               </body>
                             </body>
                           </body>
@@ -347,6 +357,8 @@
                                     <joint name="right_thumb_4_joint" pos="0 0 0" axis="0 0 1" range="0 3.14" damping="0.05" frictionloss="0.002" />
                                     <inertial pos="0.016321329 0.0052194865 -0.0073510591" quat="1 0 0 0" mass="0.00972" fullinertia="5.9489817e-07 7.7921373e-07 8.9983724e-07 -2.5424332e-07 -3.8527948e-11 1.0504461e-10" />
                                     <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.55 0.55 0.6 1" mesh="right_thumb_4" />
+                                    <geom type="sphere" size="0.008" pos="0.028987 0.017301 -0.0073512" contype="2" conaffinity="2" group="3" rgba="0.9 0.2 0.2 1" />
+                                    <site name="right_thumb_pad" type="sphere" size="0.012" pos="0.028987 0.017301 -0.0073512" group="4" rgba="1 0 0 0.3" />
                                   </body>
                                 </body>
                               </body>
@@ -359,6 +371,8 @@
                                 <joint name="right_index_2_joint" pos="0 0 0" axis="0 0 1" range="0 3.14" damping="0.05" frictionloss="0.002" />
                                 <inertial pos="0.00053282674 0.025343485 -0.0060929147" quat="1 0 0 0" mass="0.01218" fullinertia="2.1110772e-06 3.7048517e-07 2.1431544e-06 3.7835067e-07 -4.2756315e-10 2.8215142e-09" />
                                 <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.55 0.55 0.6 1" mesh="right_index_2" />
+                                <geom type="sphere" size="0.008" pos="-0.0086237 0.052572 -0.0060954" contype="2" conaffinity="2" group="3" rgba="0.9 0.2 0.2 1" />
+                                <site name="right_index_pad" type="sphere" size="0.012" pos="-0.0086237 0.052572 -0.0060954" group="4" rgba="1 0 0 0.3" />
                               </body>
                             </body>
                             <body name="right_middle_1" pos="-0.0171 0.00056467 0.157" quat="0.49999816 0.5 -0.50000184 -0.5">
@@ -369,6 +383,8 @@
                                 <joint name="right_middle_2_joint" pos="0 0 0" axis="0 0 1" range="0 3.14" damping="0.05" frictionloss="0.002" />
                                 <inertial pos="-9.215838e-05 0.027033276 -0.0061005415" quat="1 0 0 0" mass="0.01561" fullinertia="2.5863581e-06 4.1029616e-07 2.6293443e-06 4.5323118e-07 -7.6006668e-12 7.9822055e-11" />
                                 <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.55 0.55 0.6 1" mesh="right_middle_2" />
+                                <geom type="sphere" size="0.008" pos="-0.0098294 0.056051 -0.0061006" contype="2" conaffinity="2" group="3" rgba="0.9 0.2 0.2 1" />
+                                <site name="right_middle_pad" type="sphere" size="0.012" pos="-0.0098294 0.056051 -0.0061006" group="4" rgba="1 0 0 0.3" />
                               </body>
                             </body>
                             <body name="right_ring_1" pos="0.0045302 0.00056467 0.15683" quat="0.51292507 0.48672995 -0.48673173 -0.51292695">
@@ -379,6 +395,8 @@
                                 <joint name="right_ring_2_joint" pos="0 0 0" axis="0 0 1" range="0 3.14" damping="0.05" frictionloss="0.002" />
                                 <inertial pos="0.00053282558 0.025343466 -0.0060929334" quat="1 0 0 0" mass="0.01281" fullinertia="2.1110771e-06 3.7048509e-07 2.1431537e-06 3.7835005e-07 -4.273595e-10 2.8223362e-09" />
                                 <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.55 0.55 0.6 1" mesh="right_ring_2" />
+                                <geom type="sphere" size="0.008" pos="-0.0086237279 0.052571927 -0.0060953876" contype="2" conaffinity="2" group="3" rgba="0.9 0.2 0.2 1" />
+                                <site name="right_ring_pad" type="sphere" size="0.012" pos="-0.0086237279 0.052571927 -0.0060953876" group="4" rgba="1 0 0 0.3" />
                               </body>
                             </body>
                             <body name="right_little_1" pos="0.025916 0.00056467 0.15365" quat="0.52547624 0.47315208 -0.47315381 -0.52547817">
@@ -389,6 +407,8 @@
                                 <joint name="right_little_2_joint" pos="0 0 0" axis="0 0 1" range="0 3.14" damping="0.05" frictionloss="0.002" />
                                 <inertial pos="0.0014296232 0.020639006 -0.0060993727" quat="1 0 0 0" mass="0.00957" fullinertia="1.1469386e-06 2.6618184e-07 1.1505637e-06 2.2223401e-07 3.6834378e-11 -2.0489227e-11" />
                                 <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.55 0.55 0.6 1" mesh="right_little_2" />
+                                <geom type="sphere" size="0.008" pos="-0.0063972321 0.042706922 -0.0061153717" contype="2" conaffinity="2" group="3" rgba="0.9 0.2 0.2 1" />
+                                <site name="right_little_pad" type="sphere" size="0.012" pos="-0.0063972321 0.042706922 -0.0061153717" group="4" rgba="1 0 0 0.3" />
                               </body>
                             </body>
                           </body>
@@ -555,5 +575,15 @@
     <framequat name="secondary_imu_quat" objtype="site" objname="secondary_imu" />
     <gyro name="secondary_imu_gyro" site="secondary_imu" noise="5e-4" cutoff="34.9" />
     <accelerometer name="secondary_imu_acc" site="secondary_imu" noise="1e-2" cutoff="157" />
+    <touch name="left_thumb_touch" site="left_thumb_pad" />
+    <touch name="left_index_touch" site="left_index_pad" />
+    <touch name="left_middle_touch" site="left_middle_pad" />
+    <touch name="left_ring_touch" site="left_ring_pad" />
+    <touch name="left_little_touch" site="left_little_pad" />
+    <touch name="right_thumb_touch" site="right_thumb_pad" />
+    <touch name="right_index_touch" site="right_index_pad" />
+    <touch name="right_middle_touch" site="right_middle_pad" />
+    <touch name="right_ring_touch" site="right_ring_pad" />
+    <touch name="right_little_touch" site="right_little_pad" />
   </sensor>
 </mujoco>

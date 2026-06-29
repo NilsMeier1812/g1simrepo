@@ -2,7 +2,7 @@
 # Phase 1: FTP-Hand in MuJoCo, Finger AKTUIERT (Position-Servos) -> steuerbar.
 # Body-Motoren (29) zuerst, dann 24 Finger-Position-Actuators in KANONISCHER
 # Reihenfolge (muss mit bridge/inspire_hand/robot_state uebereinstimmen).
-import os, math, xml.etree.ElementTree as ET
+import os, math, re, xml.etree.ElementTree as ET
 import pathlib; REPO=str(pathlib.Path(__file__).resolve().parents[4])
 URDF=os.path.join(REPO,"g1pilot/description_files/urdf/g1_29dof_inspire_ftp.urdf")
 BASE=os.path.join(REPO,"unitree_mujoco/unitree_robots/g1/g1_29dof.xml")
@@ -25,7 +25,7 @@ u=ET.parse(URDF).getroot()
 links={l.get('name'):l for l in u.findall('link')}
 ch={}
 for j in u.findall('joint'): ch.setdefault(j.find('parent').get('link'),[]).append(j)
-RANGES={}; MESHES=set()
+RANGES={}; MESHES=set(); BODIES={}
 SKIP=("force_sensor","hand_point_contact")
 
 def mesh_base(link):
@@ -58,7 +58,7 @@ def emit(parent, joint):
         jt.set('axis',joint.find('axis').get('xyz','0 0 1')); jt.set('range',fmt(lo,hi))
         jt.set('damping',str(FDAMP)); jt.set('frictionloss','0.002')
         RANGES[joint.get('name')]=(lo,hi)
-    add_inertial(b,child); add_geom(b,child)
+    add_inertial(b,child); add_geom(b,child); BODIES[child]=b
     for cj in ch.get(child,[]): emit(b,cj)
 def build(side):
     bj=[j for j in ch.get(f"{side}_wrist_yaw_link",[]) if j.get('name')==f"{side}_base_joint"][0]
@@ -85,6 +85,35 @@ for jn in CANON:
     lo,hi=RANGES[jn]
     p=ET.SubElement(act,'position'); p.set('name',jn); p.set('joint',jn)
     p.set('kp',str(FKP)); p.set('ctrlrange',fmt(lo,hi)); p.set('forcerange',fmt(-FFRC,FFRC))
+
+# ── Phase 2: Fingerspitzen-Kollision + Touch-Sensoren ─────────────────────────
+# Pro Fingerspitze (letztes Glied) ein kleiner Kollisions-Sphere + Touch-Site an der
+# Pose des letzten URDF-Force-Sensor-Frames. contype/conaffinity=2 -> Finger
+# kollidieren NUR mit Objekten, die Bit 2 setzen (greifbare Objekte), NICHT mit Boden
+# (Bit 1) oder dem Roboter selbst -> keine Self/Floor-Kollision -> stabil.
+FINGERS=(("thumb",4),("index",2),("middle",2),("ring",2),("little",2))
+TOUCH=[]
+sens=root.find('sensor')
+for s_ in ("left","right"):
+    for f,n in FINGERS:
+        tip=f"{s_}_{f}_{n}"
+        b=BODIES.get(tip)
+        if b is None: continue
+        fs=[j for j in ch.get(tip,[]) if 'force_sensor' in j.get('name')]
+        if fs:
+            fs.sort(key=lambda j:int(re.findall(r"(\d+)",j.get('name'))[-1]))
+            o=fs[-1].find('origin'); pad=[float(t) for t in (o.get('xyz','0 0 0').split())]
+        else:
+            pad=[0.0,0.0,0.0]
+        g=ET.SubElement(b,'geom'); g.set('type','sphere'); g.set('size','0.008')
+        g.set('pos',fmt(*pad)); g.set('contype','2'); g.set('conaffinity','2')
+        g.set('group','3'); g.set('rgba','0.9 0.2 0.2 1')
+        st=ET.SubElement(b,'site'); st.set('name',f"{s_}_{f}_pad"); st.set('type','sphere')
+        st.set('size','0.012'); st.set('pos',fmt(*pad)); st.set('group','4'); st.set('rgba','1 0 0 0.3')
+        TOUCH.append((f"{s_}_{f}_touch", f"{s_}_{f}_pad"))
+for sn,site in TOUCH:
+    t_=ET.SubElement(sens,'touch'); t_.set('name',sn); t_.set('site',site)
+
 root.set('model','g1_29dof_inspire_ftp')
 ET.indent(t,space="  "); t.write(OUT,encoding='unicode',xml_declaration=False)
-print("OK. finger actuators:", len(CANON), "| body+finger total actuators:", len(act))
+print("OK. finger actuators:", len(CANON), "| touch sensors:", len(TOUCH), "| total actuators:", len(act))

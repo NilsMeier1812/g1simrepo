@@ -60,6 +60,17 @@ class UnitreeSdk2Bridge:
             self.hand_act_ids, self.hand_joint_qadr, self.num_hand = [], [], 0
             self.num_motor = nu
         self.hand_cmd = None          # letzter rt/inspire/cmd (LowCmd_)
+        # Touch-Sensoren der Fingerspitzen (Phase 2). Adressen in sensordata per Name
+        # (kanonische Reihenfolge: links dann rechts, thumb/index/middle/ring/little).
+        # Werte werden im rt/inspire/state in motor_state[24..].q transportiert.
+        self.touch_adr = []
+        if self.num_hand:
+            _TOUCH = [f"{s}_{f}_touch" for s in ("left", "right")
+                      for f in ("thumb", "index", "middle", "ring", "little")]
+            for nm in _TOUCH:
+                sid = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_SENSOR, nm)
+                if sid >= 0:
+                    self.touch_adr.append(int(self.mj_model.sensor_adr[sid]))
         self.dim_motor_sensor = MOTOR_SENSOR_NUM * self.num_motor
         if self.num_hand:
             print(f"[BRIDGE] Inspire-Hand: {self.num_hand} Finger-Position-Aktuatoren "
@@ -416,6 +427,9 @@ class UnitreeSdk2Bridge:
             if self.num_hand:
                 for k, qadr in enumerate(self.hand_joint_qadr):
                     self.hand_state.motor_state[k].q = float(self.mj_data.qpos[qadr])
+                # Fingerspitzen-Kraefte [N] in motor_state[24..].q (Touch-Sensoren).
+                for i, adr in enumerate(self.touch_adr):
+                    self.hand_state.motor_state[24 + i].q = float(self.mj_data.sensordata[adr])
                 self.hand_state_puber.Write(self.hand_state)
 
             if self.have_frame_sensor:
