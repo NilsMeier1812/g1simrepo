@@ -72,15 +72,13 @@ class InspireFtpBridge(Node):
         self.joint_pub = self.create_publisher(JointState, "/joint_states", QoSProfile(depth=10))
 
         # ── Streamdeck-Hand-Buttons (OPEN/CLOSE LEFT/RIGHT HAND) ─────────────
-        #  Der Streamdeck (ui_interface) publiziert "open"/"close" als String auf
-        #  diese Topics. Frueher hoerte hier nur der dx3-Hand-Node zu (Rubber-Hand);
-        #  fuer die Inspire-Haende muss DIESE Bridge sie auf die 6 DOF abbilden,
-        #  sonst tun die Streamdeck-Hand-Buttons im Inspire-Modus nichts.
+        #  Streamdeck (ui_interface) und loco_client publizieren "open"/"close" als
+        #  String auf diese Topics. Diese Bridge bildet sie auf die 6 Inspire-DOF ab.
         self.create_subscription(
-            String, "/g1pilot/dx3/hand_action/left",
+            String, "/g1pilot/hand_action/left",
             lambda m: self._on_hand_action("left", m), 10)
         self.create_subscription(
-            String, "/g1pilot/dx3/hand_action/right",
+            String, "/g1pilot/hand_action/right",
             lambda m: self._on_hand_action("right", m), 10)
 
         # ── Mapping-Limits an die echte URDF klemmen, falls auffindbar ───────

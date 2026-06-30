@@ -360,7 +360,6 @@ ChannelFactoryInitialize(domain, iface)
   für den Realeinsatz gedacht — dort läuft Unitrees Onboard-Loco.
 - **Walking-Policy** ist die kanonische `unitree_rl_gym`-G1-Policy (velocity-getaktet,
   ohne explizites Stand-Verhalten); der driftfreie Stand kommt vom modellbasierten PD.
-- **DX3-Hand-Controller** crasht beim Start (keine DX3 angeschlossen) — ignorierbar.
 - **`USE_JOYSTICK=0`** zwingend ohne Gamepad, sonst stirbt der Sim-Thread.
 
 ---

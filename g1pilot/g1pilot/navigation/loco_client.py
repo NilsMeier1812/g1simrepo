@@ -78,8 +78,8 @@ class G1LocoClient(Node):
         self.create_subscription(Joy, '/g1pilot/joy', self.joystick_callback, 10)
 
         self.publisher_arms_controlled = self.create_publisher(Bool, '/g1pilot/arms/enabled', 1)
-        self.right_gripper_pub = self.create_publisher(String, '/g1pilot/dx3/hand_action/right', 1)
-        self.left_gripper_pub = self.create_publisher(String, '/g1pilot/dx3/hand_action/left', 1)
+        self.right_gripper_pub = self.create_publisher(String, '/g1pilot/hand_action/right', 1)
+        self.left_gripper_pub = self.create_publisher(String, '/g1pilot/hand_action/left', 1)
         self.publisher_homming_arms = self.create_publisher(Bool, '/g1pilot/arms/home', 1)
 
     def _log_once(self, level, msg, key):
