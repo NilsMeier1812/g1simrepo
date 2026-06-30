@@ -134,15 +134,21 @@ echo
 xhost +local:root >/dev/null 2>&1 || \
   echo -e "${Y}[start] WARN: 'xhost' nicht verfuegbar - laeuft hier ein X-Server?${R}"
 
-# ── Hand-GUIs nach dem Hochfahren automatisch oeffnen ───────────────────
-#  start.sh laeuft auf dem HOST (nicht im Container), kann also direkt einen
-#  Browser oeffnen. Wir warten im Hintergrund, bis die Controller-Bridge auf
-#  :8766 lauscht (colcon-Build im Container kann dauern), und oeffnen dann beide
-#  GUIs mit ?autoconnect=1, sodass sie sich von selbst verbinden.
-open_guis_when_ready() {
+# ── Hand-GUIs oeffnen: Host-Watcher ─────────────────────────────────────
+#  start.sh laeuft auf dem HOST (nicht im Container) — nur HIER existiert ein
+#  Browser. Der Container (ui_interface/Streamdeck-Button) kann selbst keinen
+#  Browser starten; er fasst stattdessen die Trigger-Datei .gui_open_request im
+#  bind-gemounteten Repo an. Dieser Watcher:
+#    1) wartet, bis die Controller-Bridge auf :8766 lauscht (colcon-Build dauert),
+#    2) oeffnet die GUIs einmal automatisch (nur wenn OPEN_GUIS=true),
+#    3) bleibt dann am Leben und oeffnet sie erneut, sobald die Trigger-Datei
+#       ihre mtime aendert -> der Streamdeck-Button "INSPIRE FTP GUIs" wirkt.
+#  Beide GUIs werden mit ?autoconnect=1 geoeffnet -> verbinden sich von selbst.
+gui_opener_daemon() {
   local web="$PWD/g1pilot/manipulation/inspire_ftp/web"
   local ctrl="file://$web/hand_controller_viewer.html?autoconnect=1"
   local view="file://$web/inspire_hand_viewer.html?autoconnect=1"
+  local trigger="$PWD/.gui_open_request"   # == /ros2_ws/src/g1pilot/.gui_open_request im Container
 
   # WSL2-Erkennung (Kernel-Release enthaelt "microsoft")
   local is_wsl=0
@@ -169,7 +175,7 @@ open_guis_when_ready() {
       command -v explorer.exe >/dev/null 2>&1 && { explorer.exe "$url" >/dev/null 2>&1; return 0; }
     else
       local c
-      for c in xdg-open sensible-browser x-www-browser \
+      for c in xdg-open open sensible-browser x-www-browser \
                microsoft-edge microsoft-edge-stable msedge \
                firefox google-chrome chromium chromium-browser; do
         command -v "$c" >/dev/null 2>&1 && { "$c" "$url" >/dev/null 2>&1; return 0; }
@@ -178,25 +184,53 @@ open_guis_when_ready() {
     return 1
   }
 
-  # Warten bis die Bridge lauscht (max ~5 min, deckt auch den ersten Build ab).
-  local i=0
-  while [ $i -lt 600 ]; do
-    if (exec 3<>"/dev/tcp/127.0.0.1/8766") 2>/dev/null; then break; fi
-    sleep 0.5; i=$((i+1))
-  done
+  # Beide GUIs nacheinander oeffnen; bei fehlendem Opener Pfade ausgeben.
+  _open_both() {
+    if ! _open_url "$ctrl"; then
+      echo -e "${Y}[start] Kein Browser-Opener gefunden - GUIs bitte manuell oeffnen:${R}"
+      echo -e "   ${C}$ctrl${R}"
+      echo -e "   ${C}$view${R}"
+      return 1
+    fi
+    sleep 1
+    _open_url "$view" >/dev/null 2>&1 || true
+  }
 
-  if ! _open_url "$ctrl"; then
-    echo -e "${Y}[start] Kein Browser-Opener gefunden - GUIs bitte manuell oeffnen:${R}"
-    echo -e "   ${C}$ctrl${R}"
-    echo -e "   ${C}$view${R}"
-    return
-  fi
-  sleep 1
-  _open_url "$view" >/dev/null 2>&1 || true
+  # Port-Check (bash /dev/tcp) — true, solange die Bridge auf :8766 lauscht.
+  _bridge_up() { (exec 3<>"/dev/tcp/127.0.0.1/8766") 2>/dev/null; }
+
+  # 1) Warten bis die Bridge lauscht (max ~5 min, deckt auch den ersten Build ab).
+  local i=0
+  while [ $i -lt 600 ]; do _bridge_up && break; sleep 0.5; i=$((i+1)); done
+
+  # Stale-Trigger aus einem frueheren Lauf entfernen, damit der Watcher nicht
+  # sofort faelschlich oeffnet.
+  rm -f "$trigger" 2>/dev/null || true
+
+  # 2) Einmaliges Auto-Open (nur wenn gewuenscht).
+  [ "$OPEN_GUIS" = "true" ] && _open_both
+
+  # 3) Watcher-Schleife: Trigger-Datei (vom Streamdeck-Button angefasst) beobachten.
+  #    Endet, sobald die Bridge nicht mehr lauscht (Sim gestoppt) -> kein Leak.
+  local last=""
+  while _bridge_up; do
+    if [ -f "$trigger" ]; then
+      local cur
+      cur=$(stat -c %Y "$trigger" 2>/dev/null || stat -f %m "$trigger" 2>/dev/null || echo "")
+      if [ -n "$cur" ] && [ "$cur" != "$last" ]; then
+        last="$cur"
+        echo -e "${C}[start] Streamdeck: oeffne Inspire-FTP-GUIs...${R}"
+        _open_both
+      fi
+    fi
+    sleep 0.5
+  done
 }
 
-if [ "$OPEN_GUIS" = "true" ]; then
-  ( open_guis_when_ready ) &
+# Watcher immer starten, wenn Inspire-Haende aktiv sind: er bedient das optionale
+# Auto-Open UND den Streamdeck-Button (auch bei OPEN_GUIS=false).
+if [ "$G1_INSPIRE_HANDS" = "1" ]; then
+  ( gui_opener_daemon ) &
 fi
 
 # ── Reste eines frueheren Laufs sauber entfernen ────────────────────────

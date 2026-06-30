@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QGridLayout, QPushButton, QVBoxLayout,
     QHBoxLayout, QSlider, QLabel
@@ -340,11 +341,38 @@ class ButtonGUI(QWidget):
         self.node.publish_bool(self.node.pub_arms_enabled, True)
         self.radio_loco((0, 1), self.node.pub_start_balancing)
 
+    # Bind-Mount-Pfad des Repos IM Container (docker-compose: .:/ros2_ws/src/g1pilot).
+    # Eine Trigger-Datei hier ist fuer den Host-Watcher (start.sh) sichtbar.
+    _HOST_MOUNT = "/ros2_ws/src/g1pilot"
+    _GUI_OPEN_TRIGGER = os.path.join(_HOST_MOUNT, ".gui_open_request")
+
     def open_hand_guis(self):
-        """Open the Inspire FTP hand controller and viewer HTML files in a browser."""
+        """Inspire-FTP-GUIs (Controller + Viewer) im Browser oeffnen.
+
+        ui_interface laeuft IM Container (schlankes ROS-Image, KEIN Browser). Es
+        kann deshalb selbst keinen Browser auf dem Host starten. Stattdessen wird
+        eine Trigger-Datei im bind-gemounteten Repo angefasst; der Host-Watcher in
+        start.sh sieht die neue mtime und oeffnet die GUIs dort, wo ein Browser
+        existiert. Laeuft der Node ausnahmsweise direkt auf dem Host (kein Mount),
+        wird als Fallback direkt ein Browser gestartet."""
         self.set_button_active((2, 4), True)
         QTimer.singleShot(700, lambda: self.set_button_active((2, 4), False))
 
+        # ── Normalfall: im Container -> Host-Watcher anstossen ───────────────
+        if os.path.isdir(self._HOST_MOUNT):
+            try:
+                with open(self._GUI_OPEN_TRIGGER, "w") as f:
+                    f.write(str(time.time()))
+                self.node.get_logger().info(
+                    "[FTP-GUIs] Oeffnen via Host angefordert (.gui_open_request). "
+                    "Der Browser geht auf dem Host auf (start.sh-Watcher).")
+            except Exception as e:  # noqa: BLE001
+                self.node.get_logger().warn(
+                    f"[FTP-GUIs] Trigger-Datei nicht schreibbar ({e}). "
+                    "GUIs bitte manuell oeffnen (web/*.html).")
+            return
+
+        # ── Fallback: direkt auf dem Host laufend -> Browser selbst starten ──
         try:
             from ament_index_python.packages import get_package_share_directory
             web_dir = os.path.join(
@@ -359,7 +387,7 @@ class ButtonGUI(QWidget):
         view = f"file://{web_dir}/inspire_hand_viewer.html?autoconnect=1"
 
         opener = None
-        for cmd in ('xdg-open', 'sensible-browser', 'x-www-browser',
+        for cmd in ('xdg-open', 'open', 'sensible-browser', 'x-www-browser',
                     'microsoft-edge', 'microsoft-edge-stable', 'msedge',
                     'firefox', 'google-chrome', 'chromium', 'chromium-browser'):
             if subprocess.run(['which', cmd], capture_output=True).returncode == 0:
@@ -375,7 +403,6 @@ class ButtonGUI(QWidget):
         subprocess.Popen([opener, ctrl], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         def _open_viewer():
-            import time
             time.sleep(1)
             subprocess.Popen([opener, view], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 

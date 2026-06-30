@@ -30,6 +30,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
 from sensor_msgs.msg import JointState
+from std_msgs.msg import String
 
 try:
     import websockets
@@ -69,6 +70,18 @@ class InspireFtpBridge(Node):
 
         # ── /joint_states-Publisher (nur die 24 Finger-Gelenke) ──────────────
         self.joint_pub = self.create_publisher(JointState, "/joint_states", QoSProfile(depth=10))
+
+        # ── Streamdeck-Hand-Buttons (OPEN/CLOSE LEFT/RIGHT HAND) ─────────────
+        #  Der Streamdeck (ui_interface) publiziert "open"/"close" als String auf
+        #  diese Topics. Frueher hoerte hier nur der dx3-Hand-Node zu (Rubber-Hand);
+        #  fuer die Inspire-Haende muss DIESE Bridge sie auf die 6 DOF abbilden,
+        #  sonst tun die Streamdeck-Hand-Buttons im Inspire-Modus nichts.
+        self.create_subscription(
+            String, "/g1pilot/dx3/hand_action/left",
+            lambda m: self._on_hand_action("left", m), 10)
+        self.create_subscription(
+            String, "/g1pilot/dx3/hand_action/right",
+            lambda m: self._on_hand_action("right", m), 10)
 
         # ── Mapping-Limits an die echte URDF klemmen, falls auffindbar ───────
         urdf = joint_map.default_urdf_path()
@@ -156,11 +169,30 @@ class InspireFtpBridge(Node):
             for i, v in enumerate(cmd["values"]):
                 hand.set_angle(i, v)
         elif t == "open_hand":
+            self._apply_open_close(hand, "open")
+        elif t == "close_hand":
+            self._apply_open_close(hand, "close")
+
+    @staticmethod
+    def _apply_open_close(hand: HandModel, action: str):
+        """Alle 6 DOF auf offen (1000) bzw. zu setzen. Gemeinsam genutzt von der
+        Controller-GUI (open_hand/close_hand) und den Streamdeck-Hand-Buttons."""
+        hand.set_enabled(True)
+        if action == "open":
             for i in range(6):
                 hand.set_angle(i, 1000)
-        elif t == "close_hand":
+        else:  # close
             for i in range(6):
                 hand.set_angle(i, 200 if i == 4 else 0)  # Daumen-Beugung nicht ganz zu
+
+    def _on_hand_action(self, side: str, msg: String):
+        """Streamdeck OPEN/CLOSE {LEFT,RIGHT} HAND -> Inspire-DOF-Sollwerte."""
+        action = (msg.data or "").strip().lower()
+        if action not in ("open", "close"):
+            return
+        hand = self.models["right"] if side == "right" else self.models["left"]
+        self._apply_open_close(hand, action)
+        self.get_logger().info(f"Streamdeck: Hand {side} -> {action}")
 
     async def _controller_broadcast(self, clients):
         while True:
