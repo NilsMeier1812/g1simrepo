@@ -32,15 +32,26 @@ def mesh_base(link):
     l=links.get(link); 
     if l is None or l.find('visual') is None: return None
     m=l.find('visual/geometry/mesh'); return os.path.basename(m.get('filename')) if m is not None else None
+def rpy_mat(r,p,y):
+    cr,sr=math.cos(r),math.sin(r); cp,sp=math.cos(p),math.sin(p); cy,sy=math.cos(y),math.sin(y)
+    return [[cy*cp, cy*sp*sr-sy*cr, cy*sp*cr+sy*sr],
+            [sy*cp, sy*sp*sr+cy*cr, sy*sp*cr-cy*sr],
+            [-sp,   cp*sr,          cp*cr]]
 def add_inertial(b,link):
     ine=links[link].find('inertial')
     if ine is None: return
     o=ine.find('origin'); I=ine.find('inertia')
     xyz=[float(t) for t in (o.get('xyz','0 0 0').split())] if o is not None else [0,0,0]
     rpy=[float(t) for t in (o.get('rpy','0 0 0').split())] if o is not None else [0,0,0]
-    el=ET.SubElement(b,'inertial'); el.set('pos',fmt(*xyz)); el.set('quat',fmt(*rpy2quat(*rpy)))
-    el.set('mass',ine.find('mass').get('value'))
-    el.set('fullinertia',fmt(*[float(I.get(k)) for k in('ixx','iyy','izz','ixy','ixz','iyz')]))
+    ixx,iyy,izz,ixy,ixz,iyz=[float(I.get(k)) for k in('ixx','iyy','izz','ixy','ixz','iyz')]
+    M=[[ixx,ixy,ixz],[ixy,iyy,iyz],[ixz,iyz,izz]]
+    R=rpy_mat(*rpy)
+    RM=[[sum(R[i][k]*M[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
+    Ib=[[sum(RM[i][k]*R[j][k] for k in range(3)) for j in range(3)] for i in range(3)]
+    # MuJoCo: fullinertia (im Body-Frame) -> KEIN quat zusaetzlich erlaubt. Inertia
+    # daher per rpy in den Body-Frame rotiert (Ib = R*M*R^T), pos bleibt.
+    el=ET.SubElement(b,'inertial'); el.set('pos',fmt(*xyz)); el.set('mass',ine.find('mass').get('value'))
+    el.set('fullinertia',fmt(Ib[0][0],Ib[1][1],Ib[2][2],Ib[0][1],Ib[0][2],Ib[1][2]))
 def add_geom(b,link):
     mb=mesh_base(link)
     if mb is None: return
