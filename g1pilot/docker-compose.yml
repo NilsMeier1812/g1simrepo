@@ -43,6 +43,8 @@ services:
       # Lockstep: deterministische Regelrate (decimation Physikschritte pro
       # rt/lowcmd). run_sim_loco.sh setzt 1 -> garantierte 50 Hz fuer die Policy.
       - SIM_LOCKSTEP=${SIM_LOCKSTEP:-1}
+      # Inspire-FTP-Haende laden (1) statt Rubber-Hand. config.py waehlt die Scene.
+      - G1_INSPIRE_HANDS=${G1_INSPIRE_HANDS:-0}
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ../unitree_mujoco:/unitree_mujoco:ro   # Mountet dein lokales Repo!
@@ -83,6 +85,9 @@ services:
       - SIM_LOCKSTEP=${SIM_LOCKSTEP:-1}
       # Start-Menue (start.sh): RViz mitstarten? bringup_sim.launch.py liest das.
       - USE_RVIZ=${USE_RVIZ:-false}
+      # Inspire-Haende: bringup_sim.launch.py startet dann inspire_hand und setzt
+      # robot_state publish_hand_joints:=false (sonst doppelte Finger-/joint_states).
+      - G1_INSPIRE_HANDS=${G1_INSPIRE_HANDS:-0}
     command: >
       bash -c "cd /ros2_ws &&
                source /opt/ros/humble/setup.bash &&

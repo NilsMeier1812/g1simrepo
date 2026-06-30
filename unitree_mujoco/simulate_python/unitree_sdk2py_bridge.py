@@ -37,8 +37,45 @@ class UnitreeSdk2Bridge:
         self.mj_model = mj_model
         self.mj_data = mj_data
 
-        self.num_motor = self.mj_model.nu
+        nu = self.mj_model.nu
+        # Finger-Aktuatoren (Inspire-Hand) erkennen und vom BODY-Pfad trennen: rt/lowcmd
+        # und rt/lowstate (hg-Motorarray) mappen NUR auf die Body-Motoren. num_motor
+        # bleibt damit = Body-Anzahl (G1: 29) -> alle Sensor-Offsets/Indizes unveraendert.
+        # Ohne Finger-Aktuatoren (Rubber-Modell) ist die Liste leer -> Verhalten exakt
+        # wie bisher. Voraussetzung: Finger-Aktuatoren stehen HINTER den Body-Aktuatoren.
+        _FINGER_KEYS = ("thumb", "index", "middle", "ring", "little")
+        self.hand_act_ids = []        # MuJoCo-Actuator-IDs der Finger (Modell-/Kanon-Reihenfolge)
+        self.hand_joint_qadr = []     # qpos-Adresse je Finger-Gelenk (fuer State)
+        for aid in range(nu):
+            jid = int(self.mj_model.actuator_trnid[aid][0])
+            jname = mujoco.mj_id2name(self.mj_model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ""
+            if any(k in jname for k in _FINGER_KEYS):
+                self.hand_act_ids.append(aid)
+                self.hand_joint_qadr.append(int(self.mj_model.jnt_qposadr[jid]))
+        self.num_hand = len(self.hand_act_ids)
+        self.num_motor = nu - self.num_hand
+        if self.hand_act_ids and min(self.hand_act_ids) < self.num_motor:
+            print("[BRIDGE] WARN: Finger-Aktuatoren nicht hinter den Body-Aktuatoren -> "
+                  "Hand-Steuerung deaktiviert (Body-Mapping waere kaputt).", flush=True)
+            self.hand_act_ids, self.hand_joint_qadr, self.num_hand = [], [], 0
+            self.num_motor = nu
+        self.hand_cmd = None          # letzter rt/inspire/cmd (LowCmd_)
+        # Touch-Sensoren der Fingerspitzen (Phase 2). Adressen in sensordata per Name
+        # (kanonische Reihenfolge: links dann rechts, thumb/index/middle/ring/little).
+        # Werte werden im rt/inspire/state in motor_state[24..].q transportiert.
+        self.touch_adr = []
+        if self.num_hand:
+            _TOUCH = [f"{s}_{f}_touch" for s in ("left", "right")
+                      for f in ("thumb", "index", "middle", "ring", "little")]
+            for nm in _TOUCH:
+                sid = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_SENSOR, nm)
+                if sid >= 0:
+                    self.touch_adr.append(int(self.mj_model.sensor_adr[sid]))
         self.dim_motor_sensor = MOTOR_SENSOR_NUM * self.num_motor
+        if self.num_hand:
+            print(f"[BRIDGE] Inspire-Hand: {self.num_hand} Finger-Position-Aktuatoren "
+                  f"(rt/inspire/cmd -> Ziele, rt/inspire/state -> Winkel), "
+                  f"Body-Motoren={self.num_motor}.", flush=True)
         self.have_imu = False
         self.have_frame_sensor = False
         self.dt = self.mj_model.opt.timestep
@@ -191,6 +228,16 @@ class UnitreeSdk2Bridge:
         self.arm_sdk_suber = ChannelSubscriber("rt/arm_sdk", LowCmd_)
         self.arm_sdk_suber.Init(self.ArmSdkHandler, 10)
 
+        # Inspire-Hand: separater Kanal fuer die Finger (entkoppelt vom Body-Lowcmd/
+        # -Lowstate). cmd = Ziel-Winkel je Finger (motor_cmd[k].q), state = Ist-Winkel.
+        # Pragmatisch LowCmd_/LowState_ wiederverwendet (35 Slots >> 24 Finger).
+        if self.num_hand:
+            self.hand_cmd_suber = ChannelSubscriber("rt/inspire/cmd", LowCmd_)
+            self.hand_cmd_suber.Init(self.HandCmdHandler, 10)
+            self.hand_state = LowState_default()
+            self.hand_state_puber = ChannelPublisher("rt/inspire/state", LowState_)
+            self.hand_state_puber.Init()
+
         # joystick
         self.key_map = {
             "R1": 0,
@@ -229,6 +276,10 @@ class UnitreeSdk2Bridge:
     def ArmSdkHandler(self, msg: LowCmd_):
         # rt/arm_sdk (arm_controller: Arme + Weight @ index 29).
         self.low_cmd_arm = msg
+
+    def HandCmdHandler(self, msg: LowCmd_):
+        # rt/inspire/cmd: Finger-Ziel-Winkel (motor_cmd[k].q, kanonische Reihenfolge).
+        self.hand_cmd = msg
 
     @staticmethod
     def _pd(mc, q, dq):
@@ -291,6 +342,13 @@ class UnitreeSdk2Bridge:
         # Quelle ohne Befehl (kp=kd=tau=0 bzw. None) -> 0 Nm.
         if self.mj_data is None:
             return
+        # Finger-Position-Servos (Inspire-Hand): Ziel-Winkel aus rt/inspire/cmd, je
+        # Sim-Schritt gesetzt. Unabhaengig vom Body-Zustand -> Finger immer steuerbar.
+        # Ohne Hand (hand_act_ids leer) ist das ein No-op. ctrl=0 -> offene Hand.
+        if self.num_hand:
+            hc = self.hand_cmd
+            for k, aid in enumerate(self.hand_act_ids):
+                self.mj_data.ctrl[aid] = float(hc.motor_cmd[k].q) if hc is not None else 0.0
         legs = self.low_cmd_legs
         arm = self.low_cmd_arm
         if self.managed_weld:
@@ -363,6 +421,16 @@ class UnitreeSdk2Bridge:
                 self.low_state.motor_state[i].tau_est = self.mj_data.sensordata[
                     i + 2 * self.num_motor
                 ]
+
+            # Inspire-Hand: Finger-Ist-Winkel separat publizieren (rt/inspire/state).
+            # Direkt aus qpos (kein eigener Sensor -> Body-Sensor-Offsets unberuehrt).
+            if self.num_hand:
+                for k, qadr in enumerate(self.hand_joint_qadr):
+                    self.hand_state.motor_state[k].q = float(self.mj_data.qpos[qadr])
+                # Fingerspitzen-Kraefte [N] in motor_state[24..].q (Touch-Sensoren).
+                for i, adr in enumerate(self.touch_adr):
+                    self.hand_state.motor_state[24 + i].q = float(self.mj_data.sensordata[adr])
+                self.hand_state_puber.Write(self.hand_state)
 
             if self.have_frame_sensor:
 

@@ -27,12 +27,12 @@ def generate_launch_description():
     #             darum ist RViz jetzt wieder gefahrlos zuschaltbar.
     use_rviz = os.environ.get('USE_RVIZ', 'false').strip().lower()
 
-    #  USE_HANDS : "true"/"false" — Inspire-FTP-Hand-Bridge mitstarten (Default an).
-    #              Wenn an, uebernimmt die Bridge die Finger-Gelenke auf /joint_states,
-    #              also publiziert robot_state sie NICHT mehr selbst (publish_hand_joints
-    #              = false), sonst kollidieren beide Quellen.
-    use_hands = os.environ.get('USE_HANDS', 'true').strip().lower()
-    hands_on = use_hands in ('1', 'true', 'yes', 'on')
+    #  G1_INSPIRE_HANDS : "1"/"0" — Master-Schalter Inspire-FTP-Haende. Waehlt im
+    #  MuJoCo das Finger-Modell (config.py) UND startet hier die Inspire-FTP-Hand-
+    #  Bridge (HTML-GUIs + DDS rt/inspire/cmd|state, backend='mujoco'). robot_state
+    #  gibt die Finger dann an die Bridge ab (publish_hand_joints=false), sonst gaebe
+    #  es zwei /joint_states-Quellen fuer dieselben Gelenke.
+    inspire_hands = os.environ.get('G1_INSPIRE_HANDS', '0').strip().lower() in ('1', 'true', 'yes', 'on')
 
     nodes = [
 
@@ -45,8 +45,8 @@ def generate_launch_description():
                 'use_robot':            'true',
                 'interface':            'lo',
                 'publish_joint_states': 'true',
-                # Finger gibt robot_state nur ab, wenn die Hand-Bridge sie uebernimmt.
-                'publish_hand_joints':  'false' if hands_on else 'true',
+                # Finger gibt robot_state nur ab, wenn die Inspire-Bridge sie uebernimmt.
+                'publish_hand_joints':  'false' if inspire_hands else 'true',
                 'sim_rate_hz':          '50.0',
                 # rviz2 standardmaessig AUS (USE_RVIZ=false). Frueher brach RViz die
                 # 50-Hz-Regelschleife ein; unter LOCKSTEP ist das nicht mehr der Fall
@@ -99,10 +99,11 @@ def generate_launch_description():
         ),
     ]
 
-    # ── 5. Inspire-FTP-Hand-Bridge (optional, Default an) ───────────────
-    #    Bedient die HTML-GUIs (Controller :8766 / Viewer :8765) und bewegt die
-    #    Finger-Gelenke in RViz (/joint_states). Modbus-frei -> redet mit der Sim.
-    if hands_on:
+    # ── 5. Inspire-FTP-Hand-Bridge (nur bei Inspire-Haenden) ────────────
+    #    Bedient die HTML-GUIs (Controller :8766 / Viewer :8765), bewegt die Finger in
+    #    RViz (/joint_states) UND redet per DDS (rt/inspire/cmd|state) mit der MuJoCo-
+    #    Sim: backend='mujoco' -> echte Finger-Winkel + Touch-Kraefte in den GUIs.
+    if inspire_hands:
         nodes.append(Node(
             package='g1pilot',
             executable='inspire_hand',
@@ -113,7 +114,8 @@ def generate_launch_description():
                 'controller_port': 8766,
                 'viewer_port':     8765,
                 'update_rate_hz':  50.0,
-                'backend':         'sim',
+                'backend':         'mujoco',
+                'interface':       'lo',
             }]
         ))
 

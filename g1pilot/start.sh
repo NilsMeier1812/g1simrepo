@@ -84,15 +84,17 @@ ask_menu "1) RViz mitstarten? (MuJoCo-Fenster kommt immer)" 2 "${USE_RVIZ:-}" \
   "Nein — nur MuJoCo-Fenster|false"
 export USE_RVIZ="$REPLY_VALUE"
 
-# ── 1b) Inspire-FTP-Haende ───────────────────────────────────────────────
-ask_menu "1b) Inspire-FTP-Hand-Bridge mitstarten? (GUIs :8766/:8765, Finger in RViz)" 1 "${USE_HANDS:-}" \
-  "Ja  — Hand-Bridge an (robot_state gibt Finger an die Bridge ab)|true" \
-  "Nein — keine Hand-Bridge (robot_state zeigt Finger als Default 0)|false"
-export USE_HANDS="$REPLY_VALUE"
+# ── 2) Inspire-FTP-Haende ────────────────────────────────────────────────
+#   Master-Schalter: waehlt im MuJoCo das Inspire-Finger-Modell UND startet die
+#   Hand-Bridge (HTML-GUIs :8766/:8765 + DDS, Finger steuerbar/gemessen in RViz).
+ask_menu "2) Inspire-FTP-Haende? (Finger steuerbar + GUIs; sonst Rubber-Hand)" 2 "${G1_INSPIRE_HANDS:-}" \
+  "Ja  — Inspire-Modell + Hand-Bridge (GUIs :8766/:8765, echte Kraefte)|1" \
+  "Nein — bisheriges Rubber-Hand-Modell|0"
+export G1_INSPIRE_HANDS="$REPLY_VALUE"
 
-# ── 1c) Hand-GUIs automatisch im Browser oeffnen (nur mit Hand-Bridge) ────
-if [ "$USE_HANDS" = "true" ]; then
-  ask_menu "1c) Hand-GUIs automatisch im Browser oeffnen (und verbinden)?" 1 "${OPEN_GUIS:-}" \
+# ── 2b) Hand-GUIs automatisch im Browser oeffnen (nur mit Inspire-Haenden) ─
+if [ "$G1_INSPIRE_HANDS" = "1" ]; then
+  ask_menu "2b) Hand-GUIs automatisch im Browser oeffnen (und verbinden)?" 1 "${OPEN_GUIS:-}" \
     "Ja  — Controller + Viewer oeffnen sich selbst und verbinden|true" \
     "Nein — GUIs manuell oeffnen (web/*.html)|false"
   export OPEN_GUIS="$REPLY_VALUE"
@@ -100,8 +102,8 @@ else
   export OPEN_GUIS=false
 fi
 
-# ── 2) Rebuild ──────────────────────────────────────────────────────────
-ask_menu "2) Docker-Images vor dem Start neu bauen?" 1 "" \
+# ── 3) Rebuild ──────────────────────────────────────────────────────────
+ask_menu "3) Docker-Images vor dem Start neu bauen?" 1 "" \
   "Nein — vorhandene Images nutzen (schnell)|0" \
   "Ja  — --build (nach Code-/Dockerfile-Aenderungen)|1"
 if [ "$REPLY_VALUE" = "1" ]; then PASSTHRU+=("--build"); fi
@@ -119,8 +121,9 @@ export G1_SIM_MODE=true
 # ── Zusammenfassung ─────────────────────────────────────────────────────
 echo -e "${B}Starte mit:${R}"
 echo -e "   RViz           : ${G}USE_RVIZ=${USE_RVIZ}${R}"
-echo -e "   Inspire-Haende : ${G}USE_HANDS=${USE_HANDS}${R} ${DIM}(Bridge :8766/:8765)${R}"
-echo -e "   Hand-GUIs      : ${G}OPEN_GUIS=${OPEN_GUIS}${R} ${DIM}(Browser-Auto-Open)${R}"
+_hands_lbl=$( [ "${G1_INSPIRE_HANDS}" = "1" ] && echo "Inspire-FTP (Finger + GUIs)" || echo "Rubber-Hand" )
+echo -e "   Haende         : ${G}G1_INSPIRE_HANDS=${G1_INSPIRE_HANDS}${R} ${DIM}(${_hands_lbl})${R}"
+[ "${G1_INSPIRE_HANDS}" = "1" ] && echo -e "   Hand-GUIs      : ${G}OPEN_GUIS=${OPEN_GUIS}${R} ${DIM}(Browser-Auto-Open :8766/:8765)${R}"
 echo -e "   Lockstep       : ${G}SIM_LOCKSTEP=${SIM_LOCKSTEP}${R} ${DIM}(immer an, auf Echtzeit gedeckelt)${R}"
 echo -e "   Basis          : ${G}HOLD_BASE_MODE=${HOLD_BASE_MODE}${R} (Loco-Modus)"
 echo -e "   Loco-Policy    : ${G}g1_wholebody${R} ${DIM}(Stehen=cmd0; Laufen via Streamdeck)${R}"

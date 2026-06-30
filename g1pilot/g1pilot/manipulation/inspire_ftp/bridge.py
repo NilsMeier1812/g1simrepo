@@ -50,7 +50,10 @@ class InspireFtpBridge(Node):
         self.declare_parameter("controller_port", 8766)
         self.declare_parameter("viewer_port", 8765)
         self.declare_parameter("update_rate_hz", 50.0)
-        self.declare_parameter("backend", "sim")        # nur "sim" implementiert
+        # backend: "mujoco" = Stufe 2 (echte Finger-Physik + Touch-Kraefte via DDS),
+        #          "sim"    = Stufe 1 (open-loop /joint_states, Kraft/Taktil = 0).
+        self.declare_parameter("backend", "mujoco")
+        self.declare_parameter("interface", "lo")        # DDS-Interface fuer 'mujoco'
         # Nur kosmetisch fuer die GUI-Anzeige (kein echtes Modbus-Ziel im Sim).
         self.declare_parameter("left_host", "sim://left")
         self.declare_parameter("right_host", "sim://right")
@@ -60,6 +63,7 @@ class InspireFtpBridge(Node):
         self.viewer_port = int(self.get_parameter("viewer_port").value)
         rate = float(self.get_parameter("update_rate_hz").value)
         backend_name = self.get_parameter("backend").get_parameter_value().string_value
+        interface = self.get_parameter("interface").get_parameter_value().string_value
         left_host = self.get_parameter("left_host").get_parameter_value().string_value
         right_host = self.get_parameter("right_host").get_parameter_value().string_value
 
@@ -80,11 +84,18 @@ class InspireFtpBridge(Node):
             "left":  HandModel("links",  left_host),
             "right": HandModel("rechts", right_host),
         }
-        if backend_name != "sim":
-            self.get_logger().warn(
-                f"backend='{backend_name}' nicht verfuegbar -> nutze 'sim' (Stufe 1)."
-            )
-        self.backend = SimJointStateBackend(self._publish_joint_states, closed_rad=closed_rad)
+        if backend_name == "mujoco":
+            from .backends import MujocoContactBackend
+            self.backend = MujocoContactBackend(
+                self._publish_joint_states, interface=interface, closed_rad=closed_rad)
+            self.get_logger().info(
+                f"Backend=mujoco (Stufe 2): DDS rt/inspire/cmd|state ueber '{interface}' "
+                f"-> echte Finger-Winkel + Touch-Kraefte.")
+        else:
+            if backend_name != "sim":
+                self.get_logger().warn(
+                    f"backend='{backend_name}' unbekannt -> nutze 'sim' (Stufe 1).")
+            self.backend = SimJointStateBackend(self._publish_joint_states, closed_rad=closed_rad)
 
         # ── Update-Schleife (rclpy-Timer): Backend treiben + /joint_states ───
         self._last = time.monotonic()
@@ -92,7 +103,7 @@ class InspireFtpBridge(Node):
 
         self.get_logger().info(
             f"Inspire-FTP-Bridge aktiv | Controller ws://{self.ws_host}:{self.controller_port} | "
-            f"Viewer ws://{self.ws_host}:{self.viewer_port} | Backend=sim"
+            f"Viewer ws://{self.ws_host}:{self.viewer_port} | Backend={backend_name}"
         )
 
     # ── ROS-seitig ────────────────────────────────────────────────────────────

@@ -77,6 +77,7 @@ setup(
             'interactive_marker = g1pilot.manipulation.interactive_marker:main',
             'dx3_controller = g1pilot.manipulation.dx3_hand:main',
             'arm_controller = g1pilot.manipulation.arm_controller:main',
+            # Inspire-FTP-Hand: GUI-WebSocket-Bridge + DDS-Backend (rt/inspire/cmd|state).
             'inspire_hand = g1pilot.manipulation.inspire_ftp.bridge:main',
 
             # Teleoperation Nodes
