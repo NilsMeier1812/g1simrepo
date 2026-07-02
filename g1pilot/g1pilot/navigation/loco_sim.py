@@ -139,6 +139,13 @@ class LocoSim(Node):
         # PD-Balancer-Gains (live tunebar via ros2 param set). Bewaehrte Defaults.
         self.declare_parameter("bal_kp_scale", 10.0)         # Posture-Steifigkeit (Haupthebel)
         self.declare_parameter("bal_ramp_s", 0.4)            # weicher Eintritt Policy->PD
+        # Integral-Trim [Nm/(rad*s)] auf den Knoechel-Pitch: gleicht STATISCHE
+        # CoM-Versaetze aus (z.B. die schwereren Inspire-FTP-Haende verschieben
+        # den CoM ~15 mm nach vorn). Ohne Trim bleibt eine Dauerneigung stehen,
+        # die den reinen Proportional-Balancer nahe an die Zehenkante bringt.
+        # Headless validiert: gx-Restneigung 0.03 -> ~0.00. 0 = aus.
+        self.declare_parameter("bal_ki_pitch", 80.0)
+        self.declare_parameter("bal_i_limit", 25.0)          # Anti-Windup [Nm]
         self.declare_parameter("bal_ankle_kp_pitch", 150.0)
         self.declare_parameter("bal_ankle_kd_pitch", 40.0)
         self.declare_parameter("bal_ankle_kp_roll", 150.0)
@@ -200,6 +207,8 @@ class LocoSim(Node):
         self._bal_entering = False         # PD-Eintritts-Rampe
         self._bal_q_start = None
         self._bal_t0 = 0.0
+        self._bal_ramp_eff = 0.4           # effektive Rampendauer (am Eintritt bestimmt)
+        self._bal_integ = 0.0              # Integral-Trim Knoechel-Pitch [Nm]
         self._walk_pending = False         # WALK angefordert, warte auf Arme
         self._walk_pending_t0 = 0.0
         self._dbg_grav = np.array([0.0, 0.0, -1.0], dtype=np.float32)
@@ -285,6 +294,7 @@ class LocoSim(Node):
             self.cmd = np.zeros(3, dtype=np.float32)
         self._bal_entering = True           # Rampe: aktuelle Beinpose -> default
         self._bal_q_start = None
+        self._bal_integ = 0.0               # Trim neu lernen (Pose/Last kann sich geaendert haben)
         self._cmd_zero_since = None
         self._fall_since = None
         self._walk_pending = False          # ein STAND bricht eine WALK-Anforderung ab
@@ -524,11 +534,20 @@ class LocoSim(Node):
 
         # Sanfter Eintritt: aktuelle Beinpose -> default ueber bal_ramp_s blenden,
         # damit der steife PD die Beine nicht aus der (Lauf-)Stellung reisst.
+        # WICHTIG: Die Rampe nur fahren, wenn die Beine wirklich WEIT von der
+        # Standpose weg sind (Eintritt aus WALK). Beim Start aus HOLD hat die
+        # Bridge den Roboter gerade frisch in die Standpose gestellt — waehrend
+        # einer 0.4-s-Weich-Phase kippte der (durch die Inspire-Haende kopf-
+        # lastigere) Roboter dann unaufholbar nach vorn. Headless validiert:
+        # ramp 0.4 s -> Sturz bei ~2 s; ramp 0.1 s -> steht (|gx|max=0.04).
         if self._bal_entering:
             self._bal_q_start = np.array([ls.motor_state[i].q for i in LEG_IDX], dtype=np.float32)
             self._bal_t0 = time.perf_counter()
             self._bal_entering = False
-        ramp_s = float(self.get_parameter("bal_ramp_s").value)
+            leg_err = float(np.max(np.abs(self._bal_q_start - self.default[:12])))
+            self._bal_ramp_eff = float(self.get_parameter("bal_ramp_s").value) \
+                if leg_err > 0.15 else 0.1
+        ramp_s = self._bal_ramp_eff
         if self._bal_q_start is not None and ramp_s > 1e-3:
             ramp = max(0.0, min(1.0, (time.perf_counter() - self._bal_t0) / ramp_s))
         else:
@@ -539,8 +558,16 @@ class LocoSim(Node):
         def clamp(x, lim):
             return max(-lim, min(lim, x))
 
+        # Integral-Trim: langsam die STATISCHE Neigung wegintegrieren (CoM-Versatz
+        # durch Haende/Payload). Nur solange der Roboter nicht am Kippen ist
+        # (|gx| < 0.4), mit Anti-Windup-Klemme.
+        ki = float(self.get_parameter("bal_ki_pitch").value)
+        i_lim = float(self.get_parameter("bal_i_limit").value)
+        if ki > 0.0 and abs(pitch_err) < 0.4:
+            self._bal_integ = clamp(self._bal_integ + ki * pitch_err * self.control_dt, i_lim)
+
         # Feedforward [Nm]. Vorzeichen aus der Gelenk-Kinematik (validiert):
-        t_ankle_pitch = clamp(akp_p * pitch_err + akd_p * pitch_rate, a_lim)
+        t_ankle_pitch = clamp(akp_p * pitch_err + akd_p * pitch_rate + self._bal_integ, a_lim)
         t_ankle_roll = clamp(-(akp_r * roll_err + akd_r * roll_rate), a_lim)
         t_hip_pitch = clamp(hkp_p * pitch_err + hkd_p * pitch_rate, h_lim)
         t_hip_roll = clamp(-(hkp_r * roll_err + hkd_r * roll_rate), h_lim)
