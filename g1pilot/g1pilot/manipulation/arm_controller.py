@@ -150,6 +150,11 @@ class ArmController(Node):
         # dass der redundante Arm beim Marker-Ziehen in den zum Koerper gefalteten
         # Zweig faellt. Live tunebar.
         self.declare_parameter("ik_null_space_gain", 0.15)
+        # Schwerkraft-Feedforward [Nm] auf die Arm-Gelenke (aus dem Pinocchio-
+        # Modell). Ohne haengt der Arm PD-bedingt ~0.05 rad unter dem Sollwert
+        # (mit den schwereren Inspire-FTP-Haenden ~2-4 cm an der Hand) -> die
+        # Hand "haelt nicht stabil an der Stelle". Live abschaltbar.
+        self.declare_parameter("gravity_comp", True)
         self.declare_parameter("ee_auto_calibrate", True)
 
 
@@ -269,6 +274,29 @@ class ArmController(Node):
 
         self._last_tick_time = None
         self.timer = self.create_timer(1.0 / self.rate_hz, self.main_loop)
+
+    def _arm_gravity_tau(self, q14):
+        """Schwerkraft-Drehmomente [Nm] fuer die 14 Arm-Gelenke bei der
+        Konfiguration q14 (7 links + 7 rechts) aus dem Pinocchio-Modell."""
+        tau = np.zeros(14, dtype=float)
+        if not bool(self.get_parameter("gravity_comp").value):
+            return tau
+        try:
+            ik = self.ik_solver
+            q_full = pin.neutral(ik.model)
+            for i, arm_i in enumerate(LEFT_JOINT_INDICES_LIST):
+                q_full[ik._name_to_q_index[ik._ros_joint_names[arm_i]]] = float(q14[i])
+            for i, arm_i in enumerate(RIGHT_JOINT_INDICES_LIST):
+                q_full[ik._name_to_q_index[ik._ros_joint_names[arm_i]]] = float(q14[7 + i])
+            g = pin.computeGeneralizedGravity(ik.model, ik.data, q_full)
+            for i, arm_i in enumerate(LEFT_JOINT_INDICES_LIST):
+                tau[i] = float(g[ik._name_to_v_index[ik._ros_joint_names[arm_i]]])
+            for i, arm_i in enumerate(RIGHT_JOINT_INDICES_LIST):
+                tau[7 + i] = float(g[ik._name_to_v_index[ik._ros_joint_names[arm_i]]])
+            np.clip(tau, -20.0, 20.0, out=tau)
+        except Exception:
+            tau[:] = 0.0
+        return tau
 
     def _mk_static_T(self, xyz, rpy_deg):
         """
@@ -1092,12 +1120,15 @@ class ArmController(Node):
             except Exception:
                 pass
 
+            # Schwerkraft-Feedforward gegen den PD-Durchhang (s. Parameter).
+            tau_g = self._arm_gravity_tau(q_smooth)
+
             wrist_vals = {m.value for m in G1_29_JointWristIndex}
             for idx, jid in enumerate(G1_29_JointArmIndex):
                 self.msg.motor_cmd[jid].mode = 1
                 self.msg.motor_cmd[jid].q   = float(q_smooth[idx])
                 self.msg.motor_cmd[jid].dq  = 0.0
-                self.msg.motor_cmd[jid].tau = float(0.0)
+                self.msg.motor_cmd[jid].tau = float(tau_g[idx])
                 if jid.value in wrist_vals:
                     self.msg.motor_cmd[jid].kp = self.kp_wrist
                     self.msg.motor_cmd[jid].kd = self.kd_wrist
