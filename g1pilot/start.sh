@@ -145,9 +145,12 @@ xhost +local:root >/dev/null 2>&1 || \
 #       ihre mtime aendert -> der Streamdeck-Button "INSPIRE FTP GUIs" wirkt.
 #  Beide GUIs werden mit ?autoconnect=1 geoeffnet -> verbinden sich von selbst.
 gui_opener_daemon() {
-  local web="$PWD/g1pilot/manipulation/inspire_ftp/web"
-  local ctrl="file://$web/hand_controller_viewer.html?autoconnect=1"
-  local view="file://$web/inspire_hand_viewer.html?autoconnect=1"
+  # Die GUIs werden von der Bridge per HTTP serviert (Port 8767). file://-URLs
+  # mit ?autoconnect=1 scheiterten je nach System (xdg-open/WSL behandeln den
+  # Query-String als Teil des Dateinamens) -> Seite ging nicht auf bzw. verband
+  # sich nicht. http-URLs funktionieren mit JEDEM Opener.
+  local ctrl="http://localhost:8767/hand_controller_viewer.html?autoconnect=1"
+  local view="http://localhost:8767/inspire_hand_viewer.html?autoconnect=1"
   local trigger="$PWD/.gui_open_request"   # == /ros2_ws/src/g1pilot/.gui_open_request im Container
 
   # WSL2-Erkennung (Kernel-Release enthaelt "microsoft")
@@ -158,19 +161,12 @@ gui_opener_daemon() {
   _open_url() {
     local url="$1"
     if [ "$is_wsl" = "1" ]; then
-      # WSL2: wslview (aus dem wslu-Paket) ist die sauberste Loesung
+      # WSL2: Browser laeuft auf Windows; http-URLs kann jeder Weg direkt oeffnen.
       if command -v wslview >/dev/null 2>&1; then
         wslview "$url" >/dev/null 2>&1; return 0
       fi
-      # Fallback: Linux-Pfad in Windows-Datei-URL umwandeln, per cmd.exe oeffnen
-      if command -v wslpath >/dev/null 2>&1 && command -v cmd.exe >/dev/null 2>&1; then
-        local fpath="${url#file://}"
-        local query="${fpath#*\?}"; [ "$query" = "$fpath" ] && query=""
-        fpath="${fpath%%\?*}"
-        local winraw; winraw=$(wslpath -w "$fpath" 2>/dev/null) || return 1
-        local winurl="file:///${winraw//\\//}"  # Backslash -> Slash fuer file-URL
-        [ -n "$query" ] && winurl="${winurl}?${query}"
-        cmd.exe /c start "" "$winurl" >/dev/null 2>&1; return 0
+      if command -v cmd.exe >/dev/null 2>&1; then
+        cmd.exe /c start "" "$url" >/dev/null 2>&1; return 0
       fi
       command -v explorer.exe >/dev/null 2>&1 && { explorer.exe "$url" >/dev/null 2>&1; return 0; }
     else

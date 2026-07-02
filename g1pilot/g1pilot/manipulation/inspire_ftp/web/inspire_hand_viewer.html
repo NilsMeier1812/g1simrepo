@@ -633,12 +633,29 @@ buildHand('right');
 
 // Auto-Connect via URL-Param (?autoconnect=1[&ws=ws://host:port]). Genutzt vom
 // start.sh-Auto-Open; ohne den Parameter sieht/verhaelt sich die UI unveraendert.
+// Verbindet mit RETRY (alle 2 s), bis die Bridge da ist -> robust, auch wenn die
+// Seite vor der Bridge aufgeht oder die Bridge neu startet. Demo-Modus stoppt
+// den Retry nicht-invasiv (kein Reconnect, solange Demo laeuft).
 (function () {
   try {
     const p = new URLSearchParams(location.search);
     const wsParam = p.get('ws');
-    if (wsParam) document.getElementById('wsUrl').value = wsParam;
-    if (p.get('autoconnect') === '1') setTimeout(toggleConn, 300);
+    if (wsParam) {
+      document.getElementById('wsUrl').value = wsParam;
+    } else if (location.protocol.startsWith('http') && location.hostname &&
+               location.hostname !== 'localhost') {
+      const u = document.getElementById('wsUrl');
+      u.value = u.value.replace('localhost', location.hostname);
+    }
+    if (p.get('autoconnect') === '1') {
+      const tryConn = () => {
+        if (demoMode) return;
+        if (!ws || (ws.readyState !== WebSocket.OPEN &&
+                    ws.readyState !== WebSocket.CONNECTING)) toggleConn();
+      };
+      setTimeout(tryConn, 300);
+      setInterval(tryConn, 2000);
+    }
   } catch (e) {}
 })();
 </script>

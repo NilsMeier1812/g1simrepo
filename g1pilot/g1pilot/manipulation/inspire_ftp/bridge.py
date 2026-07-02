@@ -22,7 +22,10 @@ die Finger gegenseitig (so auch im robot_state.py-Kommentar vermerkt).
 from __future__ import annotations
 
 import asyncio
+import functools
+import http.server
 import json
+import os
 import threading
 import time
 
@@ -50,6 +53,12 @@ class InspireFtpBridge(Node):
         self.declare_parameter("ws_host", "0.0.0.0")
         self.declare_parameter("controller_port", 8766)
         self.declare_parameter("viewer_port", 8765)
+        # HTTP-Port, unter dem die beiden HTML-GUIs ausgeliefert werden
+        # (http://<host>:8767/hand_controller_viewer.html). file://-URLs mit
+        # ?autoconnect=1 scheitern je nach System am Opener (xdg-open/WSL
+        # behandeln den Query-String als Teil des Dateinamens) -> darum servieren
+        # wir die GUIs direkt aus der Bridge. 0 = aus.
+        self.declare_parameter("http_port", 8767)
         self.declare_parameter("update_rate_hz", 50.0)
         # backend: "mujoco" = Stufe 2 (echte Finger-Physik + Touch-Kraefte via DDS),
         #          "sim"    = Stufe 1 (open-loop /joint_states, Kraft/Taktil = 0).
@@ -108,6 +117,12 @@ class InspireFtpBridge(Node):
                     f"backend='{backend_name}' unbekannt -> nutze 'sim' (Stufe 1).")
             self.backend = SimJointStateBackend(self._publish_joint_states, closed_rad=closed_rad)
 
+        # ── HTTP-Server fuer die HTML-GUIs ───────────────────────────────────
+        self._httpd = None
+        http_port = int(self.get_parameter("http_port").value)
+        if http_port > 0:
+            self._start_http_server(http_port)
+
         # ── Update-Schleife (rclpy-Timer): Backend treiben + /joint_states ───
         self._last = time.monotonic()
         self.create_timer(1.0 / max(rate, 1.0), self._step)
@@ -116,6 +131,38 @@ class InspireFtpBridge(Node):
             f"Inspire-FTP-Bridge aktiv | Controller ws://{self.ws_host}:{self.controller_port} | "
             f"Viewer ws://{self.ws_host}:{self.viewer_port} | Backend={backend_name}"
         )
+
+    def _web_dir(self):
+        """Verzeichnis mit den HTML-GUIs finden: installiertes share/, sonst
+        Quellbaum (docker-compose mountet das Repo -> symlink-install)."""
+        candidates = []
+        try:
+            from ament_index_python.packages import get_package_share_directory
+            candidates.append(os.path.join(
+                get_package_share_directory("g1pilot"), "manipulation", "inspire_ftp", "web"))
+        except Exception:  # noqa: BLE001
+            pass
+        candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "web"))
+        for c in candidates:
+            if os.path.isfile(os.path.join(c, "hand_controller_viewer.html")):
+                return c
+        return None
+
+    def _start_http_server(self, port):
+        web = self._web_dir()
+        if web is None:
+            self.get_logger().warn("HTML-GUIs nicht gefunden -> kein HTTP-Server.")
+            return
+        handler = functools.partial(_QuietHttpHandler, directory=web)
+        try:
+            self._httpd = http.server.ThreadingHTTPServer(("0.0.0.0", port), handler)
+        except OSError as e:
+            self.get_logger().warn(f"HTTP-Server :{port} nicht startbar: {e}")
+            return
+        threading.Thread(target=self._httpd.serve_forever, daemon=True).start()
+        self.get_logger().info(
+            f"Hand-GUIs: http://localhost:{port}/hand_controller_viewer.html | "
+            f"http://localhost:{port}/inspire_hand_viewer.html")
 
     # ── ROS-seitig ────────────────────────────────────────────────────────────
     def _step(self):
@@ -253,6 +300,13 @@ class InspireFtpBridge(Node):
             )
 
 
+class _QuietHttpHandler(http.server.SimpleHTTPRequestHandler):
+    """SimpleHTTPRequestHandler ohne Zeile-pro-Request-Logging."""
+
+    def log_message(self, fmt, *args):  # noqa: D102
+        pass
+
+
 async def _send_all(clients: set, msg: str):
     dead = set()
     for ws in list(clients):
@@ -274,6 +328,8 @@ def main(args=None):
         pass
     finally:
         node.backend.shutdown()
+        if node._httpd is not None:
+            node._httpd.shutdown()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

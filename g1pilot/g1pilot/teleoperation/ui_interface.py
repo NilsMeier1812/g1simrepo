@@ -373,18 +373,10 @@ class ButtonGUI(QWidget):
             return
 
         # ── Fallback: direkt auf dem Host laufend -> Browser selbst starten ──
-        try:
-            from ament_index_python.packages import get_package_share_directory
-            web_dir = os.path.join(
-                get_package_share_directory('g1pilot'),
-                'manipulation', 'inspire_ftp', 'web'
-            )
-        except Exception:
-            web_dir = os.path.join(os.path.dirname(__file__), '..', 'manipulation', 'inspire_ftp', 'web')
-
-        web_dir = os.path.abspath(web_dir)
-        ctrl = f"file://{web_dir}/hand_controller_viewer.html?autoconnect=1"
-        view = f"file://{web_dir}/inspire_hand_viewer.html?autoconnect=1"
+        # Die Bridge serviert die GUIs per HTTP (:8767). http-URLs mit
+        # ?autoconnect=1 funktionieren mit jedem Opener (file:// nicht).
+        ctrl = "http://localhost:8767/hand_controller_viewer.html?autoconnect=1"
+        view = "http://localhost:8767/inspire_hand_viewer.html?autoconnect=1"
 
         opener = None
         for cmd in ('xdg-open', 'open', 'sensible-browser', 'x-www-browser',
