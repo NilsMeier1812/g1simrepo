@@ -60,15 +60,25 @@ ros2 launch g1pilot hand_launcher.launch.py
 # manuell dann robot_state mit publish_hand_joints:=false starten!
 ```
 
-**GUIs**: Im `start.sh`-Menue kann man die GUIs **automatisch oeffnen** lassen
-(`OPEN_GUIS=true`). Da `start.sh` auf dem Host laeuft, oeffnet es nach dem
-Hochfahren beide HTML-Seiten im Standard-Browser und verbindet sie selbst (per
-`?autoconnect=1`); es wartet dabei, bis die Bridge auf `:8766` lauscht.
+**GUIs**: Die Bridge serviert beide GUIs selbst per **HTTP auf Port 8767**:
 
-Manuell: Die HTML-Dateien aus `web/` im Browser oeffnen und verbinden auf
-`ws://localhost:8766` (Controller) bzw. `ws://localhost:8765` (Viewer). Der
-Container nutzt `network_mode: host`, daher ist `localhost` korrekt. Optionaler
-Auto-Connect auch manuell: `…/hand_controller_viewer.html?autoconnect=1`.
+```
+http://localhost:8767/hand_controller_viewer.html?autoconnect=1
+http://localhost:8767/inspire_hand_viewer.html?autoconnect=1
+```
+
+Im `start.sh`-Menue kann man sie **automatisch oeffnen** lassen
+(`OPEN_GUIS=true`). Da `start.sh` auf dem Host laeuft, oeffnet es nach dem
+Hochfahren beide Seiten im Standard-Browser; es wartet dabei, bis die Bridge
+auf `:8766` lauscht. Mit `?autoconnect=1` verbinden sich die Seiten selbst
+und versuchen es alle 2 s erneut, bis die Bridge da ist (robust gegen
+Reihenfolge/Neustart). file://-Oeffnen der Dateien aus `web/` geht weiterhin,
+aber der `?autoconnect=1`-Query-String kommt dabei je nach Opener (xdg-open,
+WSL) nicht an — darum der HTTP-Weg.
+
+Die WebSockets bleiben unveraendert: `ws://localhost:8766` (Controller) bzw.
+`ws://localhost:8765` (Viewer). Der Container nutzt `network_mode: host`,
+daher ist `localhost` korrekt.
 
 ## Hinweise zur Sim (Stufe 1)
 
