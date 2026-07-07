@@ -30,6 +30,7 @@ setup(
 
             'launch/bringup_launcher.launch.py',
             'launch/bringup_sim.launch.py',
+            'launch/bringup_real.launch.py',
         ]),
 
         # Inspire-FTP-Hand HTML-GUIs (Controller/Viewer) – im Browser zu oeffnen.
