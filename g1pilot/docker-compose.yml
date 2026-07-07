@@ -103,14 +103,74 @@ services:
   # ══════════════════════════════════════════════════════════════════
 
   g1pilot-real:
-    # ── G1Pilot mit echtem G1 Roboter ──────────────────────────────
+    # ── G1Pilot mit echtem G1 (schlank: Arme + Haende + Unitree-Loco) ──
+    # Roboter per LAN (192.168.123.x), Haende ebenfalls im Roboter-LAN.
+    # LiDAR/Nav: G1_ENABLE_LIDAR=1 + grosses Image (siehe g1pilot-real-full).
     profiles: ["real"]
     <<: *g1pilot-base
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.real
+    image: g1pilot-real:v1.2.0
+    # PS4-Controller (evdev) braucht Zugriff auf /dev/input + udev-Infos.
+    privileged: true
     environment:
       - DISPLAY=${DISPLAY}
-      - G1_SIM_MODE=false         # ← Echter Roboter
-      - ROS_DOMAIN_ID=0
+      - G1_SIM_MODE=false         # ← Echter Roboter (Unitree-DDS: Domain 0)
+      # ROS-Graph-Domain MUSS sich von der Unitree-DDS-Domain (0 auf real!)
+      # unterscheiden, sonst kollidieren rmw_cyclonedds und unitree_sdk2py im
+      # selben Prozess ("create domain error"). Spiegelbild der Sim (ROS=0/UT=1).
+      - ROS_DOMAIN_ID=1
+      # ROS auf CycloneDDS + loopback-Config zwingen (haelt den ROS-Graph vom
+      # Roboter-LAN fern; das Unitree-SDK bindet ROBOT_INTERFACE selbst).
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - CYCLONEDDS_URI=file:///etc/cyclonedds.xml
+      # Physisches Interface zum G1 (start.sh fragt es ab / erkennt es).
       - ROBOT_INTERFACE=${ROBOT_INTERFACE:-eth0}
+      # RViz default AN: der rviz-Marker ist das Interface der Arm-Manipulation.
+      - USE_RVIZ=${USE_RVIZ:-true}
+      # Inspire-FTP-Haende (Modbus TCP im Roboter-LAN).
+      - G1_INSPIRE_HANDS=${G1_INSPIRE_HANDS:-0}
+      - G1_HAND_LEFT_HOST=${G1_HAND_LEFT_HOST:-192.168.123.210}
+      - G1_HAND_RIGHT_HOST=${G1_HAND_RIGHT_HOST:-192.168.123.211}
+      - G1_HAND_PORT=${G1_HAND_PORT:-6000}
+      # PS4-Controller-Gerätename (evdev); Bluetooth-PS4 = "Wireless Controller".
+      - JOYSTICK_NAME=${JOYSTICK_NAME:-Wireless Controller}
+      # Konservative Walk-Limits fuer die ersten Tests (loco_client skaliert
+      # die normierten UI-/PS4-Kommandos damit).
+      - G1_MAX_VX=${G1_MAX_VX:-0.4}
+      - G1_MAX_VY=${G1_MAX_VY:-0.3}
+      - G1_MAX_VYAW=${G1_MAX_VYAW:-0.4}
+      - G1_ENABLE_LIDAR=${G1_ENABLE_LIDAR:-0}
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - .:/ros2_ws/src/g1pilot:rw
+      - /dev/input:/dev/input      # PS4-Controller (evdev)
+    command: >
+      bash -c "cd /ros2_ws &&
+               source /opt/ros/humble/setup.bash &&
+               source /ros2_ws/install/setup.bash &&
+               colcon build --packages-select g1pilot --symlink-install &&
+               source /ros2_ws/install/setup.bash &&
+               ros2 launch g1pilot bringup_real.launch.py"
+
+  g1pilot-real-full:
+    # ── Voller Real-Stack (Livox MID360 + MOLA + Navigation) ───────────
+    # Braucht das grosse Image (docker/Dockerfile) und den LiDAR. Fuer den
+    # ersten Hardware-Betrieb NICHT noetig -- siehe g1pilot-real.
+    profiles: ["real-full"]
+    <<: *g1pilot-base
+    privileged: true
+    environment:
+      - DISPLAY=${DISPLAY}
+      - G1_SIM_MODE=false
+      - ROS_DOMAIN_ID=1
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - ROBOT_INTERFACE=${ROBOT_INTERFACE:-eth0}
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - .:/ros2_ws/src/g1pilot:rw
+      - /dev:/dev                  # Livox/USB/Gamepad
     command: >
       bash -c "cd /ros2_ws &&
                source /opt/ros/humble/setup.bash &&
