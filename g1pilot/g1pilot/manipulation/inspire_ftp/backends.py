@@ -6,20 +6,27 @@ backends.py — Austauschbare "Hardware"-Schicht
 Hier sitzt genau die Grenze, an der frueher die Modbus-TCP-Aufrufe an die echte
 Hand standen. Ein Backend bekommt die Soll-Werte (im HandModel) und fuellt die
 Ist-Werte (angle_act/force_act/zones). WIE es das tut, ist der Unterschied
-zwischen den geplanten Stufen:
+zwischen den Stufen:
 
-  * Stufe 1  ``SimJointStateBackend`` (aktiv)
+  * Stufe 1  ``SimJointStateBackend``
        Aktuiert die Sim ueber /joint_states: die URDF-Finger-Gelenke folgen den
        Soll-Winkeln -> RViz zeigt die Bewegung. Kraft/Taktil = 0.
 
-  * Stufe 2  ``MujocoContactBackend`` (vorbereitet, noch nicht implementiert)
-       Wuerde die Finger als echte MuJoCo-Aktuatoren ansteuern (Kollisionen,
-       Greifen) und aus den MuJoCo-Kontaktkraeften synthetische Taktil-/Kraft-
-       werte ableiten.
+  * Stufe 2  ``MujocoContactBackend`` (Sim-Default)
+       Finger als echte MuJoCo-Aktuatoren (Kollisionen, Greifen) via DDS
+       rt/inspire/cmd|state; Fingerspitzen-Kraefte aus MuJoCo-Touch-Sensoren.
+
+  * Stufe 3  ``InspireModbusBackend`` (ECHTE Haende)
+       Modbus TCP direkt an die RH56DFTP-2 (links/rechts je eigene IP im
+       Roboter-LAN). Register-Map und Konventionen 1:1 aus dem original
+       ftp_hand_controller (reference/ftp_hand_controller/), der auf echter
+       Hardware lief. Liest Ist-Winkel, Kraefte (Gramm) und die Taktil-Zonen.
 """
 
 from __future__ import annotations
 
+import threading
+import time
 from abc import ABC, abstractmethod
 from typing import Callable, Dict, List
 
@@ -208,3 +215,180 @@ class MujocoContactBackend(HandBackend):
         else:
             # Noch kein State (Sim faehrt hoch) -> Soll publizieren, RViz bleibt nicht leer.
             self.publish_fn(names, positions)
+
+
+# ── Stufe 3: echte Haende via Modbus TCP ─────────────────────────────────────
+
+# Register-Map (direkte Modbus-Adressen, NICHT durch 2 teilen) — verifiziert
+# gegen reference/ftp_hand_controller/ (lief auf echter Hardware).
+_REG_ANGLE_SET = 1486   # 6x int16, 0..1000 (-1/0xFFFF = halten)
+_REG_FORCE_SET = 1498   # 6x int16, 0..3000 (g)
+_REG_SPEED_SET = 1522   # 6x int16, 0..1000
+_REG_ANGLE_ACT = 1546   # 6x int16, 0..1000
+_REG_FORCE_ACT = 1582   # 6x int16, -4000..4000 (g), -1 = "kein Wert"
+
+
+class _ModbusHandWorker(threading.Thread):
+    """Ein I/O-Thread pro Hand (wie im Original): verbindet/reconnectet,
+    liest Ist-Werte zyklisch, schreibt Soll-Werte nur bei Aenderung.
+
+    Der Thread haelt das HandModel direkt aktuell (threadsicher via model.lock);
+    das Backend publiziert daraus /joint_states. So blockiert langsames/
+    abgestecktes Modbus-I/O nie den 50-Hz-Bridge-Timer.
+    """
+
+    def __init__(self, side: str, model: HandModel, host: str, port: int,
+                 poll_rate_hz: float = 20.0, tactile_every: int = 2,
+                 reconnect_s: float = 2.0):
+        super().__init__(daemon=True, name=f"inspire-modbus-{side}")
+        from .modbus_client import ModbusClient
+        self.side = side
+        self.model = model
+        self.client = ModbusClient(host, port)
+        self.poll_dt = 1.0 / max(1.0, float(poll_rate_hz))
+        self.tactile_every = max(0, int(tactile_every))
+        self.reconnect_s = float(reconnect_s)
+        self._stop_evt = threading.Event()
+        # Zuletzt geschriebene Soll-Werte (Schreiben nur bei Aenderung).
+        self._w_angle: List[int] | None = None
+        self._w_force: List[int] | None = None
+        self._w_speed: List[int] | None = None
+        self._cycle_n = 0
+
+    def stop(self) -> None:
+        self._stop_evt.set()
+
+    # ── Thread-Hauptschleife ──────────────────────────────────────────────
+    def run(self) -> None:
+        while not self._stop_evt.is_set():
+            if not self.client.is_connected():
+                ok = self.client.connect()
+                with self.model.lock:
+                    self.model.connected = ok
+                if not ok:
+                    self._stop_evt.wait(self.reconnect_s)
+                    continue
+                # Beim (Re-)Verbinden: Speed initial schreiben (wie im Original),
+                # Schreib-Caches invalidieren.
+                self._w_angle = self._w_force = self._w_speed = None
+                with self.model.lock:
+                    speed = list(self.model.speed_set)
+                self.client.write_registers(_REG_SPEED_SET, speed)
+                self._w_speed = speed
+
+            ok = self._cycle()
+            with self.model.lock:
+                self.model.connected = ok
+            if not ok:
+                self.client.disconnect()
+                self._stop_evt.wait(self.reconnect_s)
+            else:
+                self._stop_evt.wait(self.poll_dt)
+
+    def _cycle(self) -> bool:
+        from .modbus_client import to_int16
+
+        # 1) Ist-Werte lesen.
+        av = self.client.read_registers(_REG_ANGLE_ACT, 6)
+        if av is None:
+            return False
+        fv = self.client.read_registers(_REG_FORCE_ACT, 6)
+        if fv is None:
+            return False
+        angle_act = [int(_clamp(to_int16(v), 0, 1000)) for v in av]
+        force_act = [0.0 if to_int16(v) == -1 else float(to_int16(v)) for v in fv]
+
+        # 2) Taktil-Zonen (jede tactile_every-te Runde; 0 = aus).
+        zones = None
+        self._cycle_n += 1
+        if self.tactile_every and (self._cycle_n % self.tactile_every == 0):
+            zones = self._read_tactile()
+
+        # 3) Soll-Werte bei Aenderung schreiben (Reihenfolge wie im Original:
+        #    speed, force, angle; -1 wird als 0xFFFF geschrieben = halten).
+        with self.model.lock:
+            enabled = self.model.enabled
+            angle_set = list(self.model.angle_set)
+            force_set = list(self.model.force_set)
+            speed_set = list(self.model.speed_set)
+        if enabled:
+            if speed_set != self._w_speed:
+                if not self.client.write_registers(_REG_SPEED_SET, speed_set):
+                    return False
+                self._w_speed = speed_set
+            if force_set != self._w_force:
+                if not self.client.write_registers(_REG_FORCE_SET, force_set):
+                    return False
+                self._w_force = force_set
+            if angle_set != self._w_angle:
+                if not self.client.write_registers(
+                        _REG_ANGLE_SET, [a & 0xFFFF for a in angle_set]):
+                    return False
+                self._w_angle = angle_set
+
+        # 4) Ist-Werte ins Model.
+        with self.model.lock:
+            self.model.angle_act = angle_act
+            self.model.force_act = force_act
+            if zones is not None:
+                self.model.zones = zones
+        return True
+
+    def _read_tactile(self) -> Dict[str, List[int]] | None:
+        """Alle 17 Zonen einzeln lesen (Adressen aus tactile.TACTILE_ZONES)."""
+        zones: Dict[str, List[int]] = {}
+        for zid, _finger, _kind, reg, rows, cols in tactile.TACTILE_ZONES:
+            vals = self.client.read_registers(reg, rows * cols)
+            if vals is None:
+                return None
+            zones[zid] = [int(v) for v in vals]
+        return zones
+
+
+class InspireModbusBackend(HandBackend):
+    """Stufe 3: echte RH56DFTP-2 via Modbus TCP (eine IP je Hand).
+
+    hosts: {"left": ip, "right": ip}; Seiten ohne IP ("", None) werden
+    uebersprungen (z.B. nur eine Hand montiert). Die Worker-Threads halten die
+    HandModels aktuell; update() publiziert daraus die 24 Finger-Gelenke auf
+    /joint_states, damit RViz die ECHTEN Fingerstellungen spiegelt.
+    """
+
+    def __init__(
+        self,
+        publish_fn: Callable[[List[str], List[float]], None],
+        hosts: Dict[str, str],
+        models: Dict[str, HandModel],
+        port: int = 6000,
+        closed_rad: Dict[str, float] | None = None,
+        poll_rate_hz: float = 20.0,
+        tactile_every: int = 2,
+    ):
+        self.publish_fn = publish_fn
+        self.closed_rad = closed_rad
+        self.workers: Dict[str, _ModbusHandWorker] = {}
+        for side in ("left", "right"):
+            host = (hosts.get(side) or "").strip()
+            if not host or host.startswith("sim://"):
+                continue
+            w = _ModbusHandWorker(side, models[side], host, int(port),
+                                  poll_rate_hz=poll_rate_hz,
+                                  tactile_every=tactile_every)
+            w.start()
+            self.workers[side] = w
+
+    def update(self, models: Dict[str, HandModel], dt: float) -> None:
+        # I/O laeuft in den Workern; hier nur die Ist-Winkel -> /joint_states.
+        with models["left"].lock:
+            left = list(models["left"].angle_act)
+        with models["right"].lock:
+            right = list(models["right"].angle_act)
+        names, positions = joint_map.build_joint_state(left, right, self.closed_rad)
+        self.publish_fn(names, positions)
+
+    def shutdown(self) -> None:
+        for w in self.workers.values():
+            w.stop()
+        for w in self.workers.values():
+            w.join(timeout=1.0)
+            w.client.disconnect()

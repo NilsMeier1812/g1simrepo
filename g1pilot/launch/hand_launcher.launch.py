@@ -23,7 +23,12 @@ def generate_launch_description():
         DeclareLaunchArgument("controller_port", default_value="8766"),
         DeclareLaunchArgument("viewer_port", default_value="8765"),
         DeclareLaunchArgument("update_rate_hz", default_value="50.0"),
+        # sim | mujoco | modbus (modbus = ECHTE Haende, braucht left/right_host)
         DeclareLaunchArgument("backend", default_value="sim"),
+        DeclareLaunchArgument("interface", default_value="lo"),
+        DeclareLaunchArgument("left_host", default_value="sim://left"),
+        DeclareLaunchArgument("right_host", default_value="sim://right"),
+        DeclareLaunchArgument("modbus_port", default_value="6000"),
 
         Node(
             package="g1pilot",
@@ -39,6 +44,11 @@ def generate_launch_description():
                 "update_rate_hz": ParameterValue(
                     LaunchConfiguration("update_rate_hz"), value_type=float),
                 "backend": ParameterValue(LaunchConfiguration("backend"), value_type=str),
+                "interface": ParameterValue(LaunchConfiguration("interface"), value_type=str),
+                "left_host": ParameterValue(LaunchConfiguration("left_host"), value_type=str),
+                "right_host": ParameterValue(LaunchConfiguration("right_host"), value_type=str),
+                "modbus_port": ParameterValue(
+                    LaunchConfiguration("modbus_port"), value_type=int),
             }],
         ),
     ])

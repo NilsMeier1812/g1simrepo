@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-bridge.py — Inspire-FTP-Hand-Bridge fuer die G1-Sim
-===================================================
+bridge.py — Inspire-FTP-Hand-Bridge (Sim UND echte Haende)
+==========================================================
 Vereint den frueheren ftp_hand_controller (zwei eigenstaendige Python-Skripte,
-die per Modbus TCP mit den echten Haenden sprachen) in EINEM ROS2-Node, der
-stattdessen mit der Simulation redet:
+die per Modbus TCP mit den echten Haenden sprachen) in EINEM ROS2-Node:
 
   * WebSocket :8766  <-> Controller/hand_controller_viewer.html  (Steuerung)
   * WebSocket :8765  <-> Viewer/inspire_hand_viewer.html         (Kraft/Taktil)
   * ROS2 /joint_states                                            (RViz-Finger)
 
 Die eigentliche "Hardware"-Anbindung steckt im Backend (siehe backends.py):
-Stufe 1 = SimJointStateBackend (RViz). Beide GUIs funktionieren unveraendert.
+Stufe 1 = SimJointStateBackend (RViz), Stufe 2 = MujocoContactBackend
+(Sim-Physik, Default), Stufe 3 = InspireModbusBackend (ECHTE Haende via
+Modbus TCP, backend:=modbus + left_host/right_host). GUIs identisch.
 
 WICHTIG: Wenn dieser Node laeuft, muss robot_state mit publish_hand_joints:=false
 gestartet werden, sonst ueberschreiben sich die beiden /joint_states-Quellen fuer
@@ -61,12 +62,20 @@ class InspireFtpBridge(Node):
         self.declare_parameter("http_port", 8767)
         self.declare_parameter("update_rate_hz", 50.0)
         # backend: "mujoco" = Stufe 2 (echte Finger-Physik + Touch-Kraefte via DDS),
-        #          "sim"    = Stufe 1 (open-loop /joint_states, Kraft/Taktil = 0).
+        #          "sim"    = Stufe 1 (open-loop /joint_states, Kraft/Taktil = 0),
+        #          "modbus" = Stufe 3 (ECHTE Haende via Modbus TCP, Roboter-LAN).
         self.declare_parameter("backend", "mujoco")
         self.declare_parameter("interface", "lo")        # DDS-Interface fuer 'mujoco'
-        # Nur kosmetisch fuer die GUI-Anzeige (kein echtes Modbus-Ziel im Sim).
+        # Sim: nur kosmetische GUI-Anzeige. Modbus-Backend: ECHTE Ziel-IPs der
+        # Haende im Roboter-LAN (Standard laut reference/: .210 links, .211
+        # rechts, Port 6000). Leer lassen = diese Seite nicht ansteuern.
         self.declare_parameter("left_host", "sim://left")
         self.declare_parameter("right_host", "sim://right")
+        self.declare_parameter("modbus_port", 6000)
+        # Poll-Rate des Modbus-I/O-Threads je Hand + Taktil-Leserate
+        # (tactile_every: jede n-te Runde alle 17 Zonen lesen; 0 = aus).
+        self.declare_parameter("hand_poll_rate_hz", 20.0)
+        self.declare_parameter("tactile_every", 2)
 
         self.ws_host = self.get_parameter("ws_host").get_parameter_value().string_value
         self.controller_port = int(self.get_parameter("controller_port").value)
@@ -104,7 +113,26 @@ class InspireFtpBridge(Node):
             "left":  HandModel("links",  left_host),
             "right": HandModel("rechts", right_host),
         }
-        if backend_name == "mujoco":
+        if backend_name == "modbus":
+            from .backends import InspireModbusBackend
+            self.backend = InspireModbusBackend(
+                self._publish_joint_states,
+                hosts={"left": left_host, "right": right_host},
+                models=self.models,
+                port=int(self.get_parameter("modbus_port").value),
+                closed_rad=closed_rad,
+                poll_rate_hz=float(self.get_parameter("hand_poll_rate_hz").value),
+                tactile_every=int(self.get_parameter("tactile_every").value),
+            )
+            active = ", ".join(f"{s}={w.client.host}:{w.client.port}"
+                               for s, w in self.backend.workers.items()) or "KEINE"
+            self.get_logger().info(
+                f"Backend=modbus (Stufe 3, ECHTE Haende): {active}")
+            if not self.backend.workers:
+                self.get_logger().error(
+                    "modbus-Backend ohne gueltige Hand-IPs! left_host/right_host "
+                    "setzen (z.B. 192.168.123.210/.211).")
+        elif backend_name == "mujoco":
             from .backends import MujocoContactBackend
             self.backend = MujocoContactBackend(
                 self._publish_joint_states, interface=interface, closed_rad=closed_rad)
