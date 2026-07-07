@@ -10,8 +10,14 @@ import threading
 # IMPORTANT: this is the *Unitree* DDS domain used by unitree_sdk2py. It must
 # differ from ROS_DOMAIN_ID (the rmw_cyclonedds domain), otherwise a node that
 # uses both ROS (rclpy) and the Unitree SDK opens domain N twice in the same
-# process and CycloneDDS fails with "create domain error". In sim we therefore
-# run ROS on ROS_DOMAIN_ID=0 and the Unitree DDS on domain 1.
+# process and CycloneDDS fails with "create domain error". The pairing is
+# therefore mirrored between the modes (set via the Docker images/compose):
+#   Sim  : ROS_DOMAIN_ID=0, Unitree domain 1 (lo)
+#   Real : ROS_DOMAIN_ID=1, Unitree domain 0 (ROBOT_INTERFACE) -- the real G1
+#          transmits on domain 0, that side is fixed by the robot firmware.
+# Note the Unitree SDK builds its own CycloneDDS config (binds the interface
+# directly) and ignores CYCLONEDDS_URI; the loopback cyclonedds.xml in the
+# images only constrains the ROS graph.
 SIM_DDS_DOMAIN = 1
 REAL_DDS_DOMAIN = 0
 SIM_DDS_INTERFACE = "lo"

@@ -1,9 +1,9 @@
-# Inspire RH56DFTP-2 Hand-Bridge (Sim-Integration)
+# Inspire RH56DFTP-2 Hand-Bridge (Sim UND echte Haende)
 
 Bringt den urspruenglich eigenstaendigen **ftp_hand_controller** in das
-g1pilot-MuJoCo-Setup. Statt per **Modbus TCP** mit den echten Haenden zu reden,
-spricht die Bridge jetzt mit der **Simulation**. Die beiden HTML-GUIs bleiben
-unveraendert.
+g1pilot-Setup — EIN Node, der je nach Backend mit der **Simulation** ODER per
+**Modbus TCP** mit den **echten Haenden** spricht. Die beiden HTML-GUIs
+bleiben in allen Modi identisch.
 
 ```
   hand_controller_viewer.html ──ws://…:8766──┐
@@ -12,27 +12,34 @@ unveraendert.
                                                           └─► Backend (austauschbar)
 ```
 
-## Zwei-Stufen-Plan
+## Die drei Backend-Stufen
 
 | Stufe | Backend | Was passiert | Status |
 |-------|---------|--------------|--------|
-| **1** | `SimJointStateBackend` | Finger-Gelenke folgen der Steuerung in **RViz** (`/joint_states`). Kraft/Taktil = **0**. | ✅ aktiv |
-| **2** | `MujocoContactBackend` | Finger als echte **MuJoCo-Aktuatoren** (Greifen/Kollision); Taktil/Kraft aus MuJoCo-Kontaktkraeften **gefaked**. | 🔧 vorbereitet (Stub) |
+| **1** | `SimJointStateBackend` | Finger-Gelenke folgen der Steuerung in **RViz** (`/joint_states`). Kraft/Taktil = **0**. | ✅ |
+| **2** | `MujocoContactBackend` | Finger als echte **MuJoCo-Aktuatoren** (Greifen/Kollision) via DDS `rt/inspire/cmd\|state`; Fingerspitzen-Kraefte aus MuJoCo-**Touch-Sensoren**. | ✅ Sim-Default |
+| **3** | `InspireModbusBackend` | **ECHTE Haende** via Modbus TCP (eine IP je Hand im Roboter-LAN; Register-Map aus `reference/ftp_hand_controller/`). Liest Ist-Winkel, Kraefte (Gramm) und **alle 17 Taktil-Zonen**. | ✅ Real-Default |
 
-Der Umbau auf Stufe 2 ist ein reiner Backend-Tausch (`backend:=mujoco`) plus das
-Einbringen der Inspire-Finger ins MuJoCo-Scene-XML — der Rest (GUIs, Mapping,
-Node) bleibt gleich.
+Backend-Wahl: Parameter `backend` = `sim` / `mujoco` / `modbus`. Fuer
+`modbus` zusaetzlich `left_host`/`right_host` (Default `192.168.123.210`/
+`.211`) und `modbus_port` (6000); leere IP = Seite nicht ansteuern.
+`bringup_real.launch.py` verdrahtet das ueber `G1_HAND_LEFT_HOST`/
+`G1_HAND_RIGHT_HOST`/`G1_HAND_PORT` (start.sh-Real-Zweig fragt die IPs ab).
 
 ## Dateien
 
 | Datei | Zweck |
 |-------|-------|
 | `joint_map.py` | **Single Source of Truth** fuer das Mapping 6 DOF (0..1000) → 24 URDF-Finger-Gelenke (rad), an URDF-Limits geklemmt. |
-| `tactile.py`   | Taktil-Zonenlayout (fuer Viewer-Meta + Null-Platzhalter). |
+| `tactile.py`   | Taktil-Zonenlayout inkl. echter Modbus-Register-Adressen (3000–5123). |
 | `model.py`     | `HandModel`: geteilter Soll-/Ist-Zustand einer Hand (threadsicher). |
-| `backends.py`  | `SimJointStateBackend` (Stufe 1) + `MujocoContactBackend` (Stub, Stufe 2). |
-| `bridge.py`    | ROS2-Node `inspire_hand`: beide WebSocket-Server + `/joint_states`. |
-| `web/*.html`   | Die unveraenderten GUIs (Controller + Viewer). |
+| `backends.py`  | Die drei Backends (Stufe 1–3, s.o.). |
+| `modbus_client.py` | Raw-Socket-Modbus-TCP-Client (stdlib-only, aus der Referenz uebernommen). |
+| `bridge.py`    | ROS2-Node `inspire_hand`: beide WebSocket-Server + HTTP-GUI-Server + `/joint_states`. |
+| `web/*.html`   | Die GUIs (Controller + Viewer), in allen Modi identisch. |
+
+Test ohne Hardware: `g1pilot/test/test_inspire_modbus_backend.py` faehrt das
+Modbus-Backend gegen einen In-Process-Fake-Server (FC03/FC16).
 
 ## Mapping-Konvention
 

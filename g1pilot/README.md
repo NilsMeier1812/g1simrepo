@@ -120,30 +120,40 @@ The sim/real switch is driven by a single environment variable, `G1_SIM_MODE`
 | Mode | `G1_SIM_MODE` | Unitree DDS domain | `ROS_DOMAIN_ID` | Interface | Entry point |
 |------|---------------|--------------------|-----------------|-----------|-------------|
 | Simulation | `true`  | 1 | 0 | `lo` | `bringup_sim.launch.py` |
-| Real robot | `false` | 0 | 0 | `${ROBOT_INTERFACE}` | `bringup_launcher.launch.py` |
+| Real robot | `false` | 0 | 1 | `${ROBOT_INTERFACE}` | `bringup_real.launch.py` |
+| Real robot (full nav stack) | `false` | 0 | 1 | `${ROBOT_INTERFACE}` | `bringup_launcher.launch.py` |
 
 > The Unitree DDS domain (used by `unitree_sdk2py`) and `ROS_DOMAIN_ID` (the
-> rmw/ROS graph) must be **different** values. In sim that means Unitree=1 and
-> `ROS_DOMAIN_ID=0`; using the same number makes nodes that use both ROS and the
-> Unitree SDK crash with a CycloneDDS "create domain error".
+> rmw/ROS graph) must be **different** values — using the same number makes
+> nodes that use both ROS and the Unitree SDK crash with a CycloneDDS
+> "create domain error". The real G1 transmits on Unitree domain 0 (fixed by
+> firmware), so the pairing is mirrored: sim = ROS 0 / Unitree 1, real =
+> ROS 1 / Unitree 0.
 
-Easiest entry point — the interactive start menu. It asks which balance
-controller (PD/Policy), whether to open RViz, lockstep on/off, and whether to
-rebuild images, then sets the matching env vars and brings the sim up:
+Easiest entry point — the interactive start menu. Its **first question is
+SIM vs. REAL**; the sim branch asks RViz/hands/rebuild, the real branch asks
+for the network interface (auto-detected), hand IPs and a typed safety
+confirmation:
 
 ```bash
 ./start.sh
-# Non-interactive (takes defaults / env overrides), e.g. policy + RViz:
-BAL_MODE=policy USE_RVIZ=true ./start.sh --yes
+# Non-interactive sim (takes defaults / env overrides):
+USE_RVIZ=true ./start.sh --yes
+# Non-interactive real (requires explicit confirmation):
+G1_MODE=real ROBOT_INTERFACE=enp3s0 G1_REAL_CONFIRM=1 ./start.sh --yes
 ```
 
 The menu controls these env vars (also usable directly):
 
 | Env | Werte | Wirkung |
 |-----|-------|---------|
-| `BAL_MODE` | `pd` (Default) / `policy` | BALANCE-Regler: PD steht perfekt am Platz, Policy ist die RL-Variante (fuers Laufen). Live umschaltbar: `ros2 param set /loco_sim bal_mode <wert>`. |
-| `USE_RVIZ` | `false` (Default) / `true` | RViz mitstarten. Dank Lockstep bricht das Balancieren dabei nicht mehr ein. |
-| `SIM_LOCKSTEP` | `1` (Default) / `0` | Deterministische 50-Hz-Regelrate (PC-unabhaengig). |
+| `G1_MODE` | `sim` (Default) / `real` | Simulation oder echter Roboter. |
+| `USE_RVIZ` | sim: `false` / real: `true` (Defaults) | RViz mitstarten (auf real das IK-Marker-Interface). |
+| `G1_INSPIRE_HANDS` | `0` / `1` | Inspire-FTP-Haende (sim: MuJoCo-Finger; real: Modbus TCP). |
+| `G1_HAND_LEFT_HOST` / `G1_HAND_RIGHT_HOST` / `G1_HAND_PORT` | IPs/Port | Modbus-Ziele der echten Haende (Default `.210`/`.211`:6000). |
+| `ROBOT_INTERFACE` | NIC-Name | Physisches Interface zum G1 (real). |
+| `G1_MAX_VX` / `G1_MAX_VY` / `G1_MAX_VYAW` | m/s bzw. rad/s | Walk-Limits von Streamdeck/PS4 auf real (Default 0.4/0.3/0.4). |
+| `SIM_LOCKSTEP` | `1` (Default) / `0` | Deterministische 50-Hz-Regelrate (nur Sim). |
 
 Recommended (consolidated) Docker entry point:
 
@@ -151,20 +161,27 @@ Recommended (consolidated) Docker entry point:
 # Simulation: starts the MuJoCo G1 sim + g1pilot (robot_state, arms, RViz, teleop)
 G1_SIM_MODE=true docker compose --profile sim up
 
-# Real robot
-G1_SIM_MODE=false ROBOT_INTERFACE=<iface> docker compose --profile real up
+# Real robot (lean: arms + hands + Unitree loco controller)
+ROBOT_INTERFACE=<iface> docker compose --profile real up
+
+# Real robot with Livox/MOLA/nav (big image, MID360 required)
+ROBOT_INTERFACE=<iface> docker compose --profile real-full up
 ```
 
-To move the arms in simulation: enable the arms and drag the interactive end-effector
+**First time on real hardware? Read `REAL_TESTING.md` (safety checklist +
+step-by-step runbook) before starting anything.**
+
+To move the arms: enable the arms and drag the interactive end-effector
 markers in RViz (or publish a `PoseStamped` to `/g1pilot/hand_goal/{left,right}`):
 
 ```bash
 ros2 topic pub -1 /g1pilot/arms/enabled std_msgs/Bool "{data: true}"
 ```
 
-> Balancing/locomotion is provided by the G1 high-level controller on real hardware and is
-> not available in sim yet; the MuJoCo `HOLD_BASE` flag (in `unitree_mujoco/simulate_python/config.py`)
-> pins the pelvis so the arms can be tested standalone.
+> Balancing/locomotion: on real hardware via the Unitree onboard high-level
+> (`loco_client` — START/START BALANCING/WALK from the Streamdeck, plus PS4);
+> in sim via the whole-body policy (`loco_sim`). Both consume the same
+> Streamdeck topics, so the UI behaves identically in both modes.
 
 Or you can run each node separately according to your needs.
 
