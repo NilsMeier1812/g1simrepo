@@ -760,9 +760,16 @@ class ArmController(Node):
                 self._weight_state = "ramp_up"
             self.get_logger().info("Arm ENABLED.")
         else:
-            if self._weight_state in ("ramp_up", "on") and self._arm_sdk_weight > 0.0:
+            ramp_down = float(self.get_parameter("arm_weight_ramp_down_s").value)
+            if (ramp_down > 0.0
+                    and self._weight_state in ("ramp_up", "on")
+                    and self._arm_sdk_weight > 0.0):
                 self._weight_state = "ramp_down"
             else:
+                # ramp_down<=0 (Sim): sofort verstummen wie bisher -- KEINE
+                # w=0-Nachricht senden (die MuJoCo-Bridge haelt die Arme mit
+                # dem zuletzt empfangenen Kommando; eine w=0-Nachricht wuerde
+                # sie dort schlaff schalten = Verhaltensaenderung).
                 self._weight_state = "off"
                 self._arm_sdk_weight = 0.0
             self.get_logger().info("Arm DISABLED")
