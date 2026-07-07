@@ -21,6 +21,11 @@ def generate_launch_description():
         DeclareLaunchArgument("ik_alpha", default_value="0.2"),
         DeclareLaunchArgument("ik_max_dq_step", default_value="0.05"),
         DeclareLaunchArgument("arm_velocity_limit", default_value="2.0"),
+        # arm_sdk-Gewichts-Rampe (0->1 beim Enable, 1->0 beim Disable). Auf dem
+        # echten G1 Pflicht fuer eine weiche Uebergabe; die Sim setzt 0.0
+        # (= sofort umschalten, bisheriges Verhalten).
+        DeclareLaunchArgument("arm_weight_ramp_up_s", default_value="2.0"),
+        DeclareLaunchArgument("arm_weight_ramp_down_s", default_value="2.0"),
         # Marker senden ihr Ziel sofort beim Ziehen (gruener Wuerfel). Steht das
         # auf false, sind die Wuerfel grau und stumm, bis man sie per Rechtsklick-
         # Menue "Enable publishing" aktiviert. Der Arm bewegt sich ohnehin nur,
@@ -36,6 +41,10 @@ def generate_launch_description():
             parameters=[{
                 'interface': interface,
                 'use_robot': ParameterValue(use_robot, value_type=bool),
+                'arm_weight_ramp_up_s': ParameterValue(
+                    LaunchConfiguration("arm_weight_ramp_up_s"), value_type=float),
+                'arm_weight_ramp_down_s': ParameterValue(
+                    LaunchConfiguration("arm_weight_ramp_down_s"), value_type=float),
             }],
             output='screen'
         ),

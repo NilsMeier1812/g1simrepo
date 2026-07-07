@@ -72,6 +72,11 @@ def generate_launch_description():
             launch_arguments={
                 'use_robot': 'true',
                 'interface': 'lo',
+                # Sim: arm_sdk-Gewicht sofort umschalten (bisheriges Verhalten,
+                # der MuJoCo-Bridge-Blend ist auf 0/1 getestet). Die Rampe ist
+                # fuer den echten G1 (bringup_real nutzt die Defaults 2.0 s).
+                'arm_weight_ramp_up_s': '0.0',
+                'arm_weight_ramp_down_s': '0.0',
             }.items()
         ),
 

@@ -156,6 +156,13 @@ class ArmController(Node):
         # Hand "haelt nicht stabil an der Stelle". Live abschaltbar.
         self.declare_parameter("gravity_comp", True)
         self.declare_parameter("ee_auto_calibrate", True)
+        # arm_sdk-Gewichts-Rampe (motor_cmd[29].q): 0=Roboter-eigene Steuerung,
+        # 1=arm_sdk uebernimmt. Auf dem echten G1 muss das Gewicht beim Enable
+        # sanft 0->1 und beim Disable 1->0 gefahren werden, sonst reisst die
+        # Uebergabe an den Armen (Unitree-Konvention, s. g1_arm7_sdk-Beispiel).
+        # 0.0 = sofort umschalten (Sim-Verhalten, wird vom Sim-Bringup gesetzt).
+        self.declare_parameter("arm_weight_ramp_up_s", 2.0)
+        self.declare_parameter("arm_weight_ramp_down_s", 2.0)
 
 
         self.declare_parameter("ee_offset_right_xyz", [0.0, 0.0, 0.0])
@@ -195,6 +202,11 @@ class ArmController(Node):
         self.lowstate_buffer = DataBuffer()
         self._last_q_target = np.zeros(14, dtype=float)
         self.arms_enabled = False
+        # arm_sdk-Gewicht + Rampenzustand: off -> ramp_up -> on -> ramp_down -> off.
+        # Waehrend ramp_down publiziert main_loop weiter (letzte Sollpose), damit
+        # die Uebergabe an die Roboter-eigene Steuerung weich ist.
+        self._arm_sdk_weight = 0.0
+        self._weight_state = "off"
         self.homing_active = False
         self.homing_reached = False
         self.homing_tolerance = 0.02
@@ -672,6 +684,53 @@ class ArmController(Node):
             self.msg.motor_cmd[jid].dq  = 0.0
             self.msg.motor_cmd[jid].tau = 0.0
 
+    def _advance_arm_weight(self, dt: float) -> float:
+        """arm_sdk-Gewicht (motor_cmd[29].q) einen Tick weiterfahren.
+
+        ramp_up: 0->1 in arm_weight_ramp_up_s (0.0 = sofort 1.0, Sim-Verhalten).
+        ramp_down: 1->0 in arm_weight_ramp_down_s, danach Zustand off.
+        """
+        if self._weight_state == "ramp_up":
+            ramp = float(self.get_parameter("arm_weight_ramp_up_s").value)
+            if ramp <= 0.0:
+                self._arm_sdk_weight = 1.0
+            else:
+                self._arm_sdk_weight = min(1.0, self._arm_sdk_weight + dt / ramp)
+            if self._arm_sdk_weight >= 1.0:
+                self._weight_state = "on"
+        elif self._weight_state == "ramp_down":
+            ramp = float(self.get_parameter("arm_weight_ramp_down_s").value)
+            if ramp <= 0.0:
+                self._arm_sdk_weight = 0.0
+            else:
+                self._arm_sdk_weight = max(0.0, self._arm_sdk_weight - dt / ramp)
+            if self._arm_sdk_weight <= 0.0:
+                self._weight_state = "off"
+        elif self._weight_state == "on":
+            self._arm_sdk_weight = 1.0
+        else:
+            self._arm_sdk_weight = 0.0
+        return self._arm_sdk_weight
+
+    def _publish_weight_ramp_down(self):
+        """Nach dem Disable: letzte Arm-Sollwerte weiter publizieren, waehrend das
+        arm_sdk-Gewicht 1->0 faehrt. self.msg enthaelt die zuletzt geschriebenen
+        Arm-Kommandos noch -- nur Gewicht + CRC aktualisieren."""
+        if not self.use_robot:
+            self._weight_state = "off"
+            self._arm_sdk_weight = 0.0
+            return
+        w = self._advance_arm_weight(self._compute_dt())
+        try:
+            self.msg.motor_cmd[G1_29_JointIndex.kNotUsedJoint0].q = float(w)
+        except Exception:
+            pass
+        self.msg.crc = self.crc.Crc(self.msg)
+        self.lowcmd_publisher.Write(self.msg)
+        if self._weight_state == "off":
+            self.get_logger().info("arm_sdk-Gewicht auf 0 -- Arme an die "
+                                   "Roboter-Steuerung uebergeben.")
+
     def _arms_controlled_callback(self, msg: Bool):
         """
         ROS 2 callback to enable or disable arm control.
@@ -696,8 +755,16 @@ class ArmController(Node):
                 self._last_q_target = np.array(left + right, dtype=float)
             except Exception:
                 pass
+            # Gewicht sanft hochfahren (bzw. Abwaertsrampe nahtlos umkehren).
+            if self._weight_state != "on":
+                self._weight_state = "ramp_up"
             self.get_logger().info("Arm ENABLED.")
         else:
+            if self._weight_state in ("ramp_up", "on") and self._arm_sdk_weight > 0.0:
+                self._weight_state = "ramp_down"
+            else:
+                self._weight_state = "off"
+                self._arm_sdk_weight = 0.0
             self.get_logger().info("Arm DISABLED")
 
     def _homming_callback(self, msg: Bool):
@@ -1001,7 +1068,11 @@ class ArmController(Node):
                     self.motor_state[i].dq = robot_data.motor_state[i].dq
 
         if not self.arms_enabled:
-            self._hold_non_arm_joints()
+            if self._weight_state == "ramp_down":
+                # Weiche Uebergabe: Gewicht 1->0 fahren, solange weiter senden.
+                self._publish_weight_ramp_down()
+            else:
+                self._hold_non_arm_joints()
             return
 
         if self.walk_mode:
@@ -1116,7 +1187,8 @@ class ArmController(Node):
             self.msg.mode_pr = 1
 
             try:
-                self.msg.motor_cmd[G1_29_JointIndex.kNotUsedJoint0].q = 1.0
+                self.msg.motor_cmd[G1_29_JointIndex.kNotUsedJoint0].q = \
+                    float(self._advance_arm_weight(dt))
             except Exception:
                 pass
 
