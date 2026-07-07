@@ -95,6 +95,10 @@ setup(
 
             # Diagnostics / sim tools
             'sim_dds_check = g1pilot.tools.sim_dds_check:main',
+            # Alias: dasselbe Tool ist mode-agnostisch (resolve_dds) und dient
+            # auf real als erster Verbindungstest zum G1 (s. REAL_TESTING.md):
+            #   G1_SIM_MODE=false ros2 run g1pilot dds_check --interface <NIC>
+            'dds_check = g1pilot.tools.sim_dds_check:main',
             'sim_arm_wiggle = g1pilot.tools.sim_arm_wiggle:main',
             'sim_goal_probe = g1pilot.tools.sim_goal_probe:main',
             'sim_arm_monitor = g1pilot.tools.sim_arm_monitor:main',
