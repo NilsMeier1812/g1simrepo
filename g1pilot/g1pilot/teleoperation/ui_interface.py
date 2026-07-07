@@ -19,6 +19,7 @@ from rclpy.node import Node
 from std_msgs.msg import Bool, String
 from geometry_msgs.msg import Twist
 from g1pilot.utils.window_style import DarkStyle
+from g1pilot.utils.common import is_sim_mode
 
 
 class VirtualJoystick(QWidget):
@@ -123,7 +124,9 @@ class ButtonGUI(QWidget):
             "right": {"open": (2, 2), "close": (2, 3)},
         }
 
-        self.setWindowTitle("DIGITAL STREAMDECK")
+        self.sim_mode = is_sim_mode()
+        self.setWindowTitle("DIGITAL STREAMDECK — "
+                            + ("SIM" if self.sim_mode else "REAL"))
         self.init_ui()
         self.apply_style()
 
@@ -137,7 +140,15 @@ class ButtonGUI(QWidget):
         # Nach kurzer Anlaufzeit (DDS/loco_sim/arm_controller verbunden) automatisch
         # die Arme aktivieren und in den BALANCING-Stand gehen. NUR EINMAL feuern (3s):
         # ein zweiter Auto-Start (frueher 6s) loeste einen Ruck/Sturz aus.
-        QTimer.singleShot(3000, self._auto_start)
+        # NUR IN DER SIM: auf dem echten G1 darf NIE automatisch balanciert oder
+        # arm_sdk aktiviert werden -- der Operator entscheidet, wann der Roboter
+        # sich bewegt. Bewusst hart verdrahtet (kein Parameter zum Umgehen).
+        if self.sim_mode:
+            QTimer.singleShot(3000, self._auto_start)
+        else:
+            self.node.get_logger().info(
+                "REAL-Modus: kein Auto-Start. Reihenfolge: START -> "
+                "START BALANCING -> (optional) ENABLE MANIPULATION / WALK.")
 
     def init_ui(self):
         main_layout = QVBoxLayout()
@@ -164,10 +175,6 @@ class ButtonGUI(QWidget):
             # Oben rechts: Marker-Follow (Leader-Follower) an/aus.
             (0, 4): ("MARKER\nFOLLOW", lambda: self.toggle_button((0, 4), self.node.pub_marker_follow)),
 
-            # Stoer-Test (nur Sim): schubst den Roboter in zufaelliger Richtung,
-            # um die Stoerunterdrueckung des Balancers zu pruefen.
-            (1, 4): ("PUSH\nROBOT", lambda: self.flash_button((1, 4), self.node.pub_push, duration=400)),
-
             (2, 0): ("OPEN\nLEFT\nHAND", lambda: self.toggle_hand("left", "open", self.node.pub_left_hand)),
             (2, 1): ("CLOSE\nLEFT\nHAND", lambda: self.toggle_hand("left", "close", self.node.pub_left_hand)),
             (2, 2): ("OPEN\nRIGHT\nHAND", lambda: self.toggle_hand("right", "open", self.node.pub_right_hand)),
@@ -176,6 +183,14 @@ class ButtonGUI(QWidget):
 
             (4, 4): ("EMERGENCY\nSTOP", self.emergency_stop),
         }
+
+        # Stoer-Test: schubst den Sim-Roboter in zufaelliger Richtung, um die
+        # Stoerunterdrueckung des Balancers zu pruefen. Auf dem echten G1 gibt
+        # es keinen Empfaenger und der Button waere nur eine Falle -> nur Sim.
+        if self.sim_mode:
+            button_actions[(1, 4)] = (
+                "PUSH\nROBOT",
+                lambda: self.flash_button((1, 4), self.node.pub_push, duration=400))
 
         for r in range(rows):
             for c in range(cols):
