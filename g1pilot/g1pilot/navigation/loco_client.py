@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os
 import json
 import threading
+import time
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Bool, String
 from sensor_msgs.msg import Joy
+from geometry_msgs.msg import Twist
 
 from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
-from unitree_sdk2py.core.channel import ChannelFactoryInitialize
 from unitree_sdk2py.g1.loco.g1_loco_api import (
     ROBOT_API_ID_LOCO_GET_FSM_ID,
     ROBOT_API_ID_LOCO_GET_FSM_MODE,
 )
+
+from g1pilot.utils.common import init_dds
 
 
 def _rpc_get_int(client, api_id):
@@ -36,6 +38,17 @@ class G1LocoClient(Node):
         self.prev_axis_last = None
         self.control_arms = False
 
+        # Streamdeck-Walk-Zustand (WALK-Button + virtueller Joystick der UI).
+        # walk_enabled wirkt als Radio zu START BALANCING: nur wenn True darf
+        # der cmd_vel-Pfad Move() rufen. _move_active merkt sich, ob zuletzt
+        # ein Move lief, damit StopMove genau EINMAL gesendet wird (kein Spam).
+        self.walk_enabled = False
+        self._move_active = False
+        self._joy_deadman = False        # PS4-Deadman (Button 8) gedrueckt?
+        self._cmd_lock = threading.Lock()
+        self._cmd_vel = (0.0, 0.0, 0.0)  # normiert [-1,1] aus /g1pilot/loco_cmd_vel
+        self._cmd_stamp = None           # time.monotonic() des letzten Empfangs
+
         self.declare_parameter('use_robot', True)
         self.use_robot = bool(self.get_parameter('use_robot').value)
 
@@ -51,25 +64,34 @@ class G1LocoClient(Node):
         self.declare_parameter('ik_max_dq_step', 0.05)
         self.declare_parameter('arm_velocity_limit', 2.0)
 
+        # Sicherheit/Gehen (Streamdeck- und PS4-Pfad teilen sich die Limits):
+        # loco_cmd_vel kommt normiert [-1,1] von der UI -> Skalierung auf m/s bzw.
+        # rad/s passiert HIER. cmd_vel_timeout ist der Deadman: bleibt der Stream
+        # aus (GUI zu, Verbindung weg), stoppt der Roboter von selbst.
+        self.declare_parameter('max_vx', 0.4)
+        self.declare_parameter('max_vy', 0.3)
+        self.declare_parameter('max_vyaw', 0.4)
+        self.declare_parameter('cmd_vel_timeout', 0.5)
+        self.declare_parameter('cmd_vel_rate_hz', 20.0)
+        # Beim Node-Start NICHT in den Roboter-Zustand eingreifen: ein stehender
+        # G1 wuerde bei Damp() sofort zusammensacken. Nur fuer Bankett-/Haenge-
+        # Tests explizit auf true setzen.
+        self.declare_parameter('damp_on_init', False)
+
         ik_use_waist = self.get_parameter('ik_use_waist').get_parameter_value().bool_value
         ik_alpha = float(self.get_parameter('ik_alpha').value)
         ik_max_dq_step = float(self.get_parameter('ik_max_dq_step').value)
         arm_vel_lim = float(self.get_parameter('arm_velocity_limit').value)
 
         if self.use_robot:
-            import os
-            sim_mode = os.getenv('G1_SIM_MODE', 'false').lower() == 'true'
-            _domain   = 1    if sim_mode else 0
-            _iface    = 'lo' if sim_mode else interface
-            self.get_logger().info(
-                f"[loco_client] DDS Init: domain={_domain}, interface='{_iface}'"
-            )
-            ChannelFactoryInitialize(_domain, _iface)
+            init_dds(interface, self.get_logger())
             self.robot = LocoClient()
             self.robot.SetTimeout(10.0)
-            self.robot.SetFsmId(4)
             self.robot.Init()
-            self.robot.Damp()
+            if bool(self.get_parameter('damp_on_init').value):
+                self.robot.SetFsmId(4)
+                self.robot.Damp()
+                self.get_logger().warn("damp_on_init: Roboter wurde in Damp versetzt.")
             self.current_id = self.get_fsm_id()
             self.current_mode = self.get_fsm_mode()
             self.get_logger().info(f"Current FSM ID: {self.current_id}, Mode: {self.current_mode}")
@@ -83,10 +105,15 @@ class G1LocoClient(Node):
         self.create_subscription(Bool, '/g1pilot/start', self.start_callback, 10)
         self.create_subscription(Bool, '/g1pilot/start_balancing', self.start_balancing_callback, 10)
         self.create_subscription(Joy, '/g1pilot/joy', self.joystick_callback, 10)
+        # Streamdeck-Walk: dieselben Topics, die in der Sim loco_sim bedient.
+        self.create_subscription(Bool, '/g1pilot/start_walking', self.start_walking_callback, 10)
+        self.create_subscription(Twist, '/g1pilot/loco_cmd_vel', self.cmd_vel_callback, 10)
+        rate_hz = max(1.0, float(self.get_parameter('cmd_vel_rate_hz').value))
+        self.create_timer(1.0 / rate_hz, self._cmd_vel_tick)
 
         self.publisher_arms_controlled = self.create_publisher(Bool, '/g1pilot/arms/enabled', 1)
-        self.right_gripper_pub = self.create_publisher(String, '/g1pilot/dx3/hand_action/right', 1)
-        self.left_gripper_pub = self.create_publisher(String, '/g1pilot/dx3/hand_action/left', 1)
+        self.right_gripper_pub = self.create_publisher(String, '/g1pilot/hand_action/right', 1)
+        self.left_gripper_pub = self.create_publisher(String, '/g1pilot/hand_action/left', 1)
         self.publisher_homming_arms = self.create_publisher(Bool, '/g1pilot/arms/home', 1)
 
     def _log_once(self, level, msg, key):
@@ -137,6 +164,8 @@ class G1LocoClient(Node):
             self._log_once("warn", "EMERGENCY STOP ACTIVATED!", "_e_stop_activated_logged")
             self.robot_stopped = True
             self.balanced = False
+            self.walk_enabled = False
+            self._move_active = False
             if self.use_robot and self.robot is not None:
                 self.robot.Damp()
             if self.control_arms:
@@ -147,18 +176,112 @@ class G1LocoClient(Node):
 
     def start_callback(self, msg: Bool):
         if self.use_robot and self.robot is not None and msg.data:
+            self.walk_enabled = False
+            self._stop_move("START/Standby")
             self.robot.SetFsmId(4)
             self._log_once("info", "Switched to FSM ID 4 (Standby)", "_switch_fsm_id_4_logged")
             self.robot_stopped = False
             self.balanced = False
 
     def start_balancing_callback(self, msg: Bool):
-        if msg.data and not self.balanced:
+        if not msg.data:
+            return
+        # Radio-Semantik wie am Streamdeck: BALANCING gewaehlt -> Gehen aus,
+        # Roboter bleibt balanciert stehen.
+        self.walk_enabled = False
+        self._stop_move("START BALANCING")
+        if not self.balanced:
             self._log_once("info", "Starting balancing procedure...", "_start_balance_req_logged")
             self.entering_balancing(max_height=0.5, step=0.02)
             self._log_once("info", "Balancing procedure completed.", "_balance_completed_logged")
-        elif self.balanced:
+        else:
             self._log_once("info", "Already balanced, no action taken.", "_already_balanced_notice_logged")
+
+    # ── Streamdeck-Walk (WALK-Button + virtueller Joystick der UI) ───────────
+
+    def start_walking_callback(self, msg: Bool):
+        if not msg.data:
+            if self.walk_enabled:
+                self.walk_enabled = False
+                self._stop_move("WALK deaktiviert")
+            return
+        if self.robot_stopped or not self.balanced:
+            self._log_once("warn",
+                           "WALK ignoriert: Roboter ist nicht balanciert "
+                           "(erst START -> START BALANCING).",
+                           "_walk_not_balanced_logged")
+            return
+        self._clear_once("_walk_not_balanced_logged")
+        if not self.walk_enabled:
+            self.walk_enabled = True
+            self.get_logger().info(
+                "WALK aktiviert: loco_cmd_vel steuert jetzt Move() "
+                f"(Limits vx={float(self.get_parameter('max_vx').value):.2f} "
+                f"vy={float(self.get_parameter('max_vy').value):.2f} "
+                f"vyaw={float(self.get_parameter('max_vyaw').value):.2f}).")
+
+    def cmd_vel_callback(self, msg: Twist):
+        # Normiert [-1,1] (Konvention der Streamdeck-UI, identisch zur Sim).
+        nx = max(-1.0, min(1.0, float(msg.linear.x)))
+        ny = max(-1.0, min(1.0, float(msg.linear.y)))
+        nz = max(-1.0, min(1.0, float(msg.angular.z)))
+        with self._cmd_lock:
+            self._cmd_vel = (nx, ny, nz)
+            self._cmd_stamp = time.monotonic()
+
+    def _stop_move(self, reason=""):
+        """StopMove genau einmal senden (kein Dauerfeuer an die RPC-Schnittstelle)."""
+        if not self._move_active:
+            return
+        self._move_active = False
+        if self.use_robot and self.robot is not None:
+            try:
+                self.robot.StopMove()
+            except Exception as e:
+                self.get_logger().error(f"StopMove fehlgeschlagen: {e}")
+        if reason:
+            self.get_logger().info(f"StopMove ({reason})")
+
+    def _cmd_vel_tick(self):
+        """20-Hz-Sicherheitsschleife des Streamdeck-Walk-Pfads.
+
+        Move() laeuft nur solange ALLE Bedingungen gelten (balanciert, nicht
+        gestoppt, WALK aktiv, frischer cmd_vel-Stream). Faellt eine weg --
+        insbesondere der Deadman-Timeout, wenn die GUI stirbt -- wird einmalig
+        StopMove() gesendet. Der PS4-Deadman (Button 8) hat Vorrang, solange
+        er gedrueckt ist.
+        """
+        if self._joy_deadman:
+            return
+        if not (self.balanced and not self.robot_stopped and self.walk_enabled):
+            self._stop_move()
+            return
+        with self._cmd_lock:
+            (nx, ny, nz), stamp = self._cmd_vel, self._cmd_stamp
+        timeout = float(self.get_parameter('cmd_vel_timeout').value)
+        stale = stamp is None or (time.monotonic() - stamp) > timeout
+        if stale or (abs(nx) < 0.03 and abs(ny) < 0.03 and abs(nz) < 0.03):
+            self._stop_move("Deadman-Timeout" if stale and self._move_active else "")
+            return
+        vx = nx * float(self.get_parameter('max_vx').value)
+        vy = ny * float(self.get_parameter('max_vy').value)
+        vyaw = nz * float(self.get_parameter('max_vyaw').value)
+        if self.use_robot and self.robot is not None:
+            try:
+                self.robot.Move(vx=vx, vy=vy, vyaw=vyaw, continous_move=True)
+            except Exception as e:
+                self.get_logger().error(f"Move fehlgeschlagen: {e} -> StopMove + Damp")
+                try:
+                    self.robot.StopMove()
+                    self.robot.Damp()
+                except Exception:
+                    pass
+                self.robot_stopped = True
+                self.balanced = False
+                self.walk_enabled = False
+                self._move_active = False
+                return
+        self._move_active = True
 
     def joystick_callback(self, msg: Joy):
         try:
@@ -243,20 +366,30 @@ class G1LocoClient(Node):
                 self._clear_once("_balance_completed_r1_logged")
                 self._clear_once("_already_balanced_notice_r1_logged")
 
-            if msg.buttons[8] == 0 and not self.robot_stopped and self.balanced:
-                if self.use_robot and self.robot is not None:
-                    self.robot.StopMove()
+            # PS4-Deadman (Button 8): solange gedrueckt steuert der Controller,
+            # der Streamdeck-cmd_vel-Pfad pausiert (_cmd_vel_tick prueft das).
+            # StopMove nur auf der fallenden Flanke -- frueher wurde es bei
+            # losgelassenem Button in JEDEM Joy-Paket gesendet und haette damit
+            # auch ein per Streamdeck kommandiertes Gehen dauerhaft abgewuergt.
+            self._joy_deadman = (msg.buttons[8] == 1)
+            if self._btn_falling(msg, 8) and not self.robot_stopped and self.balanced:
+                self._move_active = True   # sicherstellen, dass _stop_move sendet
+                self._stop_move("PS4-Deadman losgelassen")
 
             if msg.buttons[8] == 1 and not self.robot_stopped and self.balanced:
-                vx = round(msg.axes[1] * -0.5, 2)
-                vy = round(msg.axes[0] * -0.5, 2)
-                yaw = round(msg.axes[2] * -0.5, 2)
+                max_vx = float(self.get_parameter('max_vx').value)
+                max_vy = float(self.get_parameter('max_vy').value)
+                max_vyaw = float(self.get_parameter('max_vyaw').value)
+                vx = round(msg.axes[1] * -max_vx, 2)
+                vy = round(msg.axes[0] * -max_vy, 2)
+                yaw = round(msg.axes[2] * -max_vyaw, 2)
                 self._log_once("info", f"Moving with vx: {vx}, vy: {vy}, yaw: {yaw}", "_moving_logged")
                 if self.use_robot and self.robot is not None:
                     if abs(vx) < 0.03 and abs(vy) < 0.03 and abs(yaw) < 0.03:
-                        self.robot.StopMove()
+                        self._stop_move()
                     else:
                         self.robot.Move(vx=vx, vy=vy, vyaw=yaw, continous_move=True)
+                        self._move_active = True
 
             self.prev_buttons = {i: msg.buttons[i] for i in range(len(msg.buttons))}
             self.prev_axis_last = axis_last
@@ -268,6 +401,8 @@ class G1LocoClient(Node):
                 self.robot.Damp()
             self.robot_stopped = True
             self.balanced = False
+            self.walk_enabled = False
+            self._move_active = False
 
     def entering_balancing(self, max_height=0.5, step=0.02):
         if not self.use_robot or self.robot is None:

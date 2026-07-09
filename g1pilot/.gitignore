@@ -1,6 +1,8 @@
 devel/
 logs/
 build/
+install/
+log/
 bin/
 lib/
 msg_gen/
@@ -61,6 +63,9 @@ hardware/simpleGimball/~$motorMount2.SLDPRT
 hardware/~$armAssembly.SLDASM
 
 /rosbags
+
+# Trigger-Datei: Streamdeck-Button -> Host-Browser-Watcher (start.sh)
+.gui_open_request
 
 *.FCBak
 

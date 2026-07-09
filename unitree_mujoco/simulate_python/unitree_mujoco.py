@@ -8,17 +8,23 @@ from unitree_sdk2py.core.channel import ChannelFactoryInitialize
 from unitree_sdk2py_bridge import UnitreeSdk2Bridge, ElasticBand
 
 import config
+from hold_base import HoldBase
+from push_listener import PushListener
 
 
 locker = threading.Lock()
 
-# === HOLD_BASE STATE START ===
-_hold_base_initial_pose = None
-# === HOLD_BASE STATE END ===
-
 mj_model = mujoco.MjModel.from_xml_path(config.ROBOT_SCENE)
 mj_data = mujoco.MjData(mj_model)
 
+# HOLD_BASE: Oberkoerper fuer Arm-Tests ruhig halten (bis ein Loco-Controller
+# existiert). Modus/Tuning kommen aus config.py. Richtet Weld/Steifigkeit einmal
+# ein; im teleport-Modus liefert step() einen per-Step-Hook.
+hold_base = HoldBase(mj_model, config, mj_data)
+
+# PUSH: Stoer-Impuls fuer den Balancer-Test. Hoert auf UDP (vom Streamdeck-Button
+# ueber loco_sim) und bringt eine kurze Kraft in zufaelliger Richtung auf.
+push = PushListener(mj_model, config)
 
 if config.ENABLE_ELASTIC_BAND:
     elastic_band = ElasticBand()
@@ -44,20 +50,15 @@ def SimulationThread():
 
     ChannelFactoryInitialize(config.DOMAIN_ID, config.INTERFACE)
     unitree = UnitreeSdk2Bridge(mj_model, mj_data)
-    import threading as _t
-    print(f'[DIAG] tid_sim={_t.get_ident()}', flush=True)
-    print(f'[DIAG] SAME_OBJECT={mj_data is unitree.mj_data}', flush=True)
-    print(f'[DIAG] outer_id={id(mj_data)} bridge_id={id(unitree.mj_data)}', flush=True)
-    print(f'[DIAG] outer_ctrl_ptr={mj_data.ctrl.ctypes.data}', flush=True)
-    print(f'[DIAG] bridge_ctrl_ptr={unitree.mj_data.ctrl.ctypes.data}', flush=True)
-    print(f'[DIAG] num_motor={mj_model.nu} ctrl_len={len(mj_data.ctrl)}', flush=True)
-    print(f'[DIAG] actuator_gaintype={list(mj_model.actuator_gaintype[:5])}...', flush=True)
-    print(f'[DIAG] actuator_biastype={list(mj_model.actuator_biastype[:5])}...', flush=True)
 
     if config.USE_JOYSTICK:
         unitree.SetupJoystick(device_id=0, js_type=config.JOYSTICK_TYPE)
     if config.PRINT_SCENE_INFORMATION:
         unitree.PrintSceneInformation()
+
+    if getattr(unitree, "lockstep", False):
+        SimulationLockstep(unitree)
+        return
 
     while viewer.is_running():
         step_start = time.perf_counter()
@@ -69,75 +70,104 @@ def SimulationThread():
                 mj_data.xfrc_applied[band_attached_link, :3] = elastic_band.Advance(
                     mj_data.qpos[:3], mj_data.qvel[:3]
                 )
-        _ctrl22_before = float(mj_data.ctrl[22])
-        # Print 1x pro Sekunde damit wir Pointer + tid sehen
-        import threading as _tt
-        if not hasattr(SimulationThread, '_last_diag') or (time.time() - SimulationThread._last_diag) > 1.0:
-            SimulationThread._last_diag = time.time()
-            print(f'[SIM] tid={_tt.get_ident()} mj_data_id={id(mj_data)} ctrl_ptr={mj_data.ctrl.ctypes.data} ctrl22={_ctrl22_before:.3f}', flush=True)
-        try:
-            from unitree_sdk2py_bridge import _g_ctrl, _g_ctrl_ready
-            if _g_ctrl_ready and _g_ctrl is not None:
-                mj_data.ctrl[:len(_g_ctrl)] = _g_ctrl
-        except ImportError:
-            pass
+        # PD-Torque JEDEN Schritt mit aktuellen Sensoren neu rechnen, damit die
+        # Regelrate = Sim-Rate ist und nicht an der (evtl. langsamen) Publish-
+        # Rate von rt/lowcmd / rt/arm_sdk haengt (sonst Open-Loop-Torque zwischen
+        # Nachrichten -> Aufschwingen der Arme).
+        unitree.ApplyLowCmd()
+        push.apply(mj_data)          # Stoer-Impuls VOR dem Step setzen (wirkt im Step)
         mujoco.mj_step(mj_model, mj_data)
 
-        # === HOLD_BASE HOOK START ===
-        if getattr(config, 'HOLD_BASE', False):
-            global _hold_base_initial_pose
-            if _hold_base_initial_pose is None:
-                # G1 Standing Pose (qpos indices from joint query)
-                # Base: pos=[0, 0, z_stand], quat=[1,0,0,0]
-                mj_data.qpos[0:3] = [0.0, 0.0, 0.75]
-                mj_data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
-                # Legs: slight knee bend for natural stance
-                #   hip_pitch(7,13) knee(10,16) ankle_pitch(11,17)
-                mj_data.qpos[7]  = -0.15   # left_hip_pitch
-                mj_data.qpos[10] =  0.30   # left_knee
-                mj_data.qpos[11] = -0.15   # left_ankle_pitch
-                mj_data.qpos[13] = -0.15   # right_hip_pitch
-                mj_data.qpos[16] =  0.30   # right_knee
-                mj_data.qpos[17] = -0.15   # right_ankle_pitch
-                # Arms: natural at sides
-                mj_data.qpos[22] =  0.3    # left_shoulder_pitch (leicht vor)
-                mj_data.qpos[23] =  0.15   # left_shoulder_roll (leicht seitlich)
-                mj_data.qpos[25] =  0.5    # left_elbow (leicht gebeugt)
-                mj_data.qpos[29] =  0.3    # right_shoulder_pitch
-                mj_data.qpos[30] = -0.15   # right_shoulder_roll (seitlich, gespiegelt)
-                mj_data.qpos[32] =  0.5    # right_elbow
-                # Vorwärts-Kinematik berechnen damit Sensoren stimmen
-                import mujoco as _mj
-                _mj.mj_forward(mj_model, mj_data)
-                # Fuss-Höhe prüfen und Pelvis anpassen
-                left_foot_z = mj_data.xpos[mj_model.body('left_ankle_roll_link').id][2]
-                right_foot_z = mj_data.xpos[mj_model.body('right_ankle_roll_link').id][2]
-                min_foot_z = min(left_foot_z, right_foot_z)
-                # Pelvis anheben sodass Füsse knapp über Boden schweben (~2cm)
-                mj_data.qpos[2] += (0.02 - min_foot_z)
-                _mj.mj_forward(mj_model, mj_data)
-                _hold_base_initial_pose = mj_data.qpos[0:7].copy()
-                mj_data.qvel[:] = 0
-                print(f'[HOLD_BASE] Standing pose geladen:', flush=True)
-                print(f'  pelvis z={mj_data.qpos[2]:.4f}', flush=True)
-                print(f'  left foot z={mj_data.xpos[mj_model.body("left_ankle_roll_link").id][2]:.4f}', flush=True)
-                print(f'  right foot z={mj_data.xpos[mj_model.body("right_ankle_roll_link").id][2]:.4f}', flush=True)
-            # Nur Pelvis pose + velocity fixieren — Arme/Beine frei!
-            mj_data.qpos[0:7] = _hold_base_initial_pose
-            mj_data.qvel[0:6] = 0
-        # === HOLD_BASE HOOK END ===
+        # Nur im teleport-Modus: Unterkoerper jeden Schritt zuruecksetzen.
+        hold_base.after_step(mj_data)
 
-        _ctrl22_after = float(mj_data.ctrl[22])
-        if abs(_ctrl22_before) > 0.001:
-            print(f'[SIM] before={_ctrl22_before:.3f} after={_ctrl22_after:.3f} sensor={mj_data.sensordata[22]:.4f}', flush=True)
+        # Sensoren auf den AKTUELLEN Zustand bringen: mj_step fuellt sensordata vor
+        # der Integration -> sonst publiziert der lowStateThread einen Schritt alte
+        # Geschwindigkeiten (dq/gyro), an denen eine RL-Policy kippt. Siehe Lockstep.
+        mujoco.mj_forward(mj_model, mj_data)
 
         locker.release()
 
-        time_until_next_step = mj_model.opt.timestep - (
+        # Realtime-Faktor: Sim absichtlich langsamer als Echtzeit laufen lassen
+        # (config.SIM_REALTIME_FACTOR < 1), damit eine 50-Hz-Policy auf langsamen
+        # PCs pro Schritt wieder die volle Physik bekommt. 1.0 = Echtzeit.
+        factor = getattr(config, "SIM_REALTIME_FACTOR", 1.0)
+        if factor <= 0:
+            factor = 1.0
+        time_until_next_step = mj_model.opt.timestep / factor - (
             time.perf_counter() - step_start
         )
         if time_until_next_step > 0:
             time.sleep(time_until_next_step)
+
+
+def SimulationLockstep(unitree):
+    """Deterministische Sim: GENAU decimation Physikschritte pro empfangenem
+    rt/lowcmd, danach EIN frischer rt/lowstate. Die Regelrate ist damit an die
+    Sim-Uhr gekoppelt (nicht Wall-Clock) -> eine 50-Hz-Policy sieht auf jedem PC
+    exakt ihre trainierten 20 ms Physik/Schritt.
+
+    ECHTZEIT-PACING: pro Regelzyklus werden decimation*timestep Sekunden SIM-Zeit
+    simuliert; der Zyklus wird auf die entsprechende WANDZEIT (geteilt durch
+    SIM_REALTIME_FACTOR) gestreckt. Sonst laeuft die Sim so schnell wie die CPU kann
+    (auf schnellen PCs 2-3x Echtzeit -> wirkt wie ein vorgespultes Video). Das Pacing
+    DECKELT nur die Geschwindigkeit; auf langsamen PCs darf der Zyklus laenger dauern
+    (Physik/Schritt bleibt identisch -> Determinismus unangetastet). factor<=0 -> kein
+    Pacing (so schnell wie moeglich).
+
+    Watchdog: kommt kein neues Kommando (Controller noch nicht verbunden oder
+    abgestuerzt), wird nach SIM_LOCKSTEP_WATCHDOG_S trotzdem geschritten, damit
+    Sim/Viewer nie hart einfrieren (Startfenster + Robustheit)."""
+    global mj_data, mj_model
+    decimation = int(getattr(config, "SIM_LOCKSTEP_DECIMATION", 20))
+    watchdog = float(getattr(config, "SIM_LOCKSTEP_WATCHDOG_S", 0.2))
+    factor = float(getattr(config, "SIM_REALTIME_FACTOR", 1.0))
+    # Soll-Wandzeit pro Regelzyklus (decimation Schritte = SIM_CONTROL_DT Sim-Zeit).
+    cycle_wall = (decimation * mj_model.opt.timestep / factor) if factor > 0 else 0.0
+    last_cmd_seq = -1
+    while viewer.is_running():
+        cycle_start = time.perf_counter()
+        # Auf ein NEUES Kommando warten (oder Watchdog), ohne die CPU zu blockieren.
+        t_wait = time.perf_counter()
+        while (unitree.cmd_seq == last_cmd_seq
+               and (time.perf_counter() - t_wait) < watchdog
+               and viewer.is_running()):
+            time.sleep(0.0002)
+        last_cmd_seq = unitree.cmd_seq
+
+        locker.acquire()
+        if config.ENABLE_ELASTIC_BAND and elastic_band.enable:
+            mj_data.xfrc_applied[band_attached_link, :3] = elastic_band.Advance(
+                mj_data.qpos[:3], mj_data.qvel[:3]
+            )
+        # Ein Regelschritt = decimation Physikschritte; PD pro Schritt mit frischen
+        # Sensoren (das gehaltene Kommando bleibt konstant -> wie auf der Hardware,
+        # wo der Low-Level-PD zwischen 50-Hz-Sollwerten mit 1 kHz weiterregelt).
+        for _ in range(decimation):
+            unitree.ApplyLowCmd()
+            push.apply(mj_data)      # Stoer-Impuls VOR dem Step setzen (wirkt im Step)
+            mujoco.mj_step(mj_model, mj_data)
+            hold_base.after_step(mj_data)
+        # KRITISCH: mj_step fuellt sensordata am ANFANG des Schritts (vor der
+        # Integration) -> nach der Schleife sind die Sensoren (v.a. Gelenk-/IMU-
+        # GESCHWINDIGKEITEN) einen Schritt ALT. Bei Fussaufprall weicht dq dadurch
+        # um >1 rad/s vom wahren qvel ab; eine RL-Policy, die genau diese dq/gyro in
+        # ihrer Observation hat, kippt davon. mj_forward rechnet die Sensoren ohne
+        # weitere Integration auf den AKTUELLEN Zustand neu -> sensordata == qpos/qvel
+        # (headless verifiziert: Diff 1.44 -> 0.0). Erst danach publizieren.
+        mujoco.mj_forward(mj_model, mj_data)
+        locker.release()
+
+        # Frischen State NACH den Schritten publizieren -> der Controller reagiert
+        # immer auf den Post-Step-Zustand (strikte 1:1-Alternation).
+        unitree.PublishLowState()
+
+        # Echtzeit-Pacing: Rest des Zyklus bis zur Soll-Wandzeit abwarten, damit die
+        # Sim NIE schneller als Echtzeit laeuft (deckelt, verlangsamt nie die Physik).
+        if cycle_wall > 0.0:
+            remaining = cycle_wall - (time.perf_counter() - cycle_start)
+            if remaining > 0:
+                time.sleep(remaining)
 
 
 def PhysicsViewerThread():

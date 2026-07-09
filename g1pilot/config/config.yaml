@@ -69,7 +69,7 @@ workspace:
     left_top_front:   [0.41, -0.30,  0.20]
 
 robot:
-  model: 29dof #29dof_dex3
+  model: 29dof_inspire_ftp  # URDF: g1_29dof_inspire_ftp.urdf (Inspire-FTP-Haende, passiv)
   left_eff_topic: /g1pilot/left_hand_goal
   left_tf_frame: left_hand_point_contact
   right_eff_topic: /g1pilot/right_hand_goal
@@ -84,22 +84,6 @@ state:
   motors_topic: /g1pilot/motor_state
   odom_topic: /g1pilot/odom
   voice_topic: /g1pilot/voice
-
-dex3:
-  total_dofs: 7
-  right_gripper:
-    close_values: [-0.10, 0.63, -1.74, 1.06, 0.95, 0.91, 1.22]
-    open_values: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-  left_values:
-    close_values: [0.04,  -0.04,  1.51, -1.10, -1.47, -1.13, -1.23]
-    open_values: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-  send_commands: true
-  right_cmd_topic: rt/dex3/right/cmd
-  right_state_topic: rt/dex3/right/state
-  right_hand_topic: /g1pilot/dx3/right/hand_action
-  left_cmd_topic: rt/dex3/left/cmd
-  left_state_topic: rt/dex3/left/state
-  left_hand_topic: /g1pilot/dx3/left/hand_action
 
 manipulation:
   right_point_topic: /g1pilot/right_point_goal

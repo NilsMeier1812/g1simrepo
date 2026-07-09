@@ -23,7 +23,7 @@
 
 
 ### Features
-- **g1:** add dex3 example, modify the dds msg to align with sdk2
+- **g1:** modify the dds msg to align with sdk2
 
 
 ### BREAKING CHANGE

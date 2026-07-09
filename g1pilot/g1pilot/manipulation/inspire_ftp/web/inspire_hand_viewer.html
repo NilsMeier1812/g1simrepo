@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>RH56DFTP-2 · Taktil-Monitor</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap');
+:root {
+  --bg:#060810;--surface:#0b0f1a;--panel:#0e1420;--border:#162030;
+  --accent:#00e5ff;--accentR:#ff6d00;--green:#00e676;--red:#ff1744;
+  --yellow:#ffd740;--dim:#2a4060;--text:#b0c8e0;
+  --mono:'Share Tech Mono',monospace;--display:'Orbitron',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:var(--mono);min-height:100vh}
+body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:999;
+  background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.06) 2px,rgba(0,0,0,.06) 4px)}
+
+header{display:flex;align-items:center;justify-content:space-between;
+  padding:11px 22px;border-bottom:1px solid var(--border);background:#08101e;position:relative}
+header::after{content:'';position:absolute;bottom:0;left:0;right:0;height:1px;
+  background:linear-gradient(90deg,transparent,var(--accent),transparent);opacity:.3}
+.logo{display:flex;align-items:center;gap:14px}
+.logo-mark{width:38px;height:38px;border:1px solid var(--accent);border-radius:6px;
+  display:flex;align-items:center;justify-content:center;line-height:1.1;
+  font-family:var(--display);font-size:9px;font-weight:900;color:var(--accent);
+  text-align:center;letter-spacing:1px;
+  box-shadow:0 0 12px rgba(0,229,255,.12),inset 0 0 10px rgba(0,229,255,.04)}
+.logo-text{font-family:var(--display);font-size:.82rem;font-weight:700;color:var(--accent);letter-spacing:3px}
+.logo-sub{font-size:.56rem;color:var(--dim);letter-spacing:2px;margin-top:2px}
+
+.hdr-r{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+input.url{background:var(--surface);border:1px solid var(--border);color:var(--text);
+  font-family:var(--mono);font-size:.68rem;padding:5px 9px;border-radius:4px;width:185px}
+.btn{font-family:var(--mono);font-size:.65rem;letter-spacing:1px;padding:5px 13px;
+  border-radius:4px;cursor:pointer;background:transparent;
+  border:1px solid var(--accent);color:var(--accent);transition:all .15s}
+.btn:hover{background:var(--accent);color:#000;box-shadow:0 0 10px rgba(0,229,255,.25)}
+.btn.org{border-color:var(--accentR);color:var(--accentR)}
+.btn.org:hover{background:var(--accentR);color:#000}
+.btn.yel{border-color:var(--yellow);color:var(--yellow)}
+.btn.yel:hover{background:var(--yellow);color:#000}
+
+.ws-badge{display:flex;align-items:center;gap:7px;font-size:.65rem;color:var(--dim);
+  padding:5px 10px;border:1px solid var(--border);border-radius:4px}
+.ws-led{width:8px;height:8px;border-radius:50%;background:var(--red);flex-shrink:0}
+.ws-led.live{background:var(--green);box-shadow:0 0 8px var(--green);animation:blink 2s infinite}
+.ws-led.demo{background:var(--yellow);box-shadow:0 0 7px var(--yellow)}
+.calib-badge{font-size:.62rem;padding:4px 10px;border-radius:4px;
+  border:1px solid var(--dim);color:var(--dim);font-family:var(--mono)}
+.calib-badge.ok{border-color:var(--green);color:var(--green)}
+.calib-badge.busy{border-color:var(--yellow);color:var(--yellow);animation:blink 1s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.35}}
+
+main{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:14px 18px;
+  max-width:1600px;margin:0 auto}
+.hand-panel{background:var(--panel);border:1px solid var(--border);
+  border-radius:10px;overflow:hidden;display:flex;flex-direction:column}
+.p-head{display:flex;align-items:center;justify-content:space-between;
+  padding:9px 14px;border-bottom:1px solid var(--border);background:#080e1a}
+.p-badge{width:24px;height:24px;border-radius:5px;font-family:var(--display);
+  font-size:.62rem;font-weight:700;display:flex;align-items:center;justify-content:center}
+.p-badge.L{border:1px solid var(--accent);color:var(--accent);background:rgba(0,229,255,.04)}
+.p-badge.R{border:1px solid var(--accentR);color:var(--accentR);background:rgba(255,109,0,.04)}
+.p-title{font-family:var(--display);font-size:.75rem;letter-spacing:3px;margin-left:9px}
+.p-conn{display:flex;align-items:center;gap:7px;font-size:.6rem;color:var(--dim)}
+.c-led{width:7px;height:7px;border-radius:50%;background:var(--red)}
+.c-led.ok{background:var(--green);box-shadow:0 0 6px var(--green);animation:blink 2s infinite}
+.c-led.demo{background:var(--yellow);box-shadow:0 0 6px var(--yellow)}
+
+.hand-area-wrap{flex:1;position:relative}
+.calib-overlay{display:none;position:absolute;inset:0;background:rgba(6,8,16,.85);z-index:10;
+  align-items:center;justify-content:center;flex-direction:column;gap:10px;
+  font-family:var(--mono);font-size:.85rem;color:var(--yellow);letter-spacing:2px}
+.calib-overlay.show{display:flex}
+.spinner{width:26px;height:26px;border:2px solid var(--border);border-top-color:var(--yellow);
+  border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.hand-area{display:flex;align-items:center;justify-content:center;padding:14px 18px;min-height:360px}
+.hand-wrap{position:relative;width:100%;max-width:380px}
+.hand-wrap svg{display:block;width:100%;height:auto}
+
+/* Zone-Canvas: sichtbarer Rand */
+.zone-canvas{
+  position:absolute;image-rendering:pixelated;pointer-events:none;
+  border-radius:2px;
+  border:1px solid rgba(0,229,255,0.25);
+  box-shadow:0 0 4px rgba(0,229,255,0.08);
+}
+
+.legend{display:flex;align-items:center;gap:5px;padding:4px 14px 8px;font-size:.54rem;color:var(--dim)}
+.lbar{flex:1;height:4px;border-radius:2px;
+  background:linear-gradient(90deg,#060810,#0c4a6e,#059669,#b45309,#dc2626)}
+
+.f-section{padding:8px 14px 12px;border-top:1px solid var(--border);background:#070c16}
+.f-title{font-size:.54rem;color:var(--dim);letter-spacing:2px;text-transform:uppercase;margin-bottom:7px}
+.f-bars{display:grid;grid-template-columns:repeat(6,1fr);gap:4px}
+.f-col{display:flex;flex-direction:column;align-items:center;gap:2px}
+.f-track{width:100%;height:42px;background:#060a12;border:1px solid var(--border);
+  border-radius:3px;display:flex;align-items:flex-end;overflow:hidden}
+.f-fill{width:100%;border-radius:2px;transition:height .1s}
+.f-val{font-size:.58rem;color:var(--accent)}
+.f-name{font-size:.46rem;color:var(--dim);text-align:center;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;width:100%}
+
+#demo-banner{display:none;position:fixed;bottom:12px;left:50%;transform:translateX(-50%);
+  background:#1a0e00;border:1px solid var(--yellow);color:var(--yellow);
+  font-family:var(--mono);font-size:.65rem;padding:5px 18px;
+  border-radius:18px;letter-spacing:2px;pointer-events:none;z-index:100}
+footer{text-align:center;padding:7px;font-size:.52rem;color:var(--dim);border-top:1px solid var(--border)}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">
+    <div class="logo-mark">RH<br>56</div>
+    <div>
+      <div class="logo-text">DFTP · TAKTIL</div>
+      <div class="logo-sub">INSPIRE ROBOTS · PRESSURE MONITOR</div>
+    </div>
+  </div>
+  <div class="hdr-r">
+    <input class="url" id="wsUrl" type="text" value="ws://localhost:8765">
+    <button class="btn" id="btnConn" onclick="toggleConn()">VERBINDEN</button>
+    <button class="btn org" id="btnDemo" onclick="toggleDemo()">DEMO</button>
+    <button class="btn yel" onclick="doRecalibrate()">⟳ KALIBRIEREN</button>
+    <div class="calib-badge" id="calibBadge">UNKALIBRIERT</div>
+    <div class="ws-badge">
+      <div class="ws-led" id="wsLed"></div>
+      <span id="wsLabel">GETRENNT</span>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div class="hand-panel">
+    <div class="p-head">
+      <div style="display:flex;align-items:center">
+        <div class="p-badge L">L</div><span class="p-title">LINKE HAND</span>
+      </div>
+      <div class="p-conn"><div class="c-led" id="led-left"></div><span id="ip-left">–</span></div>
+    </div>
+    <div class="hand-area-wrap">
+      <div class="hand-area"><div class="hand-wrap" id="wrap-left"></div></div>
+      <div class="calib-overlay" id="overlay-left">
+        <div class="spinner"></div><span>KALIBRIERUNG</span>
+        <span style="font-size:.6rem;color:var(--dim)">Finger nicht berühren…</span>
+      </div>
+    </div>
+    <div class="legend"><span>0</span><div class="lbar"></div><span>MAX</span></div>
+    <div class="f-section">
+      <div class="f-title">⚡ Kraft je DOF</div>
+      <div class="f-bars" id="fbars-left"></div>
+    </div>
+  </div>
+
+  <div class="hand-panel">
+    <div class="p-head">
+      <div style="display:flex;align-items:center">
+        <div class="p-badge R">R</div><span class="p-title">RECHTE HAND</span>
+      </div>
+      <div class="p-conn"><div class="c-led" id="led-right"></div><span id="ip-right">–</span></div>
+    </div>
+    <div class="hand-area-wrap">
+      <div class="hand-area"><div class="hand-wrap" id="wrap-right"></div></div>
+      <div class="calib-overlay" id="overlay-right">
+        <div class="spinner"></div><span>KALIBRIERUNG</span>
+        <span style="font-size:.6rem;color:var(--dim)">Finger nicht berühren…</span>
+      </div>
+    </div>
+    <div class="legend"><span>0</span><div class="lbar"></div><span>MAX</span></div>
+    <div class="f-section">
+      <div class="f-title">⚡ Kraft je DOF</div>
+      <div class="f-bars" id="fbars-right"></div>
+    </div>
+  </div>
+</main>
+
+<footer>RH56DFTP-2 · Modbus TCP · 17 Taktilzonen · uint16 LE · 0–4095 · 20 Hz</footer>
+<div id="demo-banner">⚡ DEMO — SIMULIERTE SENSORDATEN</div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+//  SVG HAND
+//  ViewBox 0 0 220 370
+//  Linke Hand: Daumen rechts, SENKRECHT nach unten neben der Hand
+//  Rechte Hand: scaleX gespiegelt
+// ═══════════════════════════════════════════════════════
+function makeHandSVG(mirror) {
+  const flip = mirror ? 'transform="scale(-1,1) translate(-220,0)"' : '';
+  const gid  = mirror ? 'r' : 'l';
+  return `<svg viewBox="0 0 220 370" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="hfg${gid}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0d1a30"/>
+      <stop offset="100%" stop-color="#08101e"/>
+    </linearGradient>
+  </defs>
+  <g ${flip}>
+    <!-- Handgelenk -->
+    <rect x="28" y="300" width="118" height="60" rx="10"
+          fill="#07101a" stroke="#182535" stroke-width="1"/>
+
+    <!-- Handfläche -->
+    <rect x="26" y="172" width="120" height="134" rx="16"
+          fill="url(#hfg${gid})" stroke="#182535" stroke-width="1.5"/>
+
+    <!-- Knöchel -->
+    <line x1="32" y1="184" x2="140" y2="184"
+          stroke="#555555" stroke-width="1" stroke-dasharray="3,5"/>
+
+    <!-- Kleiner Finger (x28-54, y76-182) -->
+    <rect x="28" y="45" width="26" height="137" rx="8"
+          fill="url(#hfg${gid})" stroke="#182535" stroke-width="1.5"/>
+    <line x1="30" y1="116" x2="52" y2="116" stroke="#182535" stroke-width="3"/>
+    <line x1="30" y1="140" x2="52" y2="140" stroke="#182535" stroke-width="3"/>
+
+    <!-- Ringfinger (x60-86, y48-182) -->
+    <rect x="60" y="35" width="26" height="147" rx="8"
+          fill="url(#hfg${gid})" stroke="#182535" stroke-width="1.5"/>
+    <line x1="62" y1="92" x2="84" y2="92"   stroke="#182535" stroke-width="3"/>
+    <line x1="62" y1="120" x2="84" y2="120" stroke="#182535" stroke-width="3"/>
+
+    <!-- Mittelfinger (x92-118, y28-182) -->
+    <rect x="92" y="28" width="26" height="154" rx="8"
+          fill="url(#hfg${gid})" stroke="#182535" stroke-width="1.5"/>
+    <line x1="94" y1="76" x2="116" y2="76"   stroke="#182535" stroke-width="3"/>
+    <line x1="94" y1="108" x2="116" y2="108" stroke="#182535" stroke-width="3"/>
+
+    <!-- Zeigefinger (x124-150, y42-182) -->
+    <rect x="124" y="33" width="26" height="150" rx="8"
+          fill="url(#hfg${gid})" stroke="#182535" stroke-width="1.5"/>
+    <line x1="126" y1="88" x2="148" y2="88"   stroke="#182535" stroke-width="3"/>
+    <line x1="126" y1="116" x2="148" y2="116" stroke="#182535" stroke-width="3"/>
+
+    <!-- Daumen: SENKRECHT, rechts neben der Handfläche (x158-184, y210-360) -->
+    <rect x="155" y="145" width="30" height="140" rx="8"
+          fill="url(#hfg${gid})" stroke="#182535" stroke-width="1.5"/>
+    <line x1="156" y1="235" x2="184" y2="235" stroke="#444444" stroke-width="3"/>
+    <line x1="156" y1="211" x2="184" y2="211" stroke="#444444" stroke-width="3"/>
+  </g>
+</svg>`;
+}
+
+// ═══════════════════════════════════════════════════════
+//  ZONE-POSITIONEN – linke Hand, ViewBox 220×370
+//  [left_frac, top_frac, width_frac, height_frac, rows, cols]
+//
+//  WICHTIG: Die Sensordaten der Finger kommen mit Zeile 1 = Fingerspitze
+//  Die Heatmap-Canvas muss horizontal gespiegelt werden (cols umkehren),
+//  weil die physischen Sensoren spiegelverkehrt eingebaut sind.
+// ═══════════════════════════════════════════════════════
+const ZONE_POS_LEFT = {
+  // Kleiner (x28-54, y76-182)
+  kleiner_tip:  [28/220,  50/370, 26/220,  12/370,  3,  3],
+  kleiner_nail: [28/220,  65/370, 26/220,  40/370, 12,  8],
+  kleiner_pad:  [28/220, 120/370, 26/220,  40/370, 10,  8],
+
+  // Ring (x60-86, y48-182)
+  ring_tip:     [60/220,  40/370, 26/220,  12/370,  3,  3],
+  ring_nail:    [60/220,  55/370, 26/220,  40/370, 12,  8],
+  ring_pad:     [60/220, 120/370, 26/220,  40/370, 10,  8],
+
+  // Mittel (x92-118, y28-182)
+  mittel_tip:   [92/220,  35/370, 26/220,  12/370,  3,  3],
+  mittel_nail:  [92/220,  50/370, 26/220,  40/370, 12,  8],
+  mittel_pad:   [92/220, 120/370, 26/220,  40/370, 10,  8],
+
+  // Zeige (x124-150, y42-182)
+  zeige_tip:    [124/220,  40/370, 26/220,  12/370,  3,  3],
+  zeige_nail:   [124/220,  55/370, 26/220,  40/370, 12,  8],
+  zeige_pad:    [124/220, 120/370, 26/220,  40/370, 10,  8],
+
+  // Daumen SENKRECHT (x158-184, y200-330)
+  daumen_tip:   [158/220, 150/370, 26/220,  15/370,  3,  3],
+  daumen_nail:  [158/220, 168/370, 26/220,  40/370, 12,  8],
+  daumen_mid:   [158/220, 213/370, 26/220,  20/370,  3,  3],
+  daumen_pad:   [158/220, 240/370, 26/220,  40/370, 12,  8],
+
+  // Handfläche (x28-144, y186-298)
+  palme:        [28/220, 188/370, 114/220,  70/370,  8, 14],
+};
+
+// Rechte Hand: X spiegeln
+function mirrorZones(zones) {
+  const out = {};
+  for (const [id,[l,t,w,h,rows,cols]] of Object.entries(zones))
+    out[id] = [1-l-w, t, w, h, rows, cols];
+  return out;
+}
+const ZONE_POS_RIGHT = mirrorZones(ZONE_POS_LEFT);
+
+const DOF_NAMES = ["Kleiner","Ring","Mittel","Zeige","Daumen-B","Daumen-R"];
+const MAX_FORCE = 3000;
+const canvases  = {left:{}, right:{}};
+let lastL=null, lastR=null;
+
+// Kalibrierung
+const bline = {left:null, right:null};   // baseline[side][zid] = float[]
+let calibRunning=false, calibTimer=null;
+const calibBuf = {left:{}, right:{}};    // accumulated samples
+let calibFrames = 0;
+const CALIB_FRAMES = 20;   // 20 × 50ms = 1 Sekunde
+
+// ═══════════════════════════════════════════════════════
+//  DOM AUFBAUEN
+// ═══════════════════════════════════════════════════════
+function buildHand(side) {
+  const mirror = side === 'right';
+  const zpos   = mirror ? ZONE_POS_RIGHT : ZONE_POS_LEFT;
+  const wrap   = document.getElementById(`wrap-${side}`);
+  wrap.innerHTML = makeHandSVG(mirror);
+
+  Object.entries(zpos).forEach(([zid,[lf,tf,wf,hf,rows,cols]]) => {
+    const cv = document.createElement('canvas');
+    cv.className = 'zone-canvas';
+    cv.width = cols; cv.height = rows;
+    cv.style.left   = (lf*100)+'%';
+    cv.style.top    = (tf*100)+'%';
+    cv.style.width  = (wf*100)+'%';
+    cv.style.height = (hf*100)+'%';
+    cv.title = zid;
+    wrap.appendChild(cv);
+    canvases[side][zid] = cv;
+    fillDark(cv, rows, cols);
+  });
+
+  const fb = document.getElementById(`fbars-${side}`);
+  fb.innerHTML = '';
+  DOF_NAMES.forEach((n,i) => {
+    fb.innerHTML += `<div class="f-col">
+      <div class="f-track"><div class="f-fill" id="ff-${side}-${i}" style="height:0%"></div></div>
+      <div class="f-val" id="fv-${side}-${i}">0</div>
+      <div class="f-name" title="${n}">${n}</div></div>`;
+  });
+}
+
+function fillDark(cv, rows, cols) {
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#08101e';
+  ctx.fillRect(0, 0, cols, rows);
+}
+
+// ═══════════════════════════════════════════════════════
+//  KALIBRIERUNG
+//  Sammelt CALIB_FRAMES Frames und berechnet Mittelwert als Baseline.
+//  Läuft zeitbasiert (1 Sekunde) – unabhängig davon ob beide Hände antworten.
+// ═══════════════════════════════════════════════════════
+function startCalib() {
+  if (calibTimer) clearTimeout(calibTimer);
+  calibRunning = true;
+  calibFrames  = 0;
+  calibBuf.left  = {};
+  calibBuf.right = {};
+  bline.left  = null;
+  bline.right = null;
+
+  ['left','right'].forEach(s => {
+    document.getElementById(`overlay-${s}`).classList.add('show');
+    Object.entries(canvases[s]).forEach(([zid,cv]) => {
+      const [,,,,rows,cols]=(s==='left'?ZONE_POS_LEFT:ZONE_POS_RIGHT)[zid];
+      fillDark(cv,rows,cols);
+    });
+  });
+  document.getElementById('calibBadge').textContent = 'KALIBRIERE…';
+  document.getElementById('calibBadge').className = 'calib-badge busy';
+
+  // Countdown in den Overlays anzeigen
+  let remaining = 3;
+  const countEls = ['left','right'].map(s => {
+    const el = document.querySelector(`#overlay-${s} span:last-child`);
+    if (el) el.textContent = `Finger nicht berühren… ${remaining}s`;
+    return el;
+  });
+  const tick = setInterval(() => {
+    remaining--;
+    countEls.forEach(el => { if(el) el.textContent = `Finger nicht berühren… ${remaining}s`; });
+    if (remaining <= 0) clearInterval(tick);
+  }, 1000);
+
+  // Nach 3 Sekunden finalisieren – genug Zeit um alle Finger loszulassen
+  calibTimer = setTimeout(finishCalib, 3000);
+}
+
+function accumulate(side, zones) {
+  if (!calibRunning) return;
+  Object.entries(zones).forEach(([zid,vals]) => {
+    if (!calibBuf[side][zid]) calibBuf[side][zid] = [];
+    calibBuf[side][zid].push([...vals]);
+  });
+}
+
+function finishCalib() {
+  calibRunning = false;
+  ['left','right'].forEach(s => {
+    const b = {};
+    Object.entries(calibBuf[s]).forEach(([zid, samples]) => {
+      if (!samples.length) return;
+      const n = samples[0].length;
+      b[zid] = Array.from({length:n}, (_,i) =>
+        samples.reduce((sum,arr) => sum + (arr[i]||0), 0) / samples.length
+      );
+    });
+    bline[s] = Object.keys(b).length > 0 ? b : null;
+    document.getElementById(`overlay-${s}`).classList.remove('show');
+  });
+  document.getElementById('calibBadge').textContent = 'KALIBRIERT';
+  document.getElementById('calibBadge').className = 'calib-badge ok';
+}
+
+function doRecalibrate() { startCalib(); }
+
+// ═══════════════════════════════════════════════════════
+//  HEATMAP
+// ═══════════════════════════════════════════════════════
+const NOISE = 80;   // Schwellwert: ignoriere Abweichungen < 80 (eliminiert Kalibrierungsfehler)
+const MAX_D = 1200; // Skalierung: 1200 ADC-Einheiten = voller Druck
+
+function heatRGB(v) {
+  v = Math.max(0, Math.min(255, v));
+  const s=[[0,[6,12,24]],[35,[4,45,110]],[80,[0,120,190]],
+           [130,[0,180,110]],[175,[140,200,0]],[210,[255,160,0]],[255,[240,20,20]]];
+  for (let i=1;i<s.length;i++) {
+    if (v<=s[i][0]) {
+      const[va,ca]=s[i-1],[vb,cb]=s[i],t=(v-va)/(vb-va);
+      return[Math.round(ca[0]+t*(cb[0]-ca[0])),
+             Math.round(ca[1]+t*(cb[1]-ca[1])),
+             Math.round(ca[2]+t*(cb[2]-ca[2]))];
+    }
+  }
+  return[240,20,20];
+}
+
+// Palm: spaltenweise von unten nach oben
+function remapPalm(data, rows, cols) {
+  const out = new Array(rows*cols).fill(0);
+  for (let i=0;i<Math.min(data.length,rows*cols);i++) {
+    const row=i%rows, col=Math.floor(i/rows);
+    if (col<cols) out[row*cols+col]=data[i];
+  }
+  return out;
+}
+
+// Horizontale Spiegelung der Pixelzeilen
+function hflip(data, rows, cols) {
+  const out = new Array(rows*cols);
+  for (let r=0;r<rows;r++)
+    for (let c=0;c<cols;c++)
+      out[r*cols + (cols-1-c)] = data[r*cols + c];
+  return out;
+}
+
+function drawZone(side, zid, rawData) {
+  const cv = canvases[side][zid];
+  if (!cv) return;
+  const [,,,,rows,cols] = (side==='left'?ZONE_POS_LEFT:ZONE_POS_RIGHT)[zid];
+
+  // 1. Palm remapping (kein hflip für Palme und Daumen)
+  let data = zid==='palme' ? remapPalm(rawData,rows,cols) : [...(rawData||[])];
+
+  // 2. Horizontal spiegeln – NUR für die vier Langfinger (nicht Daumen, nicht Palme)
+  const flipZones = ['kleiner_tip','kleiner_nail','kleiner_pad',
+                     'ring_tip','ring_nail','ring_pad',
+                     'mittel_tip','mittel_nail','mittel_pad',
+                     'zeige_tip','zeige_nail','zeige_pad', 'palme'];
+  if (flipZones.includes(zid) && data.length >= rows*cols)
+    data = hflip(data, rows, cols);
+
+  // 3. Normalisierung gegen Baseline
+  const base = bline[side]?.[zid];
+  const ctx  = cv.getContext('2d');
+  const img  = ctx.createImageData(cols, rows);
+
+  for (let i=0;i<rows*cols;i++) {
+    const raw = i<data.length ? data[i] : 0;
+    let norm = 0;
+    if (base && i<base.length) {
+      // Nur positives Delta zeigen (Druck erhöht den Wert von der Baseline weg).
+      // Negatives Delta = Sensor-Rauschen oder Kalibrierungsfehler → ignorieren.
+      const delta = raw - base[i];
+      norm = delta < NOISE ? 0 : Math.min(255, Math.round((delta-NOISE)*255/MAX_D));
+    } else {
+      // Noch keine Baseline: Rohwert anzeigen
+      norm = Math.min(255, Math.round(raw/4095*255));
+    }
+    const [R,G,B] = heatRGB(norm);
+    img.data[i*4]=R; img.data[i*4+1]=G; img.data[i*4+2]=B; img.data[i*4+3]=255;
+  }
+  ctx.putImageData(img,0,0);
+}
+
+// ═══════════════════════════════════════════════════════
+//  UPDATE
+// ═══════════════════════════════════════════════════════
+function updateHand(side, data) {
+  if (!data) return;
+  document.getElementById(`led-${side}`).className =
+    'c-led'+(data.connected?' ok':(demoMode?' demo':''));
+  document.getElementById(`ip-${side}`).textContent = data.host||'–';
+
+  const zones = data.zones||{};
+  if (calibRunning) { accumulate(side, zones); return; }
+
+  Object.keys(side==='left'?ZONE_POS_LEFT:ZONE_POS_RIGHT).forEach(zid => {
+    drawZone(side, zid, zones[zid]||[]);
+  });
+
+  (data.force||[]).forEach((f,i) => {
+    const fill=document.getElementById(`ff-${side}-${i}`);
+    const val =document.getElementById(`fv-${side}-${i}`);
+    if (!fill||!val) return;
+    const pct=Math.min(100,Math.abs(f)/MAX_FORCE*100);
+    fill.style.height=pct+'%';
+    const r=Math.round(50+200*pct/100),g=Math.round(160*(1-pct/100));
+    fill.style.background=`linear-gradient(180deg,rgb(${r},${g},20),rgb(${Math.min(255,r+40)},10,10))`;
+    val.textContent=Math.round(Math.abs(f));
+  });
+}
+
+// ═══════════════════════════════════════════════════════
+//  WEBSOCKET
+// ═══════════════════════════════════════════════════════
+let ws=null, demoMode=false, demoTimer=null, demoT=0;
+
+function toggleConn() {
+  if (demoMode) { stopDemo(); return; }
+  if (ws && ws.readyState===WebSocket.OPEN) { ws.close(); return; }
+  setWs(null,'VERBINDE…');
+  try { ws=new WebSocket(document.getElementById('wsUrl').value.trim()); }
+  catch(e) { setWs(false,'FEHLER'); return; }
+  ws.onopen  = () => {
+    setWs(true,'VERBUNDEN');
+    document.getElementById('btnConn').textContent='TRENNEN';
+    startCalib();
+  };
+  ws.onclose = () => {
+    setWs(false,'GETRENNT');
+    document.getElementById('btnConn').textContent='VERBINDEN';
+    ws=null;
+  };
+  ws.onerror = () => setWs(false,'FEHLER');
+  ws.onmessage = e => {
+    try {
+      const msg=JSON.parse(e.data);
+      if (msg.type==='meta') return;
+      if (msg.left)  { lastL=msg.left;  updateHand('left', msg.left); }
+      if (msg.right) { lastR=msg.right; updateHand('right',msg.right); }
+    } catch(ex) {}
+  };
+}
+
+function setWs(ok,lbl) {
+  document.getElementById('wsLed').className='ws-led'+(ok===true?' live':ok===null?' demo':'');
+  document.getElementById('wsLabel').textContent=lbl;
+}
+
+// ═══════════════════════════════════════════════════════
+//  DEMO
+// ═══════════════════════════════════════════════════════
+function toggleDemo() { demoMode ? stopDemo() : startDemoMode(); }
+
+function startDemoMode() {
+  if (ws) { ws.close(); ws=null; }
+  demoMode=true; setWs(null,'DEMO');
+  document.getElementById('btnDemo').textContent='DEMO STOP';
+  document.getElementById('demo-banner').style.display='block';
+  ['left','right'].forEach(s => {
+    document.getElementById(`led-${s}`).className='c-led demo';
+    document.getElementById(`ip-${s}`).textContent=s==='left'?'192.168.123.210':'192.168.123.211';
+  });
+
+  startCalib();
+  // Demo-Baseline sofort setzen (Ruhewert 1500)
+  setTimeout(() => {
+    if (!calibRunning) return;
+    ['left','right'].forEach(s => {
+      const b={};
+      Object.keys(s==='left'?ZONE_POS_LEFT:ZONE_POS_RIGHT).forEach(zid => {
+        const[,,,,rows,cols]=(s==='left'?ZONE_POS_LEFT:ZONE_POS_RIGHT)[zid];
+        b[zid]=new Array(rows*cols).fill(1500);
+      });
+      bline[s]=b;
+    });
+    finishCalib();
+  }, 600);
+
+  demoTimer=setInterval(() => {
+    demoT++;
+    const grip=0.5+0.48*Math.sin(demoT*0.035);
+    const zones={};
+    Object.keys(ZONE_POS_LEFT).forEach((zid,fi) => {
+      const[,,,,rows,cols]=ZONE_POS_LEFT[zid];
+      const n=rows*cols, fg=grip*(0.5+0.5*Math.sin(demoT*.02+fi*.7));
+      const cx=cols*.5, cy=rows*.35, rx=cols*.45, ry=rows*.42;
+      zones[zid]=Array.from({length:n},(_,i)=>{
+        const r=Math.floor(i/cols),c=i%cols;
+        const dx=(c-cx)/rx,dy=(r-cy)/ry;
+        const p=Math.max(0,1-Math.sqrt(dx*dx+dy*dy));
+        return Math.max(0,Math.min(4095,Math.round(1500+p*fg*2600+(Math.random()-.5)*80)));
+      });
+    });
+    const force=DOF_NAMES.map((_,i)=>+(grip*MAX_FORCE*(0.4+0.6*Math.sin(demoT*.025+i*.7))).toFixed(0));
+    const d={connected:true,host:'192.168.123.210',zones,force};
+    lastL=d; lastR={...d,host:'192.168.123.211'};
+    updateHand('left',lastL); updateHand('right',lastR);
+  }, 50);
+}
+
+function stopDemo() {
+  if (demoTimer){clearInterval(demoTimer);demoTimer=null;}
+  if (calibTimer){clearTimeout(calibTimer);calibTimer=null;}
+  demoMode=false; calibRunning=false;
+  setWs(false,'GETRENNT');
+  document.getElementById('btnDemo').textContent='DEMO';
+  document.getElementById('btnConn').textContent='VERBINDEN';
+  document.getElementById('demo-banner').style.display='none';
+  document.getElementById('calibBadge').textContent='UNKALIBRIERT';
+  document.getElementById('calibBadge').className='calib-badge';
+  ['left','right'].forEach(s=>{
+    bline[s]=null;
+    document.getElementById(`led-${s}`).className='c-led';
+    document.getElementById(`overlay-${s}`).classList.remove('show');
+    Object.entries(canvases[s]).forEach(([zid,cv])=>{
+      const[,,,,rows,cols]=(s==='left'?ZONE_POS_LEFT:ZONE_POS_RIGHT)[zid];
+      fillDark(cv,rows,cols);
+    });
+  });
+}
+
+buildHand('left');
+buildHand('right');
+
+// Auto-Connect via URL-Param (?autoconnect=1[&ws=ws://host:port]). Genutzt vom
+// start.sh-Auto-Open; ohne den Parameter sieht/verhaelt sich die UI unveraendert.
+// Verbindet mit RETRY (alle 2 s), bis die Bridge da ist -> robust, auch wenn die
+// Seite vor der Bridge aufgeht oder die Bridge neu startet. Demo-Modus stoppt
+// den Retry nicht-invasiv (kein Reconnect, solange Demo laeuft).
+(function () {
+  try {
+    const p = new URLSearchParams(location.search);
+    const wsParam = p.get('ws');
+    if (wsParam) {
+      document.getElementById('wsUrl').value = wsParam;
+    } else if (location.protocol.startsWith('http') && location.hostname &&
+               location.hostname !== 'localhost') {
+      const u = document.getElementById('wsUrl');
+      u.value = u.value.replace('localhost', location.hostname);
+    }
+    if (p.get('autoconnect') === '1') {
+      const tryConn = () => {
+        if (demoMode) return;
+        if (!ws || (ws.readyState !== WebSocket.OPEN &&
+                    ws.readyState !== WebSocket.CONNECTING)) toggleConn();
+      };
+      setTimeout(tryConn, 300);
+      setInterval(tryConn, 2000);
+    }
+  } catch (e) {}
+})();
+</script>
+</body>
+</html>

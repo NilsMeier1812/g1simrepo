@@ -26,10 +26,16 @@ setup(
             'launch/mola_launcher.launch.py',
             'launch/livox_launcher.launch.py',
             'launch/manipulation_launcher.launch.py',
+            'launch/hand_launcher.launch.py',
 
             'launch/bringup_launcher.launch.py',
             'launch/bringup_sim.launch.py',
+            'launch/bringup_real.launch.py',
         ]),
+
+        # Inspire-FTP-Hand HTML-GUIs (Controller/Viewer) – im Browser zu oeffnen.
+        (f'share/{package_name}/manipulation/inspire_ftp/web',
+            expand(['g1pilot/manipulation/inspire_ftp/web/*.html'])),
 
         # URDF / XML
         (f'share/{package_name}/description_files/urdf',
@@ -43,12 +49,18 @@ setup(
             'description_files/meshes/**/*.STL',
          ])),
 
-        # Configuration Files
+        # Configuration Files (YAML + RViz both live in config/)
         (f'share/{package_name}/config',
-            expand(['config/*.yaml'])),
+            expand(['config/*.yaml', 'config/*.rviz'])),
 
-        # RViz
-        (f'share/{package_name}/rviz', expand(['rviz/*.rviz'])),
+        # MOLA LiDAR-odometry pipeline (used by mola_launcher.launch.py)
+        (f'share/{package_name}/pipelines',
+            expand(['pipelines/*.yaml'])),
+
+        # Whole-Body-Loco-Policy fuer loco_sim (unitree_rl_mjlab G1 Velocity).
+        (f'share/{package_name}/policies/g1_wholebody',
+            expand(['policies/g1_wholebody/*.onnx', 'policies/g1_wholebody/*.yaml',
+                    'policies/g1_wholebody/*.md', 'policies/g1_wholebody/LICENSE'])),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -64,8 +76,9 @@ setup(
 
             # Manipulation Nodes
             'interactive_marker = g1pilot.manipulation.interactive_marker:main',
-            'dx3_controller = g1pilot.manipulation.dx3_hand:main',
             'arm_controller = g1pilot.manipulation.arm_controller:main',
+            # Inspire-FTP-Hand: GUI-WebSocket-Bridge + DDS-Backend (rt/inspire/cmd|state).
+            'inspire_hand = g1pilot.manipulation.inspire_ftp.bridge:main',
 
             # Teleoperation Nodes
             'joystick = g1pilot.teleoperation.joystick:main',
@@ -74,10 +87,22 @@ setup(
 
             # Navigation Nodes
             'loco_client = g1pilot.navigation.loco_client:main',
+            'loco_sim = g1pilot.navigation.loco_sim:main',
             'dijkstra_planner = g1pilot.navigation.dijkstra_planner:main',
             'nav2point = g1pilot.navigation.nav2point:main',
             'create_map = g1pilot.navigation.create_map:main',
             'mola_fixed = g1pilot.navigation.fix_mola_odometry:main',
+
+            # Diagnostics / sim tools
+            'sim_dds_check = g1pilot.tools.sim_dds_check:main',
+            # Alias: dasselbe Tool ist mode-agnostisch (resolve_dds) und dient
+            # auf real als erster Verbindungstest zum G1 (s. REAL_TESTING.md):
+            #   G1_SIM_MODE=false ros2 run g1pilot dds_check --interface <NIC>
+            'dds_check = g1pilot.tools.sim_dds_check:main',
+            'sim_arm_wiggle = g1pilot.tools.sim_arm_wiggle:main',
+            'sim_goal_probe = g1pilot.tools.sim_goal_probe:main',
+            'sim_arm_monitor = g1pilot.tools.sim_arm_monitor:main',
+            'sim_leg_hold = g1pilot.tools.sim_leg_hold:main',
         ],
     },
 )

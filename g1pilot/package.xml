@@ -3,9 +3,28 @@
 <package format="3">
   <name>g1pilot</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>ROS 2 package to control the Unitree G1 robot (arms, navigation, teleoperation) on real hardware and in MuJoCo simulation.</description>
   <maintainer email="clemente.donoso@inria.fr">cdonoso</maintainer>
   <license>BSD 3</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-websockets</exec_depend>
+  <exec_depend>python3-evdev</exec_depend>
+  <!-- Nicht per rosdep aufloesbar (kommen aus den Docker-Images via pip bzw.
+       vendored): unitree_sdk2py (DDS zum Roboter/zur Sim), pin/pinocchio
+       (IK + Schwerkraft-FF), pyqt6 (Streamdeck-UI), onnxruntime (nur Sim,
+       loco_sim-Policy). Das Modbus-Backend der Inspire-Haende ist stdlib-only
+       (kein pymodbus noetig). -->
+
+  <exec_depend>astroviz_interfaces</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

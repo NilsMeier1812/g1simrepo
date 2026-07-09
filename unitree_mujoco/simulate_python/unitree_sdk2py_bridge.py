@@ -22,11 +22,6 @@ else:
     from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowState_
     from unitree_sdk2py.idl.default import unitree_go_msg_dds__LowState_ as LowState_default
 
-# Shared ctrl array (Workaround falls bridge.mj_data != sim.mj_data)
-import numpy as _np
-_g_ctrl = None
-_g_ctrl_ready = False
-
 TOPIC_LOWCMD = "rt/lowcmd"
 TOPIC_LOWSTATE = "rt/lowstate"
 TOPIC_HIGHSTATE = "rt/sportmodestate"
@@ -42,14 +37,121 @@ class UnitreeSdk2Bridge:
         self.mj_model = mj_model
         self.mj_data = mj_data
 
-        self.num_motor = self.mj_model.nu
+        nu = self.mj_model.nu
+        # Finger-Aktuatoren (Inspire-Hand) erkennen und vom BODY-Pfad trennen: rt/lowcmd
+        # und rt/lowstate (hg-Motorarray) mappen NUR auf die Body-Motoren. num_motor
+        # bleibt damit = Body-Anzahl (G1: 29) -> alle Sensor-Offsets/Indizes unveraendert.
+        # Ohne Finger-Aktuatoren (Rubber-Modell) ist die Liste leer -> Verhalten exakt
+        # wie bisher. Voraussetzung: Finger-Aktuatoren stehen HINTER den Body-Aktuatoren.
+        _FINGER_KEYS = ("thumb", "index", "middle", "ring", "little")
+        self.hand_act_ids = []        # MuJoCo-Actuator-IDs der Finger (Modell-/Kanon-Reihenfolge)
+        self.hand_joint_qadr = []     # qpos-Adresse je Finger-Gelenk (fuer State)
+        for aid in range(nu):
+            jid = int(self.mj_model.actuator_trnid[aid][0])
+            jname = mujoco.mj_id2name(self.mj_model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ""
+            if any(k in jname for k in _FINGER_KEYS):
+                self.hand_act_ids.append(aid)
+                self.hand_joint_qadr.append(int(self.mj_model.jnt_qposadr[jid]))
+        self.num_hand = len(self.hand_act_ids)
+        self.num_motor = nu - self.num_hand
+        if self.hand_act_ids and min(self.hand_act_ids) < self.num_motor:
+            print("[BRIDGE] WARN: Finger-Aktuatoren nicht hinter den Body-Aktuatoren -> "
+                  "Hand-Steuerung deaktiviert (Body-Mapping waere kaputt).", flush=True)
+            self.hand_act_ids, self.hand_joint_qadr, self.num_hand = [], [], 0
+            self.num_motor = nu
+        self.hand_cmd = None          # letzter rt/inspire/cmd (LowCmd_)
+        # Touch-Sensoren der Fingerspitzen (Phase 2). Adressen in sensordata per Name
+        # (kanonische Reihenfolge: links dann rechts, thumb/index/middle/ring/little).
+        # Werte werden im rt/inspire/state in motor_state[24..].q transportiert.
+        self.touch_adr = []
+        if self.num_hand:
+            _TOUCH = [f"{s}_{f}_touch" for s in ("left", "right")
+                      for f in ("thumb", "index", "middle", "ring", "little")]
+            for nm in _TOUCH:
+                sid = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_SENSOR, nm)
+                if sid >= 0:
+                    self.touch_adr.append(int(self.mj_model.sensor_adr[sid]))
         self.dim_motor_sensor = MOTOR_SENSOR_NUM * self.num_motor
+        if self.num_hand:
+            print(f"[BRIDGE] Inspire-Hand: {self.num_hand} Finger-Position-Aktuatoren "
+                  f"(rt/inspire/cmd -> Ziele, rt/inspire/state -> Winkel), "
+                  f"Body-Motoren={self.num_motor}.", flush=True)
         self.have_imu = False
         self.have_frame_sensor = False
         self.dt = self.mj_model.opt.timestep
+        # State-Publish-Rate von der Sim-Rate entkoppeln: bei dt=0.001 (noetig
+        # fuer PD-Stabilitaet) wuerde 1 kHz DDS-Verkehr die Realtime-Sim
+        # belasten. Auf max. ~500 Hz deckeln (entspricht echtem Roboter).
+        self.state_dt = max(self.dt, 0.002)
         self.idl_type = (self.num_motor > NUM_MOTOR_IDL_GO) # 0: unitree_go, 1: unitree_hg
 
         self.joystick = None
+
+        # Zwei getrennte Befehls-Quellen, damit Loco (Beine/Taille via rt/lowcmd)
+        # und Manipulation (Arme via rt/arm_sdk) GLEICHZEITIG laufen koennen.
+        # Frueher gab es nur self.low_cmd -> letzte Nachricht gewann -> die jeweils
+        # andere Koerperhaelfte ging limp. Der PD-Torque wird pro Sim-Schritt in
+        # ApplyLowCmd() gerechnet (nicht im DDS-Callback), damit die Regelrate
+        # nicht an der Publish-Rate haengt.
+        self.low_cmd_legs = None   # rt/lowcmd  -> Beine+Taille (0..14), ggf. Arme wenn kein arm_sdk
+        self.low_cmd_arm = None    # rt/arm_sdk -> Arme (15..28), Weight @ index 29
+
+        # Lockstep-Handshake: cmd_seq zaehlt empfangene rt/lowcmd, state_seq
+        # publizierte rt/lowstate. Die Sim-Schleife (unitree_mujoco.py) wartet im
+        # Lockstep-Modus auf ein neues cmd_seq, macht dann genau decimation
+        # Physikschritte und publiziert EINEN frischen State (state_seq++). So ist
+        # die Regelrate an die Sim-Uhr gekoppelt, nicht an die Wall-Clock.
+        self.cmd_seq = 0
+        self.state_seq = 0
+        # Lockstep nur im Loco-Modus (off) sinnvoll. Im Lockstep publiziert die
+        # Sim-Schleife den lowstate INLINE nach den decimation-Schritten -> der
+        # 500-Hz-RecurrentThread wuerde Zwischenzustaende senden und wird deaktiviert.
+        self.lockstep = (
+            bool(getattr(config, "SIM_LOCKSTEP", False))
+            and str(getattr(config, "HOLD_BASE_MODE", "weld")).lower() == "off"
+        )
+        self.decimation = int(getattr(config, "SIM_LOCKSTEP_DECIMATION", 20))
+        if self.lockstep:
+            print(f"[BRIDGE] Lockstep aktiv: {self.decimation} Physikschritte pro "
+                  f"rt/lowcmd, lowstate inline danach (deterministische 50-Hz-Regelrate, "
+                  f"auf Echtzeit gedeckelt via SIM_REALTIME_FACTOR).", flush=True)
+
+        # Loco-Startup-Hold: im off-Modus Beine/Taille in einer Standpose halten,
+        # SOLANGE noch kein Loco-Controller auf rt/lowcmd kommandiert hat (legs is
+        # None). Ueberbrueckt das Startfenster (colcon build/Launch), in dem der
+        # Roboter bei freier Basis sonst umfaellt, bevor loco_sim verbunden ist.
+        # Sobald das erste rt/lowcmd ankommt (legs != None), uebernimmt der Regler.
+        self.startup_hold_active = (
+            str(getattr(config, "HOLD_BASE_MODE", "weld")).lower() == "off"
+            and bool(getattr(config, "LOCO_STARTUP_HOLD", True))
+        )
+        self.startup_hold_pose = list(getattr(config, "LOCO_STARTUP_HOLD_POSE", [0.0] * 15))
+        self.startup_hold_kp = float(getattr(config, "LOCO_STARTUP_HOLD_KP", 100.0))
+        self.startup_hold_kd = float(getattr(config, "LOCO_STARTUP_HOLD_KD", 2.0))
+        if self.startup_hold_active:
+            print("[BRIDGE] Loco-Startup-Hold aktiv: halte Beine/Taille in Standpose, "
+                  "bis der erste rt/lowcmd-Befehl kommt.", flush=True)
+
+        # Managed-Weld: im off-Modus die Basis (Weld) halten, bis loco_sim das
+        # Balancieren startet. loco_sim signalisiert seinen Zustand ueber
+        # rt/lowcmd motor_cmd[WEIGHT_IDX].q (Code 0=HOLD, 1=RUN, 2=DAMP). Beim
+        # Wechsel nach RUN -> Roboter in saubere Stand-Pose stellen + Weld loesen.
+        self.managed_weld = (
+            str(getattr(config, "HOLD_BASE_MODE", "weld")).lower() == "off"
+            and bool(getattr(config, "LOCO_MANAGED_WELD", True))
+        )
+        self.weld_id = mujoco.mj_name2id(
+            self.mj_model, mujoco.mjtObj.mjOBJ_EQUALITY, "hold_base_weld"
+        )
+        if self.weld_id < 0:
+            self.managed_weld = False
+        self._prev_loco_code = 0
+        self.stance_pose = list(getattr(config, "LOCO_STARTUP_HOLD_POSE", [0.0] * 15))
+        self.reset_z_run = float(getattr(config, "LOCO_RESET_PELVIS_Z", 0.78))
+        self.spawn_z = float(self.mj_model.qpos0[2])
+        if self.managed_weld:
+            print("[BRIDGE] Managed-Weld aktiv: Basis gehalten, bis loco_sim balanciert "
+                  "(RUN) -> dann Stand-Pose + Weld loesen.", flush=True)
 
         # Check sensor
         for i in range(self.dim_motor_sensor, self.mj_model.nsensor):
@@ -57,24 +159,51 @@ class UnitreeSdk2Bridge:
                 self.mj_model, mujoco._enums.mjtObj.mjOBJ_SENSOR, i
             )
             if name == "imu_quat":
-                self.have_imu_ = True
+                self.have_imu = True
             if name == "frame_pos":
-                self.have_frame_sensor_ = True
+                self.have_frame_sensor = True
+
+        # FUSS-KONTAKT + BASIS-GESCHWINDIGKEIT fuer den Loco-Controller (loco_sim).
+        # LowState_ (unitree_hg) hat keine foot_force/base_vel-Felder -> wir
+        # transportieren beides ueber das sonst ungenutzte reserve[4] (uint32):
+        #   reserve[0/1] = Fuss-Normalkraft links/rechts [N]
+        #   reserve[2/3] = Basis-vx/vy (Welt) als Fixpoint int((v+10)*1000), Bereich +-10 m/s
+        # loco_sim nutzt das fuer den Stepping-Stop (per Stepping abbremsen, dann im
+        # Doppelstuetz an den PD-Stand uebergeben) — der einzige robuste Weg, einen
+        # laufenden Biped aus BELIEBIGER Richtung anzuhalten (headless validiert).
+        # Reine Sim-Instrumentierung; am echten G1 liefern das die Fusskraftsensoren +
+        # der State-Estimator. Fehlen die Geoms (anderer Roboter), bleibt reserve 0 und
+        # loco_sim faellt automatisch auf den zeitbasierten Handoff zurueck.
+        self._foot_floor_gid = mujoco.mj_name2id(
+            self.mj_model, mujoco.mjtObj.mjOBJ_GEOM, "floor")
+        self._foot_lbody = mujoco.mj_name2id(
+            self.mj_model, mujoco.mjtObj.mjOBJ_BODY, "left_ankle_roll_link")
+        self._foot_rbody = mujoco.mj_name2id(
+            self.mj_model, mujoco.mjtObj.mjOBJ_BODY, "right_ankle_roll_link")
+        self._have_foot_sensing = (
+            self._foot_floor_gid >= 0 and self._foot_lbody >= 0 and self._foot_rbody >= 0)
+        self._contact_force6 = np.zeros(6, dtype=np.float64)
+        if self._have_foot_sensing:
+            print("[BRIDGE] Fuss-Kontakt + Basis-Geschwindigkeit -> reserve[] "
+                  "(fuer loco_sim Stepping-Stop).", flush=True)
 
         # Unitree sdk2 message
         self.low_state = LowState_default()
         self.low_state_puber = ChannelPublisher(TOPIC_LOWSTATE, LowState_)
         self.low_state_puber.Init()
         self.lowStateThread = RecurrentThread(
-            interval=self.dt, target=self.PublishLowState, name="sim_lowstate"
+            interval=self.state_dt, target=self.PublishLowState, name="sim_lowstate"
         )
-        self.lowStateThread.Start()
+        # Im Lockstep publiziert die Sim-Schleife den State inline (nach den
+        # decimation-Schritten) -> keinen freilaufenden 500-Hz-Publisher starten.
+        if not self.lockstep:
+            self.lowStateThread.Start()
 
         self.high_state = unitree_go_msg_dds__SportModeState_()
         self.high_state_puber = ChannelPublisher(TOPIC_HIGHSTATE, SportModeState_)
         self.high_state_puber.Init()
         self.HighStateThread = RecurrentThread(
-            interval=self.dt, target=self.PublishHighState, name="sim_highstate"
+            interval=self.state_dt, target=self.PublishHighState, name="sim_highstate"
         )
         self.HighStateThread.Start()
 
@@ -90,13 +219,24 @@ class UnitreeSdk2Bridge:
         )
         self.WirelessControllerThread.Start()
 
+        # rt/lowcmd -> Beine/Taille (Loco-Controller). rt/arm_sdk -> Arme
+        # (arm_controller). Getrennte Handler -> getrennte Puffer -> Merge in
+        # ApplyLowCmd, statt sich gegenseitig zu ueberschreiben.
         self.low_cmd_suber = ChannelSubscriber(TOPIC_LOWCMD, LowCmd_)
         self.low_cmd_suber.Init(self.LowCmdHandler, 10)
 
-        # G1Pilot arm_controller schreibt zu "rt/arm_sdk" (nicht rt/lowcmd!)
-        # MuJoCo subscribed beide Channels damit Arm-Befehle ankommen.
         self.arm_sdk_suber = ChannelSubscriber("rt/arm_sdk", LowCmd_)
-        self.arm_sdk_suber.Init(self.LowCmdHandler, 10)
+        self.arm_sdk_suber.Init(self.ArmSdkHandler, 10)
+
+        # Inspire-Hand: separater Kanal fuer die Finger (entkoppelt vom Body-Lowcmd/
+        # -Lowstate). cmd = Ziel-Winkel je Finger (motor_cmd[k].q), state = Ist-Winkel.
+        # Pragmatisch LowCmd_/LowState_ wiederverwendet (35 Slots >> 24 Finger).
+        if self.num_hand:
+            self.hand_cmd_suber = ChannelSubscriber("rt/inspire/cmd", LowCmd_)
+            self.hand_cmd_suber.Init(self.HandCmdHandler, 10)
+            self.hand_state = LowState_default()
+            self.hand_state_puber = ChannelPublisher("rt/inspire/state", LowState_)
+            self.hand_state_puber.Init()
 
         # joystick
         self.key_map = {
@@ -118,24 +258,158 @@ class UnitreeSdk2Bridge:
             "left": 15,
         }
 
+    # Arm-Indizes (15..28) -> aus rt/arm_sdk; alles andere (Beine 0..11, Taille
+    # 12..14) -> aus rt/lowcmd. Index 29 = arm_sdk-Weight (Blend Loco<->arm_sdk).
+    ARM_LO = 15
+    ARM_HI = 28
+    WEIGHT_IDX = 29
+
     def LowCmdHandler(self, msg: LowCmd_):
-        global _g_ctrl, _g_ctrl_ready
+        # rt/lowcmd (Loco-Controller: Beine/Taille, ggf. ganzer Koerper).
+        # Nur speichern; PD-Torque wird in ApplyLowCmd() pro Sim-Schritt gerechnet.
+        self.low_cmd_legs = msg
+        # Lockstep: signalisiert der Sim-Schleife "neues Kommando da -> jetzt
+        # decimation Schritte rechnen". Reihenfolge (erst Daten, dann Zaehler)
+        # stellt sicher, dass die Sim beim Aufwachen das fertige msg sieht.
+        self.cmd_seq += 1
+
+    def ArmSdkHandler(self, msg: LowCmd_):
+        # rt/arm_sdk (arm_controller: Arme + Weight @ index 29).
+        self.low_cmd_arm = msg
+
+    def HandCmdHandler(self, msg: LowCmd_):
+        # rt/inspire/cmd: Finger-Ziel-Winkel (motor_cmd[k].q, kanonische Reihenfolge).
+        self.hand_cmd = msg
+
+    @staticmethod
+    def _pd(mc, q, dq):
+        # Ein Motor-PD-Torque aus einem motor_cmd + aktuellen Sensoren.
+        return mc.tau + mc.kp * (mc.q - q) + mc.kd * (mc.dq - dq)
+
+    def _startup_pd(self, i, q, dq):
+        # Statischer PD-Hold eines Bein-/Taillen-Motors (0..14) auf die Startpose,
+        # solange noch kein Loco-Controller kommandiert.
+        target = self.startup_hold_pose[i] if i < len(self.startup_hold_pose) else 0.0
+        return self.startup_hold_kp * (target - q) + self.startup_hold_kd * (0.0 - dq)
+
+    def _set_weld(self, active):
+        # Weld-Constraint scharf/inaktiv schalten (Laufzeit-Flag eq_active + Startwert).
+        val = 1 if active else 0
+        if hasattr(self.mj_model, "eq_active0"):
+            self.mj_model.eq_active0[self.weld_id] = val
+        if hasattr(self.mj_data, "eq_active"):
+            self.mj_data.eq_active[self.weld_id] = val
+
+    def _reset_pose(self, legw, pelvis_z):
+        # Roboter in eine saubere Pose stellen: Pelvis aufrecht auf pelvis_z (x,y=0),
+        # Beine/Taille = legw (15 Werte), ARME = 0, Geschwindigkeit 0. Die Arme MUESSEN
+        # mit genullt werden: im gehaltenen HOLD haengen sie sonst limp durch (z.B.
+        # Ellbogen ~70 grad), und der Sprung auf 0 beim Policy-Start kippt den Roboter.
+        qp = self.mj_data.qpos
+        qp[0] = 0.0; qp[1] = 0.0; qp[2] = pelvis_z
+        qp[3] = 1.0; qp[4] = 0.0; qp[5] = 0.0; qp[6] = 0.0   # Quaternion aufrecht [w,x,y,z]
+        for i in range(self.num_motor):
+            qp[7 + i] = legw[i] if i < len(legw) else 0.0
+        self.mj_data.qvel[:] = 0.0
+        mujoco.mj_forward(self.mj_model, self.mj_data)
+
+    def _handle_managed_weld(self, legs):
+        # Zustands-Code von loco_sim aus rt/lowcmd lesen und Basis entsprechend
+        # halten/freigeben. 0=HOLD, 1=RUN (aufstehen+frei), 2=DAMP (frei).
+        code = int(round(float(legs.motor_cmd[self.WEIGHT_IDX].q))) if legs is not None else 0
+        if code == self._prev_loco_code:
+            return
+        if code == 1:       # Balancing START: in Stand-Pose stellen + Basis freigeben
+            self._reset_pose(self.stance_pose, self.reset_z_run)
+            self._set_weld(False)
+            print("[BRIDGE] Balancing START -> Stand-Pose gesetzt, Weld geloest.", flush=True)
+        elif code == 0:     # HOLD/Standby: in Spawn-Pose stellen + Basis halten
+            self._reset_pose([0.0] * 15, self.spawn_z)
+            self._set_weld(True)
+            print("[BRIDGE] HOLD -> Spawn-Pose, Weld an (Basis gehalten).", flush=True)
+        elif code == 2:     # DAMP/Emergency: Basis freigeben, kein Reset
+            self._set_weld(False)
+            print("[BRIDGE] DAMP -> Weld geloest (Basis frei).", flush=True)
+        self._prev_loco_code = code
+
+    def ApplyLowCmd(self):
+        # Pro Sim-Schritt: Merge der beiden Quellen pro Motor mit AKTUELLEN
+        # Sensorwerten -> Regelrate = Sim-Rate, unabhaengig von der Publish-Rate.
+        #   Beine/Taille (0..14): aus rt/lowcmd (Loco); solange noch kein Loco-
+        #                  Befehl kam -> Startup-Hold (nur off-Modus).
+        #   Arme (15..28): aus rt/arm_sdk, per Weight ueber den Loco-Befehl
+        #                  geblendet (w=1 -> voll arm_sdk; w=0 -> Loco/aus).
+        # Quelle ohne Befehl (kp=kd=tau=0 bzw. None) -> 0 Nm.
         if self.mj_data is None:
             return
-        if _g_ctrl is None:
-            _g_ctrl = _np.zeros(self.num_motor, dtype=_np.float64)
-        for i in range(self.num_motor):
-            _g_ctrl[i] = (
-                msg.motor_cmd[i].tau
-                + msg.motor_cmd[i].kp * (msg.motor_cmd[i].q - self.mj_data.sensordata[i])
-                + msg.motor_cmd[i].kd * (msg.motor_cmd[i].dq - self.mj_data.sensordata[i + self.num_motor])
-            )
-        _g_ctrl_ready = True
-        import threading as _t
-        print(f'[CMD] tid={_t.get_ident()} ctrl22={_g_ctrl[22]:.3f} mj_data_id={id(self.mj_data)} ctrl_ptr={self.mj_data.ctrl.ctypes.data}', flush=True)
-        # Direkt-Schreib-Test:
-        self.mj_data.ctrl[22] = _g_ctrl[22]
-        print(f'[CMD2] nach direkt-schreib: mj_data.ctrl[22]={self.mj_data.ctrl[22]:.3f}', flush=True)
+        # Finger-Position-Servos (Inspire-Hand): Ziel-Winkel aus rt/inspire/cmd, je
+        # Sim-Schritt gesetzt. Unabhaengig vom Body-Zustand -> Finger immer steuerbar.
+        # Ohne Hand (hand_act_ids leer) ist das ein No-op. ctrl=0 -> offene Hand.
+        if self.num_hand:
+            hc = self.hand_cmd
+            for k, aid in enumerate(self.hand_act_ids):
+                self.mj_data.ctrl[aid] = float(hc.motor_cmd[k].q) if hc is not None else 0.0
+        legs = self.low_cmd_legs
+        arm = self.low_cmd_arm
+        if self.managed_weld:
+            self._handle_managed_weld(legs)
+        use_startup = legs is None and self.startup_hold_active
+        if legs is None and arm is None and not use_startup:
+            return
+
+        w = 0.0
+        if arm is not None:
+            w = float(arm.motor_cmd[self.WEIGHT_IDX].q)
+            w = 0.0 if w < 0.0 else (1.0 if w > 1.0 else w)
+
+        n = self.num_motor
+        sd = self.mj_data.sensordata
+        for i in range(n):
+            q = sd[i]
+            dq = sd[i + n]
+            if self.ARM_LO <= i <= self.ARM_HI:
+                # Arme (15..28): NUR aus rt/arm_sdk (arm_controller). loco_sim fasst
+                # die Arme nicht an. Solange noch KEIN arm_sdk kam, im Startup-Hold
+                # halten (nicht limp), egal ob loco_sim schon laeuft -> keine
+                # haengenden/teleportierenden Arme.
+                if arm is not None:
+                    tau_a = self._pd(arm.motor_cmd[i], q, dq)
+                    tau_l = self._pd(legs.motor_cmd[i], q, dq) if legs is not None else 0.0
+                    self.mj_data.ctrl[i] = w * tau_a + (1.0 - w) * tau_l
+                elif self.startup_hold_active:
+                    self.mj_data.ctrl[i] = self._startup_pd(i, q, dq)
+                else:
+                    self.mj_data.ctrl[i] = 0.0
+            elif legs is not None:
+                self.mj_data.ctrl[i] = self._pd(legs.motor_cmd[i], q, dq)
+            elif use_startup:
+                # Startfenster: Beine/Taille auf der Startpose halten, bis der erste
+                # rt/lowcmd-Befehl kommt.
+                self.mj_data.ctrl[i] = self._startup_pd(i, q, dq)
+            else:
+                self.mj_data.ctrl[i] = 0.0
+
+    def _foot_forces_and_base_vel(self):
+        """Normalkraft links/rechts [N] aus den MuJoCo-Kontakten (Fuss<->Boden) +
+        Basis-Linear-Geschwindigkeit (Welt) aus qvel. Genau das, was am echten G1
+        die Fusskraftsensoren und der State-Estimator liefern."""
+        m, d = self.mj_model, self.mj_data
+        fl = fr = 0.0
+        for i in range(d.ncon):
+            c = d.contact[i]
+            if c.geom1 == self._foot_floor_gid:
+                other = m.geom_bodyid[c.geom2]
+            elif c.geom2 == self._foot_floor_gid:
+                other = m.geom_bodyid[c.geom1]
+            else:
+                continue
+            mujoco.mj_contactForce(m, d, i, self._contact_force6)
+            fn = abs(float(self._contact_force6[0]))   # Normalkomponente (Kontakt-Frame)
+            if other == self._foot_lbody:
+                fl += fn
+            elif other == self._foot_rbody:
+                fr += fn
+        return fl, fr, float(d.qvel[0]), float(d.qvel[1])
 
     def PublishLowState(self):
         if self.mj_data != None:
@@ -148,7 +422,17 @@ class UnitreeSdk2Bridge:
                     i + 2 * self.num_motor
                 ]
 
-            if self.have_frame_sensor_:
+            # Inspire-Hand: Finger-Ist-Winkel separat publizieren (rt/inspire/state).
+            # Direkt aus qpos (kein eigener Sensor -> Body-Sensor-Offsets unberuehrt).
+            if self.num_hand:
+                for k, qadr in enumerate(self.hand_joint_qadr):
+                    self.hand_state.motor_state[k].q = float(self.mj_data.qpos[qadr])
+                # Fingerspitzen-Kraefte [N] in motor_state[24..].q (Touch-Sensoren).
+                for i, adr in enumerate(self.touch_adr):
+                    self.hand_state.motor_state[24 + i].q = float(self.mj_data.sensordata[adr])
+                self.hand_state_puber.Write(self.hand_state)
+
+            if self.have_frame_sensor:
 
                 self.low_state.imu_state.quaternion[0] = self.mj_data.sensordata[
                     self.dim_motor_sensor + 0
@@ -182,6 +466,13 @@ class UnitreeSdk2Bridge:
                 self.low_state.imu_state.accelerometer[2] = self.mj_data.sensordata[
                     self.dim_motor_sensor + 9
                 ]
+
+            if self._have_foot_sensing:
+                fl, fr, vx, vy = self._foot_forces_and_base_vel()
+                self.low_state.reserve[0] = int(min(max(fl, 0.0), 4.0e6))
+                self.low_state.reserve[1] = int(min(max(fr, 0.0), 4.0e6))
+                self.low_state.reserve[2] = int(round((min(max(vx, -10.0), 10.0) + 10.0) * 1000.0))
+                self.low_state.reserve[3] = int(round((min(max(vy, -10.0), 10.0) + 10.0) * 1000.0))
 
             if self.joystick != None:
                 pygame.event.get()
@@ -236,6 +527,8 @@ class UnitreeSdk2Bridge:
                 self.low_state.wireless_remote[20:24] = packs[3]
 
             self.low_state_puber.Write(self.low_state)
+            # Lockstep: markiert "frischer State publiziert" fuer den Controller-Takt.
+            self.state_seq += 1
 
     def PublishHighState(self):
 

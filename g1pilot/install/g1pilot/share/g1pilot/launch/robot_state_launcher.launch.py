@@ -1,1 +1,0 @@
-/workspace/g1pilot/build/g1pilot/launch/robot_state_launcher.launch.py

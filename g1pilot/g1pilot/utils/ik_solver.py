@@ -47,6 +47,7 @@ class G1IKSolver:
                  max_ori_step_rad=0.35,
                  goal_filter_alpha=0.25,
                  orientation_mode="full",
+                 null_space_gain=0.15,
                  debug=False,
                  enable_collision_avoidance=True,
                  collision_distance_thresh=0.05,
@@ -65,6 +66,12 @@ class G1IKSolver:
         self.max_ori_step_rad = max_ori_step_rad
         self.goal_filter_alpha = goal_filter_alpha
         self.orientation_mode = orientation_mode
+        # Nullraum-Regularisierung: zieht die redundante (7. DOF) Armhaltung sanft zu
+        # einer Ruhe-Pose, OHNE die Hand-Pose zu aendern -> der Arm faellt nicht in
+        # den "gefalteten" (zum Koerper geklappten) IK-Zweig. 0 = aus.
+        self.null_space_gain = null_space_gain
+        self._rest_right = None
+        self._rest_left = None
         self.debug = debug
         self.world_frame = world_frame
         self.frame_left = frame_left
@@ -79,7 +86,7 @@ class G1IKSolver:
         try:
             if urdf_path is None or mesh_dir is None:
                 pkg_share = get_package_share_directory('g1pilot')
-                urdf_path = urdf_path or os.path.join(pkg_share, 'description_files', 'urdf', '29dof.urdf')
+                urdf_path = urdf_path or os.path.join(pkg_share, 'description_files', 'urdf', 'g1_29dof_inspire_ftp.urdf')
                 mesh_dir = mesh_dir or os.path.join(pkg_share, 'description_files', 'meshes')
 
             # Load kinematic + collision models
@@ -138,6 +145,42 @@ class G1IKSolver:
         self._fid_right = self.model.getFrameId(frame_right)
         self._fid_left  = self.model.getFrameId(frame_left)
 
+        # Maximale Armreichweite (Schulter -> Hand-TCP bei gestrecktem Arm, d.h.
+        # q=0). Ziele werden in solve() auf diese Kugel um die Schulter geklemmt:
+        # der rviz-Marker laesst sich beliebig weit ziehen, aber ein Ziel JENSEITS
+        # der Reichweite darf den Solver nicht in wilde Konfigurationen treiben
+        # (Ursache fuer "Arm faehrt hinter den Kopf und kommt nie zurueck").
+        self._fid_shoulder = {}
+        self._arm_reach = {}
+        for side, sh_link, fid in (("right", "right_shoulder_pitch_link", self._fid_right),
+                                   ("left",  "left_shoulder_pitch_link",  self._fid_left)):
+            try:
+                fid_sh = self.model.getFrameId(sh_link)
+                # Reichweite NICHT bei q=0 messen (dort ist der Arm wegen des
+                # TCP-Offsets nicht gestreckt), sondern ueber Ellbogen/Handgelenk
+                # samplen und das Maximum nehmen.
+                elb = self._name_to_q_index[f"{side}_elbow_joint"]
+                wrp = self._name_to_q_index[f"{side}_wrist_pitch_joint"]
+                reach = 0.0
+                q0 = pin.neutral(self.model)
+                for e in np.linspace(-1.0472, 2.0944, 24):
+                    for w in np.linspace(-1.6144, 1.6144, 9):
+                        q0[elb] = e
+                        q0[wrp] = w
+                        pin.forwardKinematics(self.model, self.data, q0)
+                        pin.updateFramePlacements(self.model, self.data)
+                        d = float(np.linalg.norm(
+                            self.data.oMf[fid].translation - self.data.oMf[fid_sh].translation))
+                        reach = max(reach, d)
+                self._fid_shoulder[side] = fid_sh
+                self._arm_reach[side] = reach
+            except Exception:
+                self._fid_shoulder[side] = None
+                self._arm_reach[side] = None
+        # Sicherheitsmarge: knapp INNERHALB der Kugel bleiben, sonst haengt der
+        # Arm dauerhaft in der gestreckten Singulaeritaet.
+        self.reach_margin = 0.97
+
         # State buffers
         self._goal_right = None
         self._goal_left  = None
@@ -182,20 +225,22 @@ class G1IKSolver:
         collision_detected = False
 
         for res in self.collision_data.collisionResults:
-            print(res, flush=True)
             if not res.isCollision():
                 continue
 
             d = res.distance
-            if d <= 1e-1 or d > self.collision_distance_thresh:
-                print(f"Skipping collision with distance {d:.4f} m", flush=True)
+            # Ignore degenerate near-zero distances and pairs beyond the threshold.
+            # (Frueher 1e-1: zusammen mit thresh=0.05 war das akzeptierte Band leer ->
+            # Abstossung nie aktiv. 1e-4 laesst echte Naeherungen wieder durch.)
+            if d <= 1e-4 or d > self.collision_distance_thresh:
+                continue
 
             collision_detected = True
-            print("\nCollision detected:", flush=True)
-            print(f"  → distance: {d:.4f} m", flush=True)
-            print(f"  → normal: {np.array(res.normal)}", flush=True)
-            print(f"  → geom A: {self.collision_model.geometryObjects[res.firstGeomIdx].name}", flush=True)
-            print(f"  → geom B: {self.collision_model.geometryObjects[res.secondGeomIdx].name}", flush=True)
+            if self.debug:
+                print("\nCollision detected:", flush=True)
+                print(f"  → distance: {d:.4f} m", flush=True)
+                print(f"  → geom A: {self.collision_model.geometryObjects[res.firstGeomIdx].name}", flush=True)
+                print(f"  → geom B: {self.collision_model.geometryObjects[res.secondGeomIdx].name}", flush=True)
 
             weight = math.exp(-4.0 * d / self.collision_distance_thresh)
             n = np.array(res.normal)
@@ -215,10 +260,11 @@ class G1IKSolver:
             dq_repulse += dq_local
             total_weight += 1.0
 
-            print(f"  → joint: {joint_name}, dq_local norm: {np.linalg.norm(dq_local):.5f}")
+            if self.debug:
+                print(f"  → joint: {joint_name}, dq_local norm: {np.linalg.norm(dq_local):.5f}")
 
-        if collision_detected:
-            print(f"✅ Total {int(total_weight)} collision(s) considered for repulsion.\n")
+        if collision_detected and self.debug:
+            print(f"Total {int(total_weight)} collision(s) considered for repulsion.")
 
         if total_weight > 0:
             dq_repulse /= total_weight
@@ -260,12 +306,28 @@ class G1IKSolver:
         ])
 
 
+    def set_rest_posture(self, side, q7):
+        """Ruhe-Pose (7 DOF) fuer die Nullraum-Regularisierung setzen. Der redundante
+        Freiheitsgrad wird sanft hierhin gezogen, ohne die Hand-Pose zu beeinflussen."""
+        arr = np.array(q7, dtype=float).copy()
+        if side == "right":
+            self._rest_right = arr
+        elif side == "left":
+            self._rest_left = arr
+
     def set_goal(self, side, T_goal: SE3):
         """Set a new SE3 target for the given side ('left' or 'right')."""
         if side == "right":
             self._goal_right = self._lowpass_goal(self._goal_right, T_goal)
         elif side == "left":
             self._goal_left = self._lowpass_goal(self._goal_left, T_goal)
+
+    def clear_goals(self):
+        """Beide IK-Ziele verwerfen (z.B. beim Homing). Wurde vom arm_controller
+        schon immer via hasattr aufgerufen, existierte aber nicht -> alte Ziele
+        blieben ueber das Homing hinaus aktiv."""
+        self._goal_right = None
+        self._goal_left = None
 
     def get_joint_targets(self, current_all: np.ndarray, q_init: np.ndarray = None):
         """
@@ -283,6 +345,25 @@ class G1IKSolver:
                 out['right'] = q_right
         return out
 
+    def _clamp_goal_to_reach(self, side, goal, q):
+        """Ziel-Translation auf die Reichweiten-Kugel um die Schulter klemmen.
+        Unerreichbare Ziele (Marker zu weit gezogen) wuerden den DLS-Solver sonst
+        durch die gestreckte Singulaeritaet in den gefalteten/ueber-Kopf-Zweig
+        druecken. Geklemmt zeigt der Arm stattdessen sauber Richtung Ziel."""
+        fid_sh = self._fid_shoulder.get(side)
+        reach = self._arm_reach.get(side)
+        if fid_sh is None or reach is None:
+            return goal
+        pin.forwardKinematics(self.model, self.data, q)
+        pin.updateFramePlacements(self.model, self.data)
+        p_sh = self.data.oMf[fid_sh].translation
+        v = goal.translation - p_sh
+        d = float(np.linalg.norm(v))
+        r_max = self.reach_margin * reach
+        if d <= r_max or d < 1e-9:
+            return goal
+        return SE3(goal.rotation.copy(), p_sh + v * (r_max / d))
+
     def solve(self, side: str, q_init: np.ndarray, current_all: np.ndarray) -> np.ndarray:
         """Compute 7-DOF IK solution for one arm (collision-aware)."""
         fid = self._fid_right if side == 'right' else self._fid_left
@@ -297,6 +378,18 @@ class G1IKSolver:
             if ros_name in self._name_to_q_index:
                 q[self._name_to_q_index[ros_name]] = float(current_all[jid_idx])
 
+        # Unerreichbare Ziele auf die Reichweiten-Kugel klemmen (s.o.).
+        goal = self._clamp_goal_to_reach(side, goal, q)
+
+        # Startfehler merken: falls die Iteration das Ziel VERSCHLECHTERT
+        # (Divergenz, z.B. nahe Singulaeritaet), geben wir unten die
+        # Ausgangskonfiguration zurueck statt einer wilden Pose.
+        q_seed_arm = np.array(
+            [q[self._name_to_q_index[self._ros_joint_names[i]]] for i in arm_ids])
+        pin.forwardKinematics(self.model, self.data, q)
+        pin.updateFramePlacements(self.model, self.data)
+        err0 = np.linalg.norm(pin.log(self.data.oMf[fid].inverse() * goal).vector)
+
         # Iterative IK loop
         for _ in range(self.max_iter):
             pin.forwardKinematics(self.model, self.data, q)
@@ -305,41 +398,97 @@ class G1IKSolver:
             R_des = self._limit_ori_step(M_cur.rotation, goal.rotation)
             T_des = SE3(R_des, goal.translation)
 
-            # Frame Jacobian
-            J6 = pin.computeFrameJacobian(self.model, self.data, q, fid, pin.LOCAL_WORLD_ALIGNED)
+            # Frame Jacobian. WICHTIG: pin.LOCAL, weil der Pose-Fehler unten ein
+            # LOCAL-Twist ist (pin.log der Relativtransformation). Frueher stand
+            # hier LOCAL_WORLD_ALIGNED -> Jacobian und Fehler waren um die
+            # aktuelle Handrotation gegeneinander verdreht -> der Solver schob
+            # den Arm systematisch in die falsche Richtung (nach oben/hinter den
+            # Kopf statt zum Marker) und blieb dort haengen.
+            J6 = pin.computeFrameJacobian(self.model, self.data, q, fid, pin.LOCAL)
             J_eff = J6[:, [self._name_to_v_index[self._ros_joint_names[i]] for i in arm_ids]]
 
-            # Pose error
+            # Pose error (LOCAL-Twist, konsistent zur LOCAL-Jacobian)
             err6 = pin.log(M_cur.inverse() * T_des).vector
-            err6[:3] *= self.pos_gain
-            err6[3:] *= self.ori_gain
 
             if np.linalg.norm(err6) < self.tol:
                 break
 
-            # Adaptive damping
-            lam = self.lambda_base
-            if self.adaptive_damping:
-                svals = np.linalg.svd(J_eff, compute_uv=False)
-                sigma_min = np.min(svals) if len(svals) > 0 else 0.0
-                if sigma_min < self.sigma_min_thresh:
-                    frac = clamp((self.sigma_min_thresh - sigma_min) / self.sigma_min_thresh, 0, 1)
-                    lam = self.lambda_base + frac * (self.lambda_max - self.lambda_base)
+            # Trust-Region: Fehler pro Iteration begrenzen, damit der DLS-Schritt
+            # im linearen Bereich bleibt. Bei weit gezogenem Marker (0.3+ m) wuerde
+            # J^+ * err sonst riesige dq liefern, die das Clipping unten richtungs-
+            # verfaelscht -> der Arm laeuft schraeg weg statt zum Ziel.
+            p_norm = float(np.linalg.norm(err6[:3]))
+            if p_norm > 0.10:
+                err6[:3] *= 0.10 / p_norm
+            err6[:3] *= self.pos_gain
+            err6[3:] *= self.ori_gain
 
-            # Damped least squares
-            JJt = J_eff @ J_eff.T
-            dq_red = J_eff.T @ np.linalg.solve(JJt + lam * np.eye(J_eff.shape[0]), err6)
+            def _damping(J):
+                lam = self.lambda_base
+                if self.adaptive_damping:
+                    svals = np.linalg.svd(J, compute_uv=False)
+                    sigma_min = float(np.min(svals)) if len(svals) > 0 else 0.0
+                    if sigma_min < self.sigma_min_thresh:
+                        frac = clamp((self.sigma_min_thresh - sigma_min) / self.sigma_min_thresh, 0, 1)
+                        lam = self.lambda_base + frac * (self.lambda_max - self.lambda_base)
+                return lam
+
+            def _dpinv(J):
+                lam = _damping(J)
+                return J.T @ np.linalg.inv(J @ J.T + lam * np.eye(J.shape[0]))
+
+            # TASK-PRIORITAET statt gemischtem 6D-DLS: Position ist Primaeraufgabe,
+            # Orientierung laeuft im Nullraum der Position. An der Reichweiten-
+            # grenze (Marker weit gezogen) opferte der gemischte Ansatz sonst
+            # die POSITION fuer eine perfekte Orientierung -> Hand blieb weit vor
+            # dem Marker stehen / verrenkte sich. So faehrt die Hand immer so nah
+            # wie moeglich ans Ziel und nutzt den Rest fuer die Orientierung.
+            J_p, J_o = J_eff[:3, :], J_eff[3:, :]
+            e_p, e_o = err6[:3], err6[3:]
+            Jp_pinv = _dpinv(J_p)
+            dq_red = Jp_pinv @ e_p
+            N_p = np.eye(len(arm_ids)) - Jp_pinv @ J_p
+            J_on = J_o @ N_p
+            dq_red = dq_red + _dpinv(J_on) @ (e_o - J_o @ dq_red)
+
+            # Nullraum-Haltungs-Regularisierung: zieht die redundante Armhaltung zur
+            # Ruhe-Pose, PROJIZIERT in den Nullraum der Hand-Aufgabe (N = I - J^+ J) ->
+            # die Hand-Pose bleibt unveraendert, aber der Arm faellt nicht in den zum
+            # Koerper gefalteten Zweig (Ursache fuer das "faehrt in falsche Richtung").
+            rest = self._rest_right if side == 'right' else self._rest_left
+            if rest is not None and self.null_space_gain > 0.0:
+                q_arm = np.array(
+                    [q[self._name_to_q_index[self._ros_joint_names[i]]] for i in arm_ids])
+                J_pinv = _dpinv(J_eff)
+                N = np.eye(len(arm_ids)) - J_pinv @ J_eff
+                dq_red += N @ (self.null_space_gain * (rest - q_arm))
 
             # Collision avoidance (joint-space correction)
             if getattr(self, "enable_collision_avoidance", False):
                 dq_repulse = self._collision_repulsion(q)
                 dq_red += dq_repulse[[self._name_to_v_index[self._ros_joint_names[i]] for i in arm_ids]]
 
-            # Integrate step
+            # Integrate step. Schritt RICHTUNGSERHALTEND skalieren (statt per
+            # Gelenk zu clippen): per-Gelenk-Clipping verdreht die Schrittrichtung,
+            # sobald mehrere Gelenke im Limit sind -> der Arm driftet seitlich weg.
+            max_abs = float(np.max(np.abs(dq_red))) if len(dq_red) else 0.0
+            if max_abs > self.max_dq_step:
+                dq_red = dq_red * (self.max_dq_step / max_abs)
             for i, arm_i in enumerate(arm_ids):
-                step = np.clip(dq_red[i], -self.max_dq_step, self.max_dq_step)
                 qi = self._name_to_q_index[self._ros_joint_names[arm_i]]
-                q[qi] = np.clip(q[qi] + step, *JOINT_LIMITS_RAD[arm_i])
+                q[qi] = np.clip(q[qi] + dq_red[i], *JOINT_LIMITS_RAD[arm_i])
+
+        # Divergenz-Schutz: hat die Iteration den Pose-Fehler VERGROESSERT
+        # (Singulaeritaet/Grenzlage), lieber die Ausgangskonfiguration halten,
+        # statt eine entgleiste Loesung zu kommandieren.
+        pin.forwardKinematics(self.model, self.data, q)
+        pin.updateFramePlacements(self.model, self.data)
+        err1 = np.linalg.norm(pin.log(self.data.oMf[fid].inverse() * goal).vector)
+        if err1 > err0 + 1e-6:
+            if self.debug:
+                print(f"[IK] {side}: divergiert (err {err0:.4f} -> {err1:.4f}), halte Pose.",
+                      flush=True)
+            return q_seed_arm
 
         # Return arm subset (7 joints)
         return np.array([float(q[self._name_to_q_index[self._ros_joint_names[i]]]) for i in arm_ids], dtype=float)

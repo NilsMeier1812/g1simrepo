@@ -76,7 +76,7 @@ def generate_launch_description():
         name='MOLA_TF_MAP', value=LaunchConfiguration('mola_state_estimator_reference_frame'))
     # ~~~~~~~~~~~~
     mola_lo_pipeline_arg = DeclareLaunchArgument(
-        "mola_lo_pipeline", default_value="/ros2_ws/src/g1pilot/pipelines/lidar3d.yaml", description="The LiDAR-Odometry pipeline configuration YAML file defining the LO system. Absolute path, or relative to 'mola-cli-launchs/lidar_odometry_ros2.yaml'. Default is the 'lidar3d-default.yaml' system described in the IJRR 2025 paper.")
+        "mola_lo_pipeline", default_value=os.path.join(get_package_share_directory("g1pilot"), "pipelines", "lidar3d.yaml"), description="The LiDAR-Odometry pipeline configuration YAML file defining the LO system. Absolute path, or relative to 'mola-cli-launchs/lidar_odometry_ros2.yaml'. Default is the 'lidar3d-default.yaml' system described in the IJRR 2025 paper.")
     mola_lo_pipeline_arg_env_var = SetEnvironmentVariable(
         name='MOLA_ODOMETRY_PIPELINE_YAML', value=LaunchConfiguration('mola_lo_pipeline'))
     # ~~~~~~~~~~~~

@@ -13,6 +13,11 @@ def generate_launch_description():
     ik_alpha = LaunchConfiguration("ik_alpha")
     ik_max_dq_step = LaunchConfiguration("ik_max_dq_step")
     arm_velocity_limit = LaunchConfiguration("arm_velocity_limit")
+    max_vx = LaunchConfiguration("max_vx")
+    max_vy = LaunchConfiguration("max_vy")
+    max_vyaw = LaunchConfiguration("max_vyaw")
+    cmd_vel_timeout = LaunchConfiguration("cmd_vel_timeout")
+    damp_on_init = LaunchConfiguration("damp_on_init")
 
     return LaunchDescription([
         DeclareLaunchArgument("interface", default_value="eth0"),
@@ -23,6 +28,12 @@ def generate_launch_description():
         DeclareLaunchArgument("ik_alpha", default_value="0.2"),
         DeclareLaunchArgument("ik_max_dq_step", default_value="0.05"),
         DeclareLaunchArgument("arm_velocity_limit", default_value="2.0"),
+        # Streamdeck-/PS4-Walk: Geschwindigkeits-Limits + Deadman-Timeout
+        DeclareLaunchArgument("max_vx", default_value="0.4"),
+        DeclareLaunchArgument("max_vy", default_value="0.3"),
+        DeclareLaunchArgument("max_vyaw", default_value="0.4"),
+        DeclareLaunchArgument("cmd_vel_timeout", default_value="0.5"),
+        DeclareLaunchArgument("damp_on_init", default_value="false"),
 
         Node(
             package='g1pilot',
@@ -37,6 +48,11 @@ def generate_launch_description():
                 'ik_alpha': ParameterValue(ik_alpha, value_type=float),
                 'ik_max_dq_step': ParameterValue(ik_max_dq_step, value_type=float),
                 'arm_velocity_limit': ParameterValue(arm_velocity_limit, value_type=float),
+                'max_vx': ParameterValue(max_vx, value_type=float),
+                'max_vy': ParameterValue(max_vy, value_type=float),
+                'max_vyaw': ParameterValue(max_vyaw, value_type=float),
+                'cmd_vel_timeout': ParameterValue(cmd_vel_timeout, value_type=float),
+                'damp_on_init': ParameterValue(damp_on_init, value_type=bool),
             }],
             output='screen'
         ),

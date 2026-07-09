@@ -1,0 +1,96 @@
+# Inspire RH56DFTP-2 Hand-Bridge (Sim UND echte Haende)
+
+Bringt den urspruenglich eigenstaendigen **ftp_hand_controller** in das
+g1pilot-Setup — EIN Node, der je nach Backend mit der **Simulation** ODER per
+**Modbus TCP** mit den **echten Haenden** spricht. Die beiden HTML-GUIs
+bleiben in allen Modi identisch.
+
+```
+  hand_controller_viewer.html ──ws://…:8766──┐
+                                             ├─► inspire_hand (ROS2-Node) ──► /joint_states ──► RViz
+  inspire_hand_viewer.html    ──ws://…:8765──┘            │
+                                                          └─► Backend (austauschbar)
+```
+
+## Die drei Backend-Stufen
+
+| Stufe | Backend | Was passiert | Status |
+|-------|---------|--------------|--------|
+| **1** | `SimJointStateBackend` | Finger-Gelenke folgen der Steuerung in **RViz** (`/joint_states`). Kraft/Taktil = **0**. | ✅ |
+| **2** | `MujocoContactBackend` | Finger als echte **MuJoCo-Aktuatoren** (Greifen/Kollision) via DDS `rt/inspire/cmd\|state`; Fingerspitzen-Kraefte aus MuJoCo-**Touch-Sensoren**. | ✅ Sim-Default |
+| **3** | `InspireModbusBackend` | **ECHTE Haende** via Modbus TCP (eine IP je Hand im Roboter-LAN; Register-Map aus `reference/ftp_hand_controller/`). Liest Ist-Winkel, Kraefte (Gramm) und **alle 17 Taktil-Zonen**. | ✅ Real-Default |
+
+Backend-Wahl: Parameter `backend` = `sim` / `mujoco` / `modbus`. Fuer
+`modbus` zusaetzlich `left_host`/`right_host` (Default `192.168.123.210`/
+`.211`) und `modbus_port` (6000); leere IP = Seite nicht ansteuern.
+`bringup_real.launch.py` verdrahtet das ueber `G1_HAND_LEFT_HOST`/
+`G1_HAND_RIGHT_HOST`/`G1_HAND_PORT` (start.sh-Real-Zweig fragt die IPs ab).
+
+## Dateien
+
+| Datei | Zweck |
+|-------|-------|
+| `joint_map.py` | **Single Source of Truth** fuer das Mapping 6 DOF (0..1000) → 24 URDF-Finger-Gelenke (rad), an URDF-Limits geklemmt. |
+| `tactile.py`   | Taktil-Zonenlayout inkl. echter Modbus-Register-Adressen (3000–5123). |
+| `model.py`     | `HandModel`: geteilter Soll-/Ist-Zustand einer Hand (threadsicher). |
+| `backends.py`  | Die drei Backends (Stufe 1–3, s.o.). |
+| `modbus_client.py` | Raw-Socket-Modbus-TCP-Client (stdlib-only, aus der Referenz uebernommen). |
+| `bridge.py`    | ROS2-Node `inspire_hand`: beide WebSocket-Server + HTTP-GUI-Server + `/joint_states`. |
+| `web/*.html`   | Die GUIs (Controller + Viewer), in allen Modi identisch. |
+
+Test ohne Hardware: `g1pilot/test/test_inspire_modbus_backend.py` faehrt das
+Modbus-Backend gegen einen In-Process-Fake-Server (FC03/FC16).
+
+## Mapping-Konvention
+
+Inspire-Winkel **1000 = offen** (Gelenk 0 rad), **0 = geschlossen**
+(`CLOSED_RAD`), linear dazwischen. DOF-Reihenfolge wie in den GUIs:
+`[Kleiner, Ring, Mittel, Zeige, Daumen-Beugung, Daumen-Rotation]`.
+
+## Start
+
+**Mit dem Sim-Stack** (Default an, via `bringup_sim.launch.py` / `start.sh`):
+
+```bash
+USE_HANDS=true ./start.sh --yes      # Hand-Bridge mit hochfahren (Default)
+USE_HANDS=false ./start.sh --yes     # ohne; robot_state zeigt Finger als Default 0
+```
+
+Wenn die Bridge laeuft, gibt `robot_state` die Finger ab
+(`publish_hand_joints:=false`) — sonst kollidieren beide `/joint_states`-Quellen.
+Das ist in `bringup_sim.launch.py` schon verdrahtet.
+
+**Eigenstaendig** (z.B. zum Testen, im laufenden g1pilot-Container):
+
+```bash
+ros2 launch g1pilot hand_launcher.launch.py
+# manuell dann robot_state mit publish_hand_joints:=false starten!
+```
+
+**GUIs**: Die Bridge serviert beide GUIs selbst per **HTTP auf Port 8767**:
+
+```
+http://localhost:8767/hand_controller_viewer.html?autoconnect=1
+http://localhost:8767/inspire_hand_viewer.html?autoconnect=1
+```
+
+Im `start.sh`-Menue kann man sie **automatisch oeffnen** lassen
+(`OPEN_GUIS=true`). Da `start.sh` auf dem Host laeuft, oeffnet es nach dem
+Hochfahren beide Seiten im Standard-Browser; es wartet dabei, bis die Bridge
+auf `:8766` lauscht. Mit `?autoconnect=1` verbinden sich die Seiten selbst
+und versuchen es alle 2 s erneut, bis die Bridge da ist (robust gegen
+Reihenfolge/Neustart). file://-Oeffnen der Dateien aus `web/` geht weiterhin,
+aber der `?autoconnect=1`-Query-String kommt dabei je nach Opener (xdg-open,
+WSL) nicht an — darum der HTTP-Weg.
+
+Die WebSockets bleiben unveraendert: `ws://localhost:8766` (Controller) bzw.
+`ws://localhost:8765` (Viewer). Der Container nutzt `network_mode: host`,
+daher ist `localhost` korrekt.
+
+## Hinweise zur Sim (Stufe 1)
+
+- **Kraft/Taktil sind 0** — es gibt keine Sensorik in der Sim. Der Viewer laeuft
+  trotzdem (zeigt Nullen). Echte Werte kommen erst mit Stufe 2.
+- Die Ist-Winkel werden geschwindigkeitsbegrenzt nachgefuehrt
+  (`speed`-Slider wirkt), damit die GUI eine plausible Bewegung zeigt.
+- `enabled` (Hauptschalter) gilt wie beim Original: ohne ihn bewegt sich nichts.

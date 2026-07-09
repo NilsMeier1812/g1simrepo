@@ -2,20 +2,24 @@ from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.parameter_descriptions import ParameterValue
 import os
 
 package_name = "g1pilot"
-urdf_file_name = "29dof.urdf"
+urdf_file_name = "g1_29dof_inspire_ftp.urdf"
 rviz_config_file_name = "29dof.rviz"
 
 def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
     use_robot = LaunchConfiguration("use_robot")
     publish_joint_states = LaunchConfiguration("publish_joint_states")
+    publish_hand_joints = LaunchConfiguration("publish_hand_joints")
     interface = LaunchConfiguration("interface")
     sim_rate_hz = LaunchConfiguration("sim_rate_hz")
+    use_rviz = LaunchConfiguration("use_rviz")
+    publish_hand_joints = LaunchConfiguration("publish_hand_joints")
 
     urdf = os.path.join(
         get_package_share_directory(package_name), "description_files/urdf", urdf_file_name
@@ -30,12 +34,24 @@ def generate_launch_description():
                               description="Connect to real robot if true"),
         DeclareLaunchArgument("publish_joint_states", default_value="true",
                               description="Publish joint_states from node"),
+        DeclareLaunchArgument("publish_hand_joints", default_value="true",
+                              description="Finger-Gelenke als Default 0.0 mitpublizieren. "
+                                          "Auf false setzen, wenn die Inspire-FTP-Bridge "
+                                          "(inspire_hand) die Finger uebernimmt."),
         DeclareLaunchArgument("interface", default_value="eth0",
                               description="Network interface for Unitree SDK"),
         DeclareLaunchArgument("sim_rate_hz", default_value="50.0",
                               description="Simulation rate when use_robot=false"),
+        DeclareLaunchArgument("use_rviz", default_value="true",
+                              description="Launch RViz2. Im Loco-Sim aus (CPU sparen: "
+                                          "rviz2 frisst Kerne und laesst die 50-Hz-"
+                                          "Regelschleife einbrechen)."),
         DeclareLaunchArgument("arm_controlled", default_value="both",
                                 description="Which arm to control: 'left', 'right', or 'both'"),
+        DeclareLaunchArgument("publish_hand_joints", default_value="true",
+                              description="Finger-Gelenke als /joint_states-Default (0) "
+                                          "mitpublizieren. Bei laufendem inspire_hand-Node "
+                                          "auf false setzen (sonst doppelte Finger-Quelle)."),
 
         Node(
             package='g1pilot',
@@ -46,6 +62,7 @@ def generate_launch_description():
                 'use_robot': ParameterValue(use_robot, value_type=bool),
                 'sim_rate_hz': ParameterValue(sim_rate_hz, value_type=float),
                 'publish_joint_states': ParameterValue(publish_joint_states, value_type=bool),
+                'publish_hand_joints': ParameterValue(publish_hand_joints, value_type=bool),
             }],
             output='screen'
         ),
@@ -110,9 +127,14 @@ def generate_launch_description():
             package="rviz2",
             executable="rviz2",
             name="rviz2",
+            condition=IfCondition(use_rviz),
             arguments=[
                 "-d",
-                os.path.join("/ros2_ws/src/g1pilot/config", rviz_config_file_name)
+                os.path.join(
+                    get_package_share_directory(package_name),
+                    "config",
+                    rviz_config_file_name,
+                ),
             ],
         ),
     ])

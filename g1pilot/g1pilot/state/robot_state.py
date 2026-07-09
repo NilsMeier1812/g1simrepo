@@ -12,8 +12,10 @@ from tf2_ros import TransformBroadcaster
 
 from astroviz_interfaces.msg import MotorState, MotorStateList
 
-from unitree_sdk2py.core.channel import ChannelSubscriber, ChannelFactoryInitialize
+from unitree_sdk2py.core.channel import ChannelSubscriber
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_
+
+from g1pilot.utils.common import init_dds
 
 
 class G1JointIndex:
@@ -88,10 +90,18 @@ class RobotState(Node):
         self.declare_parameter('use_robot', True)
         self.declare_parameter('interface', 'eth0')
         self.declare_parameter('publish_joint_states', True)
+        # Inspire-FTP-Hand: die 24 Finger-Gelenke sind in der URDF beweglich, kommen
+        # aber NICHT in rt/lowstate (nur 29 Koerper-Motoren). Ohne Gelenkwert kann der
+        # robot_state_publisher ihre TF nicht rechnen -> RViz zeigt die Finger nicht.
+        # Wir publizieren sie hier als Default (0.0), damit sie sichtbar sind. Sobald
+        # ein echter Hand-Controller die Finger auf /joint_states sendet, diesen Schalter
+        # auf false setzen (sonst ueberschreiben sich beide Quellen gegenseitig).
+        self.declare_parameter('publish_hand_joints', True)
 
         self.use_robot = bool(self.get_parameter('use_robot').value)
         interface = self.get_parameter('interface').get_parameter_value().string_value
         self.publish_joint_states = bool(self.get_parameter('publish_joint_states').value)
+        self.publish_hand_joints = bool(self.get_parameter('publish_hand_joints').value)
         self.ns = '/g1pilot'
 
         qos_profile = QoSProfile(depth=10)
@@ -102,15 +112,23 @@ class RobotState(Node):
 
         self.joint_indices = sorted(_joint_index_to_ros_name.keys())
         self.joint_names = [_joint_index_to_ros_name[i] for i in self.joint_indices]
+
+        # Bewegliche Finger-Gelenke der Inspire-FTP-Haende (Reihenfolge = URDF). Werden
+        # als Default 0.0 mitpubliziert, damit RViz die Finger zeigt; ein spaeterer
+        # Hand-Controller liefert die echten Werte (dann publish_hand_joints=false).
+        self.hand_joint_names = [
+            f"{s}_{f}_{i}_joint"
+            for s in ("left", "right")
+            for f, n in (("thumb", 4), ("index", 2), ("middle", 2), ("ring", 2), ("little", 2))
+            for i in range(1, n + 1)
+        ] if self.publish_hand_joints else []
+        self.hand_joint_zeros = [0.0] * len(self.hand_joint_names)
+
         self.joint_state_msg = JointState()
-        self.joint_state_msg.name = self.joint_names
+        self.joint_state_msg.name = self.joint_names + self.hand_joint_names
 
         if self.use_robot:
-            import os
-            sim_mode = os.getenv('G1_SIM_MODE', 'false').lower() == 'true'
-            domain_id = 1 if sim_mode else 0
-            dds_iface = 'lo' if sim_mode else interface
-            ChannelFactoryInitialize(domain_id, dds_iface)
+            init_dds(interface, self.get_logger())
             self.subscriber_low_state = ChannelSubscriber("rt/lowstate", LowState_)
             self.subscriber_low_state.Init(self.callback_lowstate)
         else:
@@ -165,7 +183,7 @@ class RobotState(Node):
 
         if self.publish_joint_states:
             self.joint_state_msg.header.stamp = now
-            self.joint_state_msg.position = positions
+            self.joint_state_msg.position = positions + self.hand_joint_zeros
             self.joint_pub.publish(self.joint_state_msg)
 
     def _sim_tick(self):
@@ -179,7 +197,7 @@ class RobotState(Node):
         if self.publish_joint_states:
             js = JointState()
             js.header.stamp = now
-            js.name = self.joint_names
+            js.name = self.joint_names + self.hand_joint_names
             js.position = [0.0] * len(js.name)
             self.joint_pub.publish(js)
 

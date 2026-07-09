@@ -78,7 +78,7 @@ To run the docker image in the robot with the following command:
 
 - **robot_state**: Publishes the state of the robot, including joint positions, velocities, and efforts and custom message to visualize the temperature and voltage of each motor.
 - **interactive_marker**: Provides an interactive marker in RViz to control the end-effector position and orientation in Cartesian space.
-- **dx3_controller**: Node to control the DEX3 Unitree hand, allowing to open and close the hand using ROS2 commands.
+- **inspire_hand**: Inspire RH56DFTP-2 hand bridge for the MuJoCo sim. Serves the HTML control/force GUIs over WebSocket (`:8766` / `:8765`), drives the URDF finger joints via `/joint_states` (RViz), and (backend `mujoco`) exchanges `rt/inspire/cmd|state` with the sim for real finger angles + touch forces. Open/close is also reachable via `/g1pilot/hand_action/{left,right}` (Streamdeck / loco_client). See [`g1pilot/manipulation/inspire_ftp/README.md`](g1pilot/manipulation/inspire_ftp/README.md). Toggle with `G1_INSPIRE_HANDS` in `start.sh`.
 - **joystick**: Node to teleoperate the robot using a joystick, mapping joystick inputs to robot commands.
 - **joy_mux**: Multiplexer for joystick inputs, allowing to switch between different control modes, specifcally made to provide autonomous navigation and teleoperation using the same joystick.
 - **loco_client**: Client node to communicate with the Unitree loco controller, providing high-level commands for walking and balancing and low-level commands for joint control and cartesian control.
@@ -111,6 +111,77 @@ You can launch the bringup robot with the following command:
 ```bash
 ros2 launch g1pilot bringup_launcher.launch.py
 ```
+
+### Simulation (MuJoCo) vs. real robot
+
+The sim/real switch is driven by a single environment variable, `G1_SIM_MODE`
+(see `g1pilot/utils/common.py`):
+
+| Mode | `G1_SIM_MODE` | Unitree DDS domain | `ROS_DOMAIN_ID` | Interface | Entry point |
+|------|---------------|--------------------|-----------------|-----------|-------------|
+| Simulation | `true`  | 1 | 0 | `lo` | `bringup_sim.launch.py` |
+| Real robot | `false` | 0 | 1 | `${ROBOT_INTERFACE}` | `bringup_real.launch.py` |
+| Real robot (full nav stack) | `false` | 0 | 1 | `${ROBOT_INTERFACE}` | `bringup_launcher.launch.py` |
+
+> The Unitree DDS domain (used by `unitree_sdk2py`) and `ROS_DOMAIN_ID` (the
+> rmw/ROS graph) must be **different** values — using the same number makes
+> nodes that use both ROS and the Unitree SDK crash with a CycloneDDS
+> "create domain error". The real G1 transmits on Unitree domain 0 (fixed by
+> firmware), so the pairing is mirrored: sim = ROS 0 / Unitree 1, real =
+> ROS 1 / Unitree 0.
+
+Easiest entry point — the interactive start menu. Its **first question is
+SIM vs. REAL**; the sim branch asks RViz/hands/rebuild, the real branch asks
+for the network interface (auto-detected), hand IPs and a typed safety
+confirmation:
+
+```bash
+./start.sh
+# Non-interactive sim (takes defaults / env overrides):
+USE_RVIZ=true ./start.sh --yes
+# Non-interactive real (requires explicit confirmation):
+G1_MODE=real ROBOT_INTERFACE=enp3s0 G1_REAL_CONFIRM=1 ./start.sh --yes
+```
+
+The menu controls these env vars (also usable directly):
+
+| Env | Werte | Wirkung |
+|-----|-------|---------|
+| `G1_MODE` | `sim` (Default) / `real` | Simulation oder echter Roboter. |
+| `USE_RVIZ` | sim: `false` / real: `true` (Defaults) | RViz mitstarten (auf real das IK-Marker-Interface). |
+| `G1_INSPIRE_HANDS` | `0` / `1` | Inspire-FTP-Haende (sim: MuJoCo-Finger; real: Modbus TCP). |
+| `G1_HAND_LEFT_HOST` / `G1_HAND_RIGHT_HOST` / `G1_HAND_PORT` | IPs/Port | Modbus-Ziele der echten Haende (Default `.210`/`.211`:6000). |
+| `ROBOT_INTERFACE` | NIC-Name | Physisches Interface zum G1 (real). |
+| `G1_MAX_VX` / `G1_MAX_VY` / `G1_MAX_VYAW` | m/s bzw. rad/s | Walk-Limits von Streamdeck/PS4 auf real (Default 0.4/0.3/0.4). |
+| `SIM_LOCKSTEP` | `1` (Default) / `0` | Deterministische 50-Hz-Regelrate (nur Sim). |
+
+Recommended (consolidated) Docker entry point:
+
+```bash
+# Simulation: starts the MuJoCo G1 sim + g1pilot (robot_state, arms, RViz, teleop)
+G1_SIM_MODE=true docker compose --profile sim up
+
+# Real robot (lean: arms + hands + Unitree loco controller)
+ROBOT_INTERFACE=<iface> docker compose --profile real up
+
+# Real robot with Livox/MOLA/nav (big image, MID360 required)
+ROBOT_INTERFACE=<iface> docker compose --profile real-full up
+```
+
+**First time on real hardware? Read `REAL_TESTING.md` (safety checklist +
+step-by-step runbook) before starting anything.**
+
+To move the arms: enable the arms and drag the interactive end-effector
+markers in RViz (or publish a `PoseStamped` to `/g1pilot/hand_goal/{left,right}`):
+
+```bash
+ros2 topic pub -1 /g1pilot/arms/enabled std_msgs/Bool "{data: true}"
+```
+
+> Balancing/locomotion: on real hardware via the Unitree onboard high-level
+> (`loco_client` — START/START BALANCING/WALK from the Streamdeck, plus PS4);
+> in sim via the whole-body policy (`loco_sim`). Both consume the same
+> Streamdeck topics, so the UI behaves identically in both modes.
 
 Or you can run each node separately according to your needs.
 

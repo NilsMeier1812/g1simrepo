@@ -6,9 +6,12 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
 from geometry_msgs.msg import PoseStamped, Pose
+from std_msgs.msg import Bool
 from interactive_markers.interactive_marker_server import InteractiveMarkerServer
 from interactive_markers.menu_handler import MenuHandler
-from visualization_msgs.msg import InteractiveMarker, InteractiveMarkerControl, Marker
+from visualization_msgs.msg import (
+    InteractiveMarker, InteractiveMarkerControl, Marker, InteractiveMarkerFeedback,
+)
 from tf2_ros import Buffer, TransformListener, LookupException, ConnectivityException, ExtrapolationException
 
 
@@ -28,6 +31,12 @@ class InteractiveMarkerEFF(Node):
         self.declare_parameter('left_scale', 0.05)
 
         self.declare_parameter('publish_enabled_default', False)
+        # Leader-Follower: solange ein Marker NICHT gezogen wird, folgt er der
+        # echten Hand (TF). So bleibt er nach externen Befehlen (Homing etc.)
+        # synchron und ein Antippen erzeugt nur eine kleine relative Bewegung
+        # statt eines Sprungs. Schaltbar per Param und per Topic.
+        self.declare_parameter('marker_follow_ee', True)
+        self.declare_parameter('follow_rate_hz', 20.0)
 
         self.fixed_frame = self.get_parameter('fixed_frame').get_parameter_value().string_value
         self.spawn_dt = 1.0 / float(self.get_parameter('spawn_rate_hz').value)
@@ -41,6 +50,19 @@ class InteractiveMarkerEFF(Node):
         self.left_scale = float(self.get_parameter('left_scale').value)
 
         self.publish_default = bool(self.get_parameter('publish_enabled_default').value)
+        self.follow_ee = bool(self.get_parameter('marker_follow_ee').value)
+        self.follow_dt = 1.0 / float(self.get_parameter('follow_rate_hz').value)
+
+        # Pro Seite merken, ob der Marker gerade mit der Maus gezogen wird, damit
+        # der Follow-Update das Ziehen nicht ueberschreibt.
+        self.dragging = {"right": False, "left": False}
+        # Nach dem Loslassen: Follow pausieren, bis der Arm das Ziel erreicht hat
+        # bzw. steht. Sonst springt der Marker auf die noch hinterherhinkende Hand
+        # zurueck (Arm bleibt dann mitten im Raum stehen).
+        self._await_arrival = {"right": False, "left": False}
+        self._target_pose = {"right": None, "left": None}
+        self._still_count = {"right": 0, "left": 0}
+        self._prev_hand = {"right": None, "left": None}
 
         self.server = InteractiveMarkerServer(self, "g1_ee_goal_markers")
         self.tf_buffer = Buffer()
@@ -68,6 +90,78 @@ class InteractiveMarkerEFF(Node):
 
         self.marker_spawned = {"right": False, "left": False}
         self.timer = self.create_timer(self.spawn_dt, self._try_spawn_missing)
+
+        # Laufzeit-Umschalten des Follow-Verhaltens (z.B. vom Streamdeck-Button).
+        self.create_subscription(Bool, '/g1pilot/marker_follow_ee', self._set_follow, 10)
+        self.follow_timer = self.create_timer(self.follow_dt, self._follow_update)
+        self.get_logger().info(f"[marker] follow_ee={self.follow_ee} (Leader-Follower)")
+
+    def _set_follow(self, msg: Bool):
+        if bool(msg.data) != self.follow_ee:
+            self.follow_ee = bool(msg.data)
+            self.get_logger().info(f"[marker] follow_ee -> {self.follow_ee}")
+
+    @staticmethod
+    def _pose_close(a: Pose, b: Pose, pos_tol=0.004, ori_tol=0.999):
+        """True, wenn zwei Posen praktisch gleich sind (Position + Orientierung)."""
+        dx = a.position.x - b.position.x
+        dy = a.position.y - b.position.y
+        dz = a.position.z - b.position.z
+        if (dx * dx + dy * dy + dz * dz) ** 0.5 > pos_tol:
+            return False
+        dot = (a.orientation.x * b.orientation.x + a.orientation.y * b.orientation.y +
+               a.orientation.z * b.orientation.z + a.orientation.w * b.orientation.w)
+        return abs(dot) >= ori_tol
+
+    def _follow_update(self):
+        """Marker auf die aktuelle Hand-TF nachfuehren -- aber:
+          * nicht waehrend des Ziehens,
+          * nach dem Loslassen erst, wenn der Arm das Ziel erreicht hat ODER steht,
+          * nur bei merklicher Aenderung (kein Dauer-Flackern im Stillstand)."""
+        if not self.follow_ee:
+            return
+        # Anzahl ruhiger Ticks, ab denen der Arm als "steht" gilt (~0.5 s).
+        still_needed = max(1, int(0.5 / self.follow_dt))
+        changed = False
+        for side, tf_frame in (("right", self.right_tf), ("left", self.left_tf)):
+            if not self.marker_spawned[side] or self.dragging.get(side, False):
+                continue
+            try:
+                trans = self.tf_buffer.lookup_transform(
+                    self.fixed_frame, tf_frame, rclpy.time.Time())
+            except (LookupException, ConnectivityException, ExtrapolationException):
+                continue
+            hand = Pose()
+            hand.position.x = trans.transform.translation.x
+            hand.position.y = trans.transform.translation.y
+            hand.position.z = trans.transform.translation.z
+            hand.orientation = trans.transform.rotation
+
+            # Nach dem Loslassen: warten, bis der Arm angekommen ist / steht.
+            if self._await_arrival.get(side, False):
+                target = self._target_pose.get(side)
+                reached = target is not None and self._pose_close(
+                    hand, target, pos_tol=0.03, ori_tol=0.99)
+                prev = self._prev_hand.get(side)
+                if prev is not None and self._pose_close(hand, prev, pos_tol=0.002):
+                    self._still_count[side] += 1
+                else:
+                    self._still_count[side] = 0
+                self._prev_hand[side] = hand
+                stopped = self._still_count[side] >= still_needed
+                if reached or stopped:
+                    self._await_arrival[side] = False  # ab jetzt normal folgen
+                # Marker bleibt derweil auf der Ziel-Pose stehen -> nicht bewegen.
+                continue
+
+            cur = self.current_pose.get(side)
+            if cur is not None and self._pose_close(cur, hand):
+                continue  # Hand steht praktisch still -> nichts tun
+            self.current_pose[side] = hand
+            self.server.setPose(f"{side}_hand_goal", hand)
+            changed = True
+        if changed:
+            self.server.applyChanges()
 
     def _build_menu_handler(self) -> MenuHandler:
         mh = MenuHandler()
@@ -167,21 +261,34 @@ class InteractiveMarkerEFF(Node):
                 int_marker.controls.append(c)
 
     def _feedback_cb(self, feedback, ee_name: str):
+        et = feedback.event_type
+        if et == InteractiveMarkerFeedback.MOUSE_DOWN:
+            self.dragging[ee_name] = True
+
         self.current_pose[ee_name] = feedback.pose
 
-        if not self.publish_enabled.get(ee_name, True):
-            return
+        # NUR waehrend aktivem Ziehen (bzw. beim Loslassen die finale Pose)
+        # publizieren. Sonst wuerde das Follow-Update (setPose) ueber das
+        # Feedback ein Ziel ausloesen -> Rueckkopplung (Arm faehrt -> Hand bewegt
+        # sich -> Marker folgt -> Feedback -> ...) = Flackern/Springen.
+        is_drag = self.dragging.get(ee_name, False) or et == InteractiveMarkerFeedback.MOUSE_UP
+        if self.publish_enabled.get(ee_name, True) and is_drag:
+            pub = self.ee_publishers.get(ee_name)
+            if pub is not None:
+                pose = PoseStamped()
+                pose.header = feedback.header
+                pose.header.frame_id = self.fixed_frame
+                pose.header.stamp = self.get_clock().now().to_msg()
+                pose.pose = feedback.pose
+                pub.publish(pose)
 
-        pub = self.ee_publishers.get(ee_name)
-        if pub is None:
-            return
-
-        pose = PoseStamped()
-        pose.header = feedback.header
-        pose.header.frame_id = self.fixed_frame
-        pose.header.stamp = self.get_clock().now().to_msg()
-        pose.pose = feedback.pose
-        pub.publish(pose)
+        if et == InteractiveMarkerFeedback.MOUSE_UP:
+            self.dragging[ee_name] = False
+            # Marker bleibt auf dieser Ziel-Pose, bis der Arm sie erreicht/steht.
+            self._await_arrival[ee_name] = True
+            self._target_pose[ee_name] = feedback.pose
+            self._still_count[ee_name] = 0
+            self._prev_hand[ee_name] = None
 
     def _menu_cb(self, feedback):
         marker_name = feedback.marker_name or ""

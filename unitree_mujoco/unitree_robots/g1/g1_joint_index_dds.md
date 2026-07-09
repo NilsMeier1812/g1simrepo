@@ -99,17 +99,3 @@
 | 26                 | R_WRIST_ROLL     |
 | 27                 | R_WRIST_PITCH    |
 | 28                 | R_WRIST_YAW      |
-
-## Dex3-1 关节电机顺序
-
-`unitree_hg::msg::dds_::HandCmd_.motor_cmd` 与 `unitree_hg::msg::dds_::HandState_.motor_state` 包含所有的灵巧手电机的信息，其电机顺序如下：
-
-| Hand Joint Index in IDL | Hand Joint Name |
-| ----------------------- | --------------- |
-| 0                       | thumb_0         |
-| 1                       | thumb_1         |
-| 2                       | thumb_2         |
-| 3                       | index_0         |
-| 4                       | index_1         |
-| 5                       | middle_0        |
-| 6                       | middle_1        |
