@@ -915,14 +915,6 @@ class ArmController(Node):
             self.get_logger().info("E-Stop quittiert (START) -- Arme bleiben "
                                    "gedaempft schlaff bis ENABLE MANIPULATION.")
 
-    def _on_start(self, msg: Bool):
-        """START (Streamdeck) quittiert den E-Stop-Latch (Arme bleiben
-        disabled, bis ENABLE MANIPULATION erneut gedrueckt wird)."""
-        if msg.data and self.estop_active:
-            self.estop_active = False
-            self.get_logger().info("E-Stop quittiert (START) -- Manipulation "
-                                   "kann neu aktiviert werden.")
-
     def _arms_controlled_callback(self, msg: Bool):
         """
         ROS 2 callback to enable or disable arm control.
