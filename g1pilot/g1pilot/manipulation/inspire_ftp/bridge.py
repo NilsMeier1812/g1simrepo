@@ -34,7 +34,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
 from sensor_msgs.msg import JointState
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 try:
     import websockets
@@ -98,6 +98,12 @@ class InspireFtpBridge(Node):
         self.create_subscription(
             String, "/g1pilot/hand_action/right",
             lambda m: self._on_hand_action("right", m), 10)
+        # E-Stop: beide Haende disablen -> es werden keine neuen Sollwerte mehr
+        # geschrieben, die Haende halten ihre Position (kein aktives Weiter-
+        # schliessen). Re-Aktivierung bewusst manuell (GUI-Hauptschalter bzw.
+        # naechster OPEN/CLOSE-Befehl setzt enabled wieder).
+        self.create_subscription(
+            Bool, "/g1pilot/emergency_stop", self._on_emergency_stop, 10)
 
         # ── Mapping-Limits an die echte URDF klemmen, falls auffindbar ───────
         urdf = joint_map.default_urdf_path()
@@ -257,6 +263,15 @@ class InspireFtpBridge(Node):
         else:  # close
             for i in range(6):
                 hand.set_angle(i, 200 if i == 4 else 0)  # Daumen-Beugung nicht ganz zu
+
+    def _on_emergency_stop(self, msg):
+        """EMERGENCY STOP (Streamdeck): beide Haende sofort disablen."""
+        if not msg.data:
+            return
+        for side in ("left", "right"):
+            self.models[side].set_enabled(False)
+        self.get_logger().warn("EMERGENCY STOP: beide Haende disabled "
+                               "(halten Position, keine neuen Sollwerte).")
 
     def _on_hand_action(self, side: str, msg: String):
         """Streamdeck OPEN/CLOSE {LEFT,RIGHT} HAND -> Inspire-DOF-Sollwerte."""

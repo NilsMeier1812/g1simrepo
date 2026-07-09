@@ -77,6 +77,10 @@ def generate_launch_description():
         # ── 2. arm_controller + interactive_marker (rt/arm_sdk) ─────────────
         #    Gewichts-Rampe AKTIV (Defaults 2.0 s) -- weiche Uebergabe zwischen
         #    Roboter-eigener Armsteuerung und arm_sdk. (Sim setzt hier 0.0.)
+        #    PD-Gains: die auf echter Hardware erprobten Werte aus dem
+        #    offiziellen Unitree-g1_arm7_sdk-Beispiel (kp=60, kd=1.5) statt der
+        #    Sim-Gains (150/12). Speedlimits: 0.25 m/s TCP+Ellbogen (ISO
+        #    10218-1 reduced speed) + 1.5 rad/s Gelenk; Selbstkollisions-Gate an.
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 os.path.join(pkg_share, 'launch', 'manipulation_launcher.launch.py')
@@ -84,6 +88,13 @@ def generate_launch_description():
             launch_arguments={
                 'use_robot': 'true',
                 'interface': interface,
+                'arm_velocity_limit': os.environ.get('G1_ARM_VEL_LIMIT', '1.5'),
+                'ee_velocity_limit':  os.environ.get('G1_EE_VEL_LIMIT', '0.25'),
+                'self_collision_gate': 'true',
+                'kp_low':   '60.0',
+                'kd_low':   '1.5',
+                'kp_wrist': '40.0',
+                'kd_wrist': '1.5',
             }.items()
         ),
 
