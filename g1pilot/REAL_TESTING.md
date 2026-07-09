@@ -40,15 +40,43 @@ weitergehen, wenn die Erwartung der Stufe erfuellt ist.**
 
 ---
 
-## 1. Netzwerk
+## 1. Netzwerk (Ersteinrichtung — auch ohne G1-Vorerfahrung)
+
+**Vorweg: "Ports" muss man NICHT konfigurieren.** Der G1 spannt sein eigenes
+LAN auf (`192.168.123.0/24`); DDS laeuft als UDP direkt auf dem Interface
+(bindet das Unitree-SDK selbst, sobald start.sh das Interface kennt), Modbus
+zu den Haenden ist ausgehend (TCP 6000), die Hand-GUIs (8765-8767) sind rein
+lokal. Einzige Pflicht: dem PC-Ethernet-Port eine **statische IP** im
+Roboter-Subnetz geben — im Roboter-LAN gibt es keinen DHCP-Server.
+
+| Adresse            | Wer                                          |
+|--------------------|----------------------------------------------|
+| `192.168.123.161`  | G1 Onboard-PC (DDS-Quelle)                   |
+| `192.168.123.210/.211` | Inspire-Hand links/rechts (Modbus TCP 6000) |
+| `192.168.123.222`  | dein PC (selbst vergeben, Konvention)        |
+
+**Voraussetzung:** nativer Linux-PC mit freiem Ethernet-Port. KEIN WSL2 fuer
+den echten Roboter — das SDK braucht die physische NIC direkt, das geht
+durch die WSL2-NAT nicht zuverlaessig (Sim unter WSL2 ist ok).
 
 1. G1 einschalten und per **Ethernet-Kabel** mit dem PC verbinden.
-2. Dem PC-Interface eine statische IP im Roboter-LAN geben (Beispiel):
+2. Interface-Namen finden (wechselt beim Einstecken auf UP):
+   ```bash
+   ip -br link        # z.B. enp3s0, eth0, enx... (lo/wlp... ignorieren)
+   ```
+3. Statische IP vergeben (fluechtig, nach Reboot weg):
    ```bash
    sudo ip addr add 192.168.123.222/24 dev <NIC>
    sudo ip link set <NIC> up
    ```
-3. Erreichbarkeit pruefen:
+   Dauerhaft via NetworkManager (KEIN Gateway/DNS eintragen, sonst will der
+   PC uebers Roboter-LAN ins Internet):
+   ```bash
+   sudo nmcli con add type ethernet ifname <NIC> con-name g1-robot \
+        ipv4.method manual ipv4.addresses 192.168.123.222/24
+   sudo nmcli con up g1-robot
+   ```
+4. Erreichbarkeit pruefen:
    ```bash
    ping -c3 192.168.123.161     # G1 Onboard-PC (Standard-Adresse)
    # Mit Inspire-Haenden zusaetzlich:
@@ -58,6 +86,13 @@ weitergehen, wenn die Erwartung der Stufe erfuellt ist.**
    ```
    **Abbruch-Kriterium:** Ohne Ping zum Roboter hat nichts Weiteres Sinn —
    Kabel/IP/Interface pruefen.
+5. Firewall beachten: `sudo ufw status` — falls aktiv, blockt sie den
+   DDS-UDP-Traffic → `sudo ufw allow in on <NIC>` (oder deaktivieren).
+
+WLAN darf parallel anbleiben (anderes Subnetz, stoert nicht). Die
+Interface-Auswahl in start.sh markiert die NIC mit der 192.168.123.x-IP
+automatisch als Default — Schritt 3 ist also die Voraussetzung dafuer,
+dass dort einfach ENTER reicht.
 
 ---
 
