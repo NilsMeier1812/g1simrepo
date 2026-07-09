@@ -13,11 +13,26 @@ weitergehen, wenn die Erwartung der Stufe erfuellt ist.**
       oder mindestens 2 m freie Sturzflaeche in alle Richtungen.
 - [ ] **Zweite Person** anwesend, die die Unitree-Fernbedienung haelt
       (die Fernbedienung ist IMMER der uebergeordnete Not-Aus).
-- [ ] **E-Stop-Semantik verstanden**: Der Streamdeck-EMERGENCY-STOP ruft
-      `Damp()` → alle Motoren daempfen → **der Roboter sackt zusammen**.
+- [ ] **E-Stop-Semantik verstanden**: Der Streamdeck-EMERGENCY-STOP stoppt
+      ALLES sofort: `Damp()` an den Loco-Controller, der arm_controller
+      sendet EINE Schlaff-Nachricht (arm_sdk-Weight=0 **und** kp/kd/tau=0)
+      und verstummt, die Inspire-Haende werden disabled (halten Position).
+      → **Der Roboter sackt zusammen** (haengend: Seile fangen ihn).
       Das ist die letzte Instanz, nicht der "Anhalten"-Knopf. Sanftes
       Anhalten beim Gehen = **START BALANCING** klicken (StopMove, Roboter
       bleibt stehen und balanciert).
+      **Quittieren nach E-Stop:** **START** klicken (hebt den Latch in
+      loco_client UND arm_controller auf), danach bei Bedarf ENABLE
+      MANIPULATION neu druecken.
+- [ ] **Speedlimits aktiv**: Armbewegungen sind auf **0.25 m/s** an Hand-TCP
+      und Ellbogen begrenzt (ISO 10218-1 / ISO TS 15066 "reduced speed")
+      plus 1.5 rad/s je Gelenk. Auch wenn der IK-Solver eine wirre
+      Konfiguration vorschlaegt, faehrt der Arm sie nur mit diesem Tempo an.
+      Anpassbar via `G1_ARM_VEL_LIMIT` / `G1_EE_VEL_LIMIT` (Env vor start.sh).
+- [ ] **Selbstkollisions-Gate aktiv**: jede kommandierte Armpose wird vor dem
+      Senden gegen Selbstkollision geprueft (3 cm Marge, Convex-Hulls,
+      Arm↔Torso/Kopf/Hueften + Arm↔Arm). Bei Verletzung haelt der Arm an und
+      loggt eine Warnung -- Marker einfach zurueckziehen.
 - [ ] **Kein Auto-Start**: Im Real-Modus aktiviert der Streamdeck NICHTS von
       selbst. Der Roboter bewegt sich erst nach euren Klicks.
 - [ ] Akku geladen, Umgebung frei von Hindernissen/Kabeln in Fussnaehe.
@@ -113,15 +128,30 @@ folgt exakt; die IK-Marker folgen den Haenden (marker_follow_ee).
    bringen (fuer den ersten Test: haengend).
 2. Streamdeck **ENABLE MANIPULATION** → das arm_sdk-Gewicht rampt **2 s**
    von 0 auf 1. **Erwartung:** Arme uebernehmen die aktuelle Pose OHNE Ruck
-   und halten sie (Schwerkraft-Feedforward aktiv).
-3. In RViz einen Marker **wenige cm** ziehen. Erwartung: Hand folgt ruhig,
-   haelt die Zielposition stabil.
-4. **HOMING ARMS** testen → definierte Home-Pose.
-5. **ENABLE MANIPULATION** wieder aus → Gewicht rampt 2 s auf 0, die
+   und halten sie (Schwerkraft-Feedforward aktiv). Beim Enable werden alte
+   IK-Ziele/Homing-Reste verworfen -- der Arm HAELT immer erst die
+   aktuelle Stellung.
+3. In RViz einen Marker **wenige cm** ziehen. Erwartung: Hand folgt ruhig
+   (max. 0.25 m/s), haelt die Zielposition stabil.
+4. **Gate-Test:** Marker absichtlich IN den Torso ziehen. Erwartung: Arm
+   stoppt vor dem Koerper, Log zeigt "Selbstkollisions-Gate: ... Arm haelt
+   an". Marker zurueckziehen → Arm folgt wieder.
+5. **HOMING ARMS** testen → definierte Home-Pose (geht nur bei aktiver
+   Manipulation).
+6. **E-Stop-Test (haengend!):** EMERGENCY STOP druecken → Arme werden
+   SOFORT schlaff (keine 2-s-Rampe). Danach START → ENABLE MANIPULATION:
+   Arme uebernehmen wieder ruckfrei die aktuelle Pose.
+7. **ENABLE MANIPULATION** wieder aus → Gewicht rampt 2 s auf 0, die
    Roboter-eigene Armsteuerung uebernimmt weich.
 
 **Abbruch:** Ruckt oder schwingt etwas → sofort disable; kp/kd im
-arm_controller pruefen, bevor es weitergeht.
+arm_controller pruefen, bevor es weitergeht (Real-Bringup setzt die
+Unitree-Beispielwerte kp=60/kd=1.5; die Sim faehrt bewusst andere Gains).
+
+**Hinweis Regelrate:** Waehrend ein Marker-Ziel AKTIV verfolgt wird, kostet
+der IK-Solve ~20-30 ms/Zyklus -> der Regel-Loop laeuft dann effektiv mit
+~30-50 Hz statt 250 Hz. Alle Limits rechnen mit dem echten dt und bleiben
+korrekt; im Halten-Zustand laeuft der Loop mit voller Rate.
 
 ---
 

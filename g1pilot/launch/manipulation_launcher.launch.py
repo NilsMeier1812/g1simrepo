@@ -20,7 +20,22 @@ def generate_launch_description():
         DeclareLaunchArgument("ik_use_waist", default_value="false"),
         DeclareLaunchArgument("ik_alpha", default_value="0.2"),
         DeclareLaunchArgument("ik_max_dq_step", default_value="0.05"),
-        DeclareLaunchArgument("arm_velocity_limit", default_value="2.0"),
+        # Gelenk-Speedlimit [rad/s]. Wird (anders als frueher: der Wert wurde
+        # deklariert, aber NIE an den Node uebergeben -> es galt der Code-
+        # Default 5.0!) jetzt wirklich durchgereicht.
+        DeclareLaunchArgument("arm_velocity_limit", default_value="1.5"),
+        # Kartesisches Speedlimit [m/s] fuer Hand-TCP + Ellbogen:
+        # 0.25 m/s = reduced speed nach ISO 10218-1 / ISO TS 15066.
+        DeclareLaunchArgument("ee_velocity_limit", default_value="0.25"),
+        # Selbstkollisions-Gate (kommandierte Pose wird vor dem Senden geprueft).
+        DeclareLaunchArgument("self_collision_gate", default_value="true"),
+        # PD-Gains des arm_controller. Defaults = Sim-Tuning (MuJoCo braucht
+        # hohe Daempfung); bringup_real ueberschreibt mit den Unitree-
+        # Beispielwerten (kp=60, kd=1.5).
+        DeclareLaunchArgument("kp_low", default_value="150.0"),
+        DeclareLaunchArgument("kd_low", default_value="12.0"),
+        DeclareLaunchArgument("kp_wrist", default_value="40.0"),
+        DeclareLaunchArgument("kd_wrist", default_value="4.0"),
         # arm_sdk-Gewichts-Rampe (0->1 beim Enable, 1->0 beim Disable). Auf dem
         # echten G1 Pflicht fuer eine weiche Uebergabe; die Sim setzt 0.0
         # (= sofort umschalten, bisheriges Verhalten).
@@ -45,6 +60,16 @@ def generate_launch_description():
                     LaunchConfiguration("arm_weight_ramp_up_s"), value_type=float),
                 'arm_weight_ramp_down_s': ParameterValue(
                     LaunchConfiguration("arm_weight_ramp_down_s"), value_type=float),
+                'arm_velocity_limit': ParameterValue(
+                    arm_velocity_limit, value_type=float),
+                'ee_velocity_limit': ParameterValue(
+                    LaunchConfiguration("ee_velocity_limit"), value_type=float),
+                'self_collision_gate': ParameterValue(
+                    LaunchConfiguration("self_collision_gate"), value_type=bool),
+                'kp_low': ParameterValue(LaunchConfiguration("kp_low"), value_type=float),
+                'kd_low': ParameterValue(LaunchConfiguration("kd_low"), value_type=float),
+                'kp_wrist': ParameterValue(LaunchConfiguration("kp_wrist"), value_type=float),
+                'kd_wrist': ParameterValue(LaunchConfiguration("kd_wrist"), value_type=float),
             }],
             output='screen'
         ),

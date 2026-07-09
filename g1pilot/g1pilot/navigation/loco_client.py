@@ -6,6 +6,8 @@ import threading
 import time
 import rclpy
 from rclpy.node import Node
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from std_msgs.msg import Bool, String
 from sensor_msgs.msg import Joy
 from geometry_msgs.msg import Twist
@@ -45,6 +47,13 @@ class G1LocoClient(Node):
         self.walk_enabled = False
         self._move_active = False
         self._joy_deadman = False        # PS4-Deadman (Button 8) gedrueckt?
+        # RPC-Serialisierung: der E-Stop-Callback laeuft in einer EIGENEN
+        # Callback-Gruppe (MultiThreadedExecutor) und kann damit auch WAEHREND
+        # eines laufenden entering_balancing feuern. Damit Damp() nicht mit
+        # einem in-flight RPC kollidiert, laeuft jeder Roboter-RPC unter
+        # diesem Lock (gehalten pro Einzel-Call, nie ueber Schleifen).
+        self._rpc_lock = threading.Lock()
+        self._estop_group = MutuallyExclusiveCallbackGroup()
         self._cmd_lock = threading.Lock()
         self._cmd_vel = (0.0, 0.0, 0.0)  # normiert [-1,1] aus /g1pilot/loco_cmd_vel
         self._cmd_stamp = None           # time.monotonic() des letzten Empfangs
@@ -101,7 +110,13 @@ class G1LocoClient(Node):
             self.current_mode = 0
             self.get_logger().info("use_robot:=false -> Not connecting to robot.")
 
-        self.create_subscription(Bool, '/g1pilot/emergency_stop', self.emergency_callback, 10)
+        # E-Stop in eigener Callback-Gruppe: feuert dank MultiThreadedExecutor
+        # auch, waehrend entering_balancing (blockierend) laeuft. Vorher teilte
+        # sich alles einen Thread -> der E-Stop musste WARTEN, bis die
+        # Balancing-Schleife fertig war.
+        self.create_subscription(Bool, '/g1pilot/emergency_stop',
+                                 self.emergency_callback, 10,
+                                 callback_group=self._estop_group)
         self.create_subscription(Bool, '/g1pilot/start', self.start_callback, 10)
         self.create_subscription(Bool, '/g1pilot/start_balancing', self.start_balancing_callback, 10)
         self.create_subscription(Joy, '/g1pilot/joy', self.joystick_callback, 10)
@@ -149,25 +164,35 @@ class G1LocoClient(Node):
     def _axis_edge(self, cur, prev, val):
         return cur == val and prev != val, cur != val and prev == val
 
+    def _robot_rpc(self, method, *args, **kwargs):
+        """Roboter-RPC unter self._rpc_lock. None, wenn kein Roboter."""
+        if not self.use_robot or self.robot is None:
+            return None
+        with self._rpc_lock:
+            return getattr(self.robot, method)(*args, **kwargs)
+
     def get_fsm_id(self):
         if not self.use_robot or self.robot is None:
             return 4
-        return _rpc_get_int(self.robot, ROBOT_API_ID_LOCO_GET_FSM_ID)
+        with self._rpc_lock:
+            return _rpc_get_int(self.robot, ROBOT_API_ID_LOCO_GET_FSM_ID)
 
     def get_fsm_mode(self):
         if not self.use_robot or self.robot is None:
             return 0
-        return _rpc_get_int(self.robot, ROBOT_API_ID_LOCO_GET_FSM_MODE)
+        with self._rpc_lock:
+            return _rpc_get_int(self.robot, ROBOT_API_ID_LOCO_GET_FSM_MODE)
 
     def emergency_callback(self, msg: Bool):
         if msg.data:
             self._log_once("warn", "EMERGENCY STOP ACTIVATED!", "_e_stop_activated_logged")
+            # Flags ZUERST: eine ggf. laufende entering_balancing-Schleife
+            # sieht robot_stopped und bricht ab, bevor Damp() durch ist.
             self.robot_stopped = True
             self.balanced = False
             self.walk_enabled = False
             self._move_active = False
-            if self.use_robot and self.robot is not None:
-                self.robot.Damp()
+            self._robot_rpc("Damp")
             if self.control_arms:
                 self.control_arms = False
                 self.publisher_arms_controlled.publish(Bool(data=False))
@@ -178,7 +203,7 @@ class G1LocoClient(Node):
         if self.use_robot and self.robot is not None and msg.data:
             self.walk_enabled = False
             self._stop_move("START/Standby")
-            self.robot.SetFsmId(4)
+            self._robot_rpc("SetFsmId", 4)
             self._log_once("info", "Switched to FSM ID 4 (Standby)", "_switch_fsm_id_4_logged")
             self.robot_stopped = False
             self.balanced = False
@@ -236,7 +261,7 @@ class G1LocoClient(Node):
         self._move_active = False
         if self.use_robot and self.robot is not None:
             try:
-                self.robot.StopMove()
+                self._robot_rpc("StopMove")
             except Exception as e:
                 self.get_logger().error(f"StopMove fehlgeschlagen: {e}")
         if reason:
@@ -268,12 +293,12 @@ class G1LocoClient(Node):
         vyaw = nz * float(self.get_parameter('max_vyaw').value)
         if self.use_robot and self.robot is not None:
             try:
-                self.robot.Move(vx=vx, vy=vy, vyaw=vyaw, continous_move=True)
+                self._robot_rpc("Move", vx=vx, vy=vy, vyaw=vyaw, continous_move=True)
             except Exception as e:
                 self.get_logger().error(f"Move fehlgeschlagen: {e} -> StopMove + Damp")
                 try:
-                    self.robot.StopMove()
-                    self.robot.Damp()
+                    self._robot_rpc("StopMove")
+                    self._robot_rpc("Damp")
                 except Exception:
                     pass
                 self.robot_stopped = True
@@ -304,8 +329,7 @@ class G1LocoClient(Node):
 
             up_on, up_off = self._axis_edge(axis_last, self.prev_axis_last, -1.0)
             if up_on:
-                if self.use_robot and self.robot is not None:
-                    self.robot.SetFsmId(4)
+                self._robot_rpc("SetFsmId", 4)
                 self._log_once("info", "Switched to FSM ID 4 (Standby)", "_switch_fsm_id_4_logged")
                 self.robot_stopped = False
                 self.balanced = False
@@ -332,8 +356,7 @@ class G1LocoClient(Node):
                 self._log_once("warn", "Emergency stop button pressed!", "_e_stop_button_pressed_logged")
                 self.robot_stopped = True
                 self.balanced = False
-                if self.use_robot and self.robot is not None:
-                    self.robot.Damp()
+                self._robot_rpc("Damp")
                 self.control_arms = False
                 self.publisher_arms_controlled.publish(Bool(data=False))
             if self._btn_falling(msg, 5):
@@ -388,7 +411,7 @@ class G1LocoClient(Node):
                     if abs(vx) < 0.03 and abs(vy) < 0.03 and abs(yaw) < 0.03:
                         self._stop_move()
                     else:
-                        self.robot.Move(vx=vx, vy=vy, vyaw=yaw, continous_move=True)
+                        self._robot_rpc("Move", vx=vx, vy=vy, vyaw=yaw, continous_move=True)
                         self._move_active = True
 
             self.prev_buttons = {i: msg.buttons[i] for i in range(len(msg.buttons))}
@@ -397,8 +420,8 @@ class G1LocoClient(Node):
         except Exception as e:
             self.get_logger().error(f"Error in joystick_callback: {e}")
             if self.use_robot and self.robot is not None:
-                self.robot.StopMove()
-                self.robot.Damp()
+                self._robot_rpc("StopMove")
+                self._robot_rpc("Damp")
             self.robot_stopped = True
             self.balanced = False
             self.walk_enabled = False
@@ -412,27 +435,37 @@ class G1LocoClient(Node):
         height = 0.0
         while height < max_height and not self.robot_stopped:
             height += step
-            self.robot.SetStandHeight(height)
+            self._robot_rpc("SetStandHeight", height)
             if self.get_fsm_mode() == 0 and height >= 0.2:
                 self._log_once("info", f"Reached max height: {height}", "_balance_reach_height_logged")
                 break
             elif self.get_fsm_mode() != 0:
                 self._log_once("warn", "Problems during balancing, stopping...", "_balance_problem_stop_logged")
                 break
-        self.robot.BalanceStand(1)
-        self.robot.SetStandHeight(height)
-        self.robot.Start()
+        # E-Stop waehrend der Rampe? Dann NICHT BalanceStand/Start nachschieben
+        # (Damp() ist bereits raus, der Roboter haengt/sackt kontrolliert).
+        if self.robot_stopped:
+            self.get_logger().warn("Balancing abgebrochen (robot_stopped/E-Stop).")
+            return
+        self._robot_rpc("BalanceStand", 1)
+        self._robot_rpc("SetStandHeight", height)
+        self._robot_rpc("Start")
         self.balanced = True
 
 
 def main(args=None):
     rclpy.init(args=args)
     node = G1LocoClient()
+    # MultiThreadedExecutor: der E-Stop (eigene Callback-Gruppe) muss auch
+    # waehrend eines blockierenden Callbacks (entering_balancing) durchkommen.
+    executor = MultiThreadedExecutor(num_threads=2)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        executor.shutdown()
         node.destroy_node()
         rclpy.shutdown()
 
