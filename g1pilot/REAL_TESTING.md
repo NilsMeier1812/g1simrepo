@@ -14,16 +14,24 @@ weitergehen, wenn die Erwartung der Stufe erfuellt ist.**
 - [ ] **Zweite Person** anwesend, die die Unitree-Fernbedienung haelt
       (die Fernbedienung ist IMMER der uebergeordnete Not-Aus).
 - [ ] **E-Stop-Semantik verstanden**: Der Streamdeck-EMERGENCY-STOP stoppt
-      ALLES sofort: `Damp()` an den Loco-Controller, der arm_controller
-      sendet EINE Schlaff-Nachricht (arm_sdk-Weight=0 **und** kp/kd/tau=0)
-      und verstummt, die Inspire-Haende werden disabled (halten Position).
-      → **Der Roboter sackt zusammen** (haengend: Seile fangen ihn).
+      ALLES sofort. Beine/Koerper: `Damp()` an den Loco-Controller. Arme:
+      der arm_controller haelt das **arm_sdk-Gewicht auf 1** (behaelt die
+      Autoritaet) und kommandiert kp=0/tau=0 mit leichter Daempfung (kd) →
+      die Arme werden **drehmomentfrei und sacken gedaempft**. Inspire-Haende
+      werden disabled (halten Position). → **Der Roboter sackt zusammen**
+      (haengend: Seile fangen ihn).
+      **WICHTIG (der Grund fuer Weight=1):** Wuerde der E-Stop das Gewicht
+      auf 0 setzen, uebernaehme der Unitree-Onboard-Regler die Arme und
+      faehrt sie AKTIV mit voller Geschwindigkeit in seine Default-Pose
+      (Sprung in die Home-Pose!). Genau das darf ein Not-Aus nicht.
       Das ist die letzte Instanz, nicht der "Anhalten"-Knopf. Sanftes
       Anhalten beim Gehen = **START BALANCING** klicken (StopMove, Roboter
       bleibt stehen und balanciert).
       **Quittieren nach E-Stop:** **START** klicken (hebt den Latch in
-      loco_client UND arm_controller auf), danach bei Bedarf ENABLE
-      MANIPULATION neu druecken.
+      loco_client UND arm_controller auf). Die Arme bleiben danach gedaempft
+      schlaff, bis **ENABLE MANIPULATION** die Kontrolle bewusst zurueckholt
+      (kein automatischer Rueckgang an den Onboard-Regler). Daempfung via
+      `estop_arm_kd` (Default 3.0; 0 = voellig frei).
 - [ ] **Speedlimits aktiv**: Armbewegungen sind auf **0.25 m/s** an Hand-TCP
       und Ellbogen begrenzt (ISO 10218-1 / ISO TS 15066 "reduced speed")
       plus 1.5 rad/s je Gelenk. Auch wenn der IK-Solver eine wirre
@@ -174,8 +182,12 @@ folgt exakt; die IK-Marker folgen den Haenden (marker_follow_ee).
 5. **HOMING ARMS** testen → definierte Home-Pose (geht nur bei aktiver
    Manipulation).
 6. **E-Stop-Test (haengend!):** EMERGENCY STOP druecken → Arme werden
-   SOFORT schlaff (keine 2-s-Rampe). Danach START → ENABLE MANIPULATION:
-   Arme uebernehmen wieder ruckfrei die aktuelle Pose.
+   SOFORT drehmomentfrei und sacken **gedaempft** (keine 2-s-Rampe, KEIN
+   Sprung in die Home-Pose). Danach START (quittiert, Arme bleiben schlaff)
+   → ENABLE MANIPULATION: Arme uebernehmen wieder ruckfrei die aktuelle Pose.
+   **Erwartung explizit:** Die Arme fahren beim E-Stop NICHT aktiv irgendwohin
+   — sie geben nach. Tun sie das nicht (Sprung/aktive Bewegung), sofort
+   Fernbedienungs-Not-Aus und melden.
 7. **ENABLE MANIPULATION** wieder aus → Gewicht rampt 2 s auf 0, die
    Roboter-eigene Armsteuerung uebernimmt weich.
 

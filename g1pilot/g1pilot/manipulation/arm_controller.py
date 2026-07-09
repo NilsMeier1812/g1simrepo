@@ -152,6 +152,10 @@ class ArmController(Node):
         # gegen Selbstkollision geprueft (Marge s. ik_solver.collision_margin);
         # bei Verletzung haelt der Arm an, statt in den Koerper zu fahren.
         self.declare_parameter("self_collision_gate", True)
+        # Daempfung [kd] der Arm-Gelenke im E-Stop/Slack-Zustand. kp=0/tau=0 ->
+        # keine Positionshaltung; kleines kd -> die Arme sacken GEDAEMPFT statt
+        # frei zu fallen (an Seilen abgefangen). 0.0 = voellig frei (harter Fall).
+        self.declare_parameter("estop_arm_kd", 3.0)
         self.declare_parameter("rate_hz", 250.0)
         self.declare_parameter("ik_world_frame", "pelvis")
         self.declare_parameter("ik_alpha", 0.2)
@@ -187,6 +191,7 @@ class ArmController(Node):
         self.arm_velocity_limit = float(self.get_parameter("arm_velocity_limit").value)
         self.ee_velocity_limit = float(self.get_parameter("ee_velocity_limit").value)
         self.self_collision_gate = bool(self.get_parameter("self_collision_gate").value)
+        self.estop_arm_kd = float(self.get_parameter("estop_arm_kd").value)
         self.rate_hz = float(self.get_parameter("rate_hz").value)
         self.frame = str(self.get_parameter("ik_world_frame").value)
         self.ik_alpha = float(self.get_parameter("ik_alpha").value)
@@ -226,6 +231,11 @@ class ArmController(Node):
         # Damp() faengt den Rest). Quittiert wird ueber /g1pilot/start --
         # dieselbe Semantik wie robot_stopped im loco_client.
         self.estop_active = False
+        # Slack-Latch: Arme werden gedaempft-drehmomentfrei gehalten (Weight=1,
+        # kp=0), OHNE Rueckgabe an den Onboard-Regler. Bleibt nach dem
+        # Quittieren (START) aktiv, bis ENABLE MANIPULATION die Kontrolle
+        # bewusst zurueckholt.
+        self._arm_slack = False
         self.homing_active = False
         self.homing_reached = False
         self.homing_tolerance = 0.02
@@ -834,32 +844,76 @@ class ArmController(Node):
             self.get_logger().info("arm_sdk-Gewicht auf 0 -- Arme an die "
                                    "Roboter-Steuerung uebergeben.")
 
+    def _publish_arm_slack(self):
+        """Arme drehmomentfrei / leicht gedaempft halten -- OHNE die Kontrolle
+        an den Unitree-Onboard-Regler zurueckzugeben.
+
+        KRITISCH: das arm_sdk-Gewicht bleibt hier auf 1. Setzt man es auf 0
+        (frueheres E-Stop-Verhalten!), uebernimmt der Onboard-Regler die Arme
+        und faehrt sie AKTIV mit voller Geschwindigkeit in seine Default-Pose
+        (sieht aus wie ein Sprung in die Home-Pose). Mit Gewicht=1 behaelt
+        arm_sdk die Autoritaet: kp=0 -> keine Positionshaltung, tau=0 -> kein
+        Feedforward, kd klein -> die Arme sacken GEDAEMPFT (an Seilen
+        abgefangen). Muss WEITER gesendet werden, sonst greift der arm_sdk-
+        Watchdog und der Onboard-Regler schnappt doch noch zu."""
+        if not self.use_robot or not getattr(self, "_initialized", False):
+            return
+        try:
+            cur = self.get_current_motor_q()
+        except Exception:
+            cur = None
+        try:
+            self.msg.mode_machine = self.get_mode_machine()
+            for jid in G1_29_JointArmIndex:
+                mc = self.msg.motor_cmd[jid]
+                mc.mode = 1
+                mc.kp = 0.0
+                mc.kd = self.estop_arm_kd
+                mc.tau = 0.0
+                mc.dq = 0.0
+                if cur is not None:
+                    mc.q = float(cur[jid.value])   # bei kp=0 ohne Wirkung, sauber
+            # Weight = 1: arm_sdk behaelt die Autoritaet (KEIN Onboard-Snap).
+            self.msg.motor_cmd[G1_29_JointIndex.kNotUsedJoint0].q = 1.0
+            self.msg.crc = self.crc.Crc(self.msg)
+            self.lowcmd_publisher.Write(self.msg)
+        except Exception as e:
+            self.get_logger().error(f"Arm-Slack-Nachricht fehlgeschlagen: {e}")
+
     def _on_emergency_stop(self, msg: Bool):
-        """E-STOP: sofort verstummen. EINE letzte Nachricht schaltet die Arme
-        schlaff (Weight=0 UND kp/kd/tau=0 -- doppelt sicher, egal wie die
-        Firmware blendet); danach sendet der Node nichts mehr, bis der Latch
-        via /g1pilot/start quittiert und Manipulation neu enabled wird."""
+        """E-STOP: Arme drehmomentfrei/gedaempft, OHNE Onboard-Uebergabe.
+
+        Der Slack-Zustand wird ab jetzt in jedem Tick weiter gesendet
+        (_publish_arm_slack) -- kein Handover-Fenster, in dem der Onboard-
+        Regler die Arme in die Home-Pose reissen koennte. Der Latch
+        (estop_active) blockiert ENABLE, bis via /g1pilot/start quittiert
+        wird; die Arme bleiben schlaff, bis ENABLE die Kontrolle bewusst
+        zurueckholt. Beine/Koerper werden separat von loco_client gedaempft
+        (Damp)."""
         if not msg.data or self.estop_active:
             return
         self.estop_active = True
+        self._arm_slack = True
         self.arms_enabled = False
         self.homing_active = False
         self.homing_reached = False
         self.walk_mode = False
         self._weight_state = "off"
-        self._arm_sdk_weight = 0.0
-        if self.use_robot and getattr(self, "_initialized", False):
-            try:
-                for jid in G1_29_JointArmIndex:
-                    mc = self.msg.motor_cmd[jid]
-                    mc.kp = 0.0; mc.kd = 0.0; mc.tau = 0.0; mc.dq = 0.0
-                self.msg.motor_cmd[G1_29_JointIndex.kNotUsedJoint0].q = 0.0
-                self.msg.crc = self.crc.Crc(self.msg)
-                self.lowcmd_publisher.Write(self.msg)
-            except Exception as e:
-                self.get_logger().error(f"E-Stop-Release-Nachricht fehlgeschlagen: {e}")
-        self.get_logger().warn("EMERGENCY STOP: Arme schlaff (Weight=0, kp/kd=0), "
-                               "arm_controller verstummt. Quittieren: START.")
+        self._arm_sdk_weight = 1.0     # Autoritaet behalten (kein Onboard-Snap)
+        self._publish_arm_slack()
+        self.get_logger().warn("EMERGENCY STOP: Arme drehmomentfrei/gedaempft "
+                               "(arm_sdk behaelt Autoritaet, KEIN Sprung in "
+                               "Home). Quittieren: START.")
+
+    def _on_start(self, msg: Bool):
+        """START (Streamdeck) quittiert den E-Stop-Latch. Die Arme bleiben
+        schlaff (_arm_slack) und werden weiter gedaempft gehalten, bis ENABLE
+        MANIPULATION die Kontrolle bewusst zurueckholt -- NICHT an den
+        Onboard-Regler zurueckgeben (der wuerde sie posieren)."""
+        if msg.data and self.estop_active:
+            self.estop_active = False
+            self.get_logger().info("E-Stop quittiert (START) -- Arme bleiben "
+                                   "gedaempft schlaff bis ENABLE MANIPULATION.")
 
     def _on_start(self, msg: Bool):
         """START (Streamdeck) quittiert den E-Stop-Latch (Arme bleiben
@@ -890,6 +944,8 @@ class ArmController(Node):
             return
         self.arms_enabled = msg.data
         if self.arms_enabled:
+            # Slack-Latch aufheben: ENABLE holt die Kontrolle bewusst zurueck.
+            self._arm_slack = False
             try:
                 cur = self.get_current_motor_q()
                 left = [cur[j] for j in LEFT_JOINT_INDICES_LIST]
@@ -1224,9 +1280,12 @@ class ArmController(Node):
         if not getattr(self, "_initialized", False):
             return
 
-        # E-STOP: nichts mehr senden (die Schlaff-Nachricht ging bereits im
-        # Callback raus). Auch die Abwaertsrampe wird uebersprungen.
-        if self.estop_active:
+        # E-STOP / Slack: Arme drehmomentfrei/gedaempft halten und WEITER
+        # senden -- ohne die Kontrolle an den Onboard-Regler zurueckzugeben
+        # (der wuerde die Arme in seine Default-Pose reissen). Laeuft, bis
+        # ENABLE MANIPULATION den Slack-Latch aufhebt.
+        if self._arm_slack and not self.arms_enabled:
+            self._publish_arm_slack()
             return
 
         if self.use_robot:
