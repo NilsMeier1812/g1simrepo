@@ -26,6 +26,7 @@ import asyncio
 import functools
 import http.server
 import json
+import logging
 import os
 import threading
 import time
@@ -361,6 +362,14 @@ async def _send_all(clients: set, msg: str):
 
 
 def main(args=None):
+    # Fehlgeschlagene WS-Handshakes NICHT als Traceback loggen. Der GUI-
+    # Verfuegbarkeits-Check in start.sh (bash /dev/tcp auf :8766) oeffnet den
+    # Port alle 0.5 s roh und schliesst sofort -> die websockets-Library wirft
+    # sonst pro Poll einen mehrzeiligen "did not receive a valid HTTP request"-
+    # Traceback und flutet damit das Log (uebertoenT echte Meldungen). Gilt
+    # ebenso fuer beliebige rohe Port-Zugriffe im Labornetz. Der Betrieb ist
+    # davon unberuehrt -- rein kosmetisch.
+    logging.getLogger("websockets").setLevel(logging.CRITICAL)
     rclpy.init(args=args)
     node = InspireFtpBridge()
     spin = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
