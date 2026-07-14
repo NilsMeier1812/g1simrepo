@@ -1,0 +1,278 @@
+<title>G1Pilot – ROS 2 Node Graph</title>
+<style>
+  :root{
+    --bg:#f7f8fa; --fg:#1b1d21; --muted:#5a5f6a;
+    --canvas:#ffffff; --grid:#eceef2;
+    --edge:#8a9099; --edge-dds:#c07a3a;
+    --topic-fill:#f4f5f7; --topic-bd:#b9bec7; --topic-fg:#23262b;
+    --src-fill:#eef0f3; --src-bd:#c7ccd4;
+    --teleop-fill:#fbf0bf; --teleop-bd:#e2cd6f;
+    --nav-fill:#c9ead2; --nav-bd:#7cc08d;
+    --manip-fill:#f7ddc0; --manip-bd:#e0a86c;
+    --state-fill:#cfe0f6; --state-bd:#88ade0;
+    --note-fill:#f2f3f5; --note-bd:#cfd4dc;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#14161a; --fg:#e7e9ee; --muted:#a0a6b0;
+      --canvas:#191c21; --grid:#23262d;
+      --edge:#6b7280; --edge-dds:#d08a4a;
+      --topic-fill:#22262c; --topic-bd:#3c424c; --topic-fg:#dfe3ea;
+      --src-fill:#1e2127; --src-bd:#3a4049;
+      --teleop-fill:#4a4322; --teleop-bd:#b9a447;
+      --nav-fill:#22422c; --nav-bd:#4f8a63;
+      --manip-fill:#4a3421; --manip-bd:#b57c44;
+      --state-fill:#22334d; --state-bd:#4f74ad;
+      --note-fill:#1e2127; --note-bd:#363c45;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#14161a; --fg:#e7e9ee; --muted:#a0a6b0; --canvas:#191c21; --grid:#23262d;
+    --edge:#6b7280; --edge-dds:#d08a4a; --topic-fill:#22262c; --topic-bd:#3c424c; --topic-fg:#dfe3ea;
+    --src-fill:#1e2127; --src-bd:#3a4049; --teleop-fill:#4a4322; --teleop-bd:#b9a447;
+    --nav-fill:#22422c; --nav-bd:#4f8a63; --manip-fill:#4a3421; --manip-bd:#b57c44;
+    --state-fill:#22334d; --state-bd:#4f74ad; --note-fill:#1e2127; --note-bd:#363c45;
+  }
+  :root[data-theme="light"]{
+    --bg:#f7f8fa; --fg:#1b1d21; --muted:#5a5f6a; --canvas:#ffffff; --grid:#eceef2;
+    --edge:#8a9099; --edge-dds:#c07a3a; --topic-fill:#f4f5f7; --topic-bd:#b9bec7; --topic-fg:#23262b;
+    --src-fill:#eef0f3; --src-bd:#c7ccd4; --teleop-fill:#fbf0bf; --teleop-bd:#e2cd6f;
+    --nav-fill:#c9ead2; --nav-bd:#7cc08d; --manip-fill:#f7ddc0; --manip-bd:#e0a86c;
+    --state-fill:#cfe0f6; --state-bd:#88ade0; --note-fill:#f2f3f5; --note-bd:#cfd4dc;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{padding:20px 24px 6px}
+  h1{margin:0;font-size:20px;letter-spacing:.2px}
+  .sub{color:var(--muted);font-size:13px;margin-top:4px;max-width:900px;line-height:1.5}
+  .legend{display:flex;flex-wrap:wrap;gap:10px;padding:12px 24px 4px}
+  .lg{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;
+    padding:5px 11px;border-radius:8px;border:1.5px solid}
+  .lg.teleop{background:var(--teleop-fill);border-color:var(--teleop-bd)}
+  .lg.nav{background:var(--nav-fill);border-color:var(--nav-bd)}
+  .lg.manip{background:var(--manip-fill);border-color:var(--manip-bd)}
+  .lg.state{background:var(--state-fill);border-color:var(--state-bd)}
+  .lg.dds{background:var(--src-fill);border-color:var(--src-bd)}
+  .lg .dot{width:12px;height:3px;border-radius:2px}
+  .lg.line .dot{background:var(--edge)}
+  .lg.line.ddsline .dot{background:var(--edge-dds)}
+  .scroll{overflow:auto;padding:8px 24px 32px}
+  .canvas{position:relative;background:var(--canvas);border:1px solid var(--grid);
+    border-radius:12px;background-image:radial-gradient(var(--grid) 1px,transparent 1px);
+    background-size:26px 26px;}
+  svg.edges{position:absolute;inset:0;pointer-events:none;overflow:visible}
+  .box{position:absolute;border-radius:9px;border:1.6px solid;padding:6px 9px;
+    display:flex;flex-direction:column;justify-content:center;box-shadow:0 1px 2px rgba(0,0,0,.06);}
+  .box .t1{font-weight:700;font-size:12.5px;line-height:1.25;word-break:break-word}
+  .box .t2{font-size:11px;color:var(--muted);margin-top:1px;font-weight:600}
+  .box.node .t1{font-size:13.5px}
+  .box.node{align-items:center;text-align:center}
+  .box.topic{background:var(--topic-fill);border-color:var(--topic-bd)}
+  .box.topic .t1{color:var(--topic-fg);font-weight:600;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px}
+  .box.src{background:var(--src-fill);border-color:var(--src-bd)}
+  .box.src .t1{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px;font-weight:600}
+  .box.teleop{background:var(--teleop-fill);border-color:var(--teleop-bd)}
+  .box.nav{background:var(--nav-fill);border-color:var(--nav-bd)}
+  .box.manip{background:var(--manip-fill);border-color:var(--manip-bd)}
+  .box.state{background:var(--state-fill);border-color:var(--state-bd)}
+  .box.note{background:var(--note-fill);border-color:var(--note-bd);border-style:dashed}
+  .box.note .t1{font-weight:700;font-size:12px}
+  .box.robot{background:linear-gradient(160deg,#e8ebef,#cdd3db);border-color:#9aa2ad;color:#20242a}
+  .box.robot .t2{color:#3d434c}
+  .foot{padding:0 24px 28px;color:var(--muted);font-size:12px;max-width:1000px;line-height:1.55}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    background:var(--src-fill);border:1px solid var(--src-bd);border-radius:4px;padding:0 4px;font-size:11.5px}
+</style>
+
+<header>
+  <h1>G1Pilot &mdash; ROS 2 Node Graph</h1>
+  <div class="sub">Datenfluss der <code>g1pilot</code> Nodes und Topics (Unitree G1). Durchgezogene Pfeile = ROS 2 Topics, orange = Unitree-DDS/SDK (<code>rt/*</code>). Diese Version entspricht dem aktuellen Branch mit <b>Inspire-FTP-Händen</b>.</div>
+</header>
+
+<div class="legend">
+  <span class="lg teleop">Teleoperation Nodes</span>
+  <span class="lg nav">Navigation Nodes</span>
+  <span class="lg manip">Manipulation Nodes</span>
+  <span class="lg state">State Nodes</span>
+  <span class="lg line"><span class="dot"></span> ROS&nbsp;Topic</span>
+  <span class="lg line ddsline"><span class="dot"></span> DDS&nbsp;/&nbsp;SDK</span>
+</div>
+
+<div class="scroll">
+  <div class="canvas" id="canvas">
+    <svg class="edges" id="edges"></svg>
+  </div>
+</div>
+
+<div class="foot">
+  Generiert aus dem Quellcode von <code>g1pilot/</code> (Publisher/Subscriber je Node).
+  Die Hände laufen über die <code>inspire_hand</code>-Bridge (WebSocket <code>:8766</code>/<code>:8765</code> für die HTML-GUIs
+  und DDS <code>rt/inspire/cmd|state</code> im MuJoCo-Backend), angesteuert per <code>/g1pilot/hand_action/{left,right}</code>.
+</div>
+
+<script>
+const NODE_W=178, TOPIC_W=204, H1=46, H2=54;
+
+// type: teleop|nav|manip|state|topic|src|note|robot
+// kind: node|topic
+const N = {
+  // ── Teleoperation ────────────────────────────────────────────────
+  ui:        {x:470,  y:20,  w:NODE_W, kind:'node', type:'teleop', t1:'ui_interface', t2:'control GUI'},
+  joystick:  {x:250,  y:150, w:NODE_W, kind:'node', type:'teleop', t1:'joystick', t2:'manual_joystick'},
+  joy_manual:{x:470,  y:120, w:TOPIC_W,kind:'topic',type:'src',    t1:'/g1pilot/joy_manual', t2:'Joy'},
+  auto_en:   {x:470,  y:185, w:TOPIC_W,kind:'topic',type:'src',    t1:'/g1pilot/auto_enable', t2:'Bool'},
+  joy_mux:   {x:710,  y:152, w:NODE_W, kind:'node', type:'teleop', t1:'joy_mux', t2:''},
+
+  // ── Navigation (odometry / planner) ──────────────────────────────
+  pose:      {x:20,   y:320, w:TOPIC_W,kind:'topic',type:'src',    t1:'/lidar_odometry/pose', t2:'Odometry'},
+  molafix:   {x:250,  y:322, w:NODE_W, kind:'node', type:'nav',    t1:'mola_fixed', t2:'fix_mola_odometry'},
+  posefix:   {x:470,  y:322, w:TOPIC_W,kind:'topic',type:'src',    t1:'/lidar_odometry/pose_fixed', t2:'Odometry'},
+  goal:      {x:20,   y:430, w:TOPIC_W,kind:'topic',type:'src',    t1:'/g1pilot/goal', t2:'PoseStamped'},
+  map:       {x:20,   y:500, w:TOPIC_W,kind:'topic',type:'src',    t1:'/map', t2:'Map · OccupancyGrid'},
+  dijkstra:  {x:250,  y:466, w:NODE_W, kind:'node', type:'nav',    t1:'dijkstra_planner', t2:''},
+  path:      {x:710,  y:322, w:TOPIC_W,kind:'topic',type:'src',    t1:'/g1pilot/path', t2:'Path'},
+  nav2:      {x:950,  y:466, w:NODE_W, kind:'node', type:'nav',    t1:'nav2point', t2:''},
+  auto_joy:  {x:710,  y:452, w:TOPIC_W,kind:'topic',type:'src',    t1:'/g1pilot/auto_joy', t2:'Joy'},
+  wp_mark:   {x:1200, y:452, w:TOPIC_W,kind:'topic',type:'src',    t1:'/g1pilot/waypoint_marker', t2:'Marker'},
+  goal_mark: {x:1200, y:522, w:TOPIC_W,kind:'topic',type:'src',    t1:'/g1pilot/goal_marker', t2:'Marker'},
+
+  // ── Loco client + its command inputs ─────────────────────────────
+  joy:       {x:950,  y:40,  w:TOPIC_W,kind:'topic',type:'src',    t1:'/g1pilot/joy', t2:'Joy'},
+  t_start:   {x:950,  y:100, w:TOPIC_W,kind:'topic',type:'src',    t1:'/g1pilot/start', t2:'Bool'},
+  t_estop:   {x:950,  y:160, w:TOPIC_W,kind:'topic',type:'src',    t1:'/g1pilot/emergency_stop', t2:'Bool'},
+  t_bal:     {x:950,  y:220, w:TOPIC_W,kind:'topic',type:'src',    t1:'/g1pilot/start_balancing', t2:'Bool'},
+  t_walk:    {x:950,  y:280, w:TOPIC_W,kind:'topic',type:'src',    t1:'/g1pilot/start_walking', t2:'Bool'},
+  t_cmdvel:  {x:950,  y:340, w:TOPIC_W,kind:'topic',type:'src',    t1:'/g1pilot/loco_cmd_vel', t2:'Twist'},
+  loco:      {x:1200, y:170, w:NODE_W, kind:'node', type:'nav',    t1:'loco_client', t2:''},
+
+  // ── Loco outputs ─────────────────────────────────────────────────
+  move:      {x:1440, y:40,  w:TOPIC_W,kind:'note', type:'note',   t1:'LocoClient.Move', t2:'High Level (walk/balance)'},
+  arms_en:   {x:1440, y:110, w:TOPIC_W,kind:'topic',type:'src',    t1:'/g1pilot/arms/enabled', t2:'Bool'},
+  arms_home: {x:1440, y:170, w:TOPIC_W,kind:'topic',type:'src',    t1:'/g1pilot/arms/home', t2:'Bool'},
+  ha_r:      {x:1440, y:230, w:TOPIC_W,kind:'topic',type:'src',    t1:'/g1pilot/hand_action/right', t2:'String'},
+  ha_l:      {x:1440, y:290, w:TOPIC_W,kind:'topic',type:'src',    t1:'/g1pilot/hand_action/left', t2:'String'},
+
+  // ── Manipulation (arms) ──────────────────────────────────────────
+  imarker:   {x:950,  y:650, w:NODE_W, kind:'node', type:'manip',  t1:'interactive_marker', t2:'RViz EE marker'},
+  hg_r:      {x:1200, y:650, w:TOPIC_W,kind:'topic',type:'src',    t1:'/g1pilot/hand_goal/right', t2:'PoseStamped'},
+  hg_l:      {x:1200, y:712, w:TOPIC_W,kind:'topic',type:'src',    t1:'/g1pilot/hand_goal/left', t2:'PoseStamped'},
+  armctl:    {x:1440, y:660, w:NODE_W, kind:'node', type:'manip',  t1:'arm_controller', t2:'joint / cartesian'},
+  ws_l:      {x:1700, y:600, w:TOPIC_W,kind:'topic',type:'src',    t1:'/g1pilot/workspace/left', t2:'Marker'},
+  ws_r:      {x:1700, y:662, w:TOPIC_W,kind:'topic',type:'src',    t1:'/g1pilot/workspace/right', t2:'Marker'},
+  walk_rdy:  {x:1700, y:724, w:TOPIC_W,kind:'topic',type:'src',    t1:'/g1pilot/arms/walk_ready', t2:'Bool'},
+  arm_sdk:   {x:1700, y:786, w:TOPIC_W,kind:'topic',type:'src',    t1:'rt/arm_sdk', t2:'LowCmd', dds:true},
+
+  // ── Manipulation (hands) ─────────────────────────────────────────
+  inspire:   {x:1700, y:110, w:NODE_W, kind:'node', type:'manip',  t1:'inspire_hand', t2:'FTP bridge · WS :8766/:8765'},
+  insp_cmd:  {x:1960, y:110, w:TOPIC_W,kind:'topic',type:'src',    t1:'rt/inspire/cmd', t2:'LowCmd', dds:true},
+  insp_st:   {x:1960, y:172, w:TOPIC_W,kind:'topic',type:'src',    t1:'rt/inspire/state', t2:'LowState', dds:true},
+
+  // ── State ────────────────────────────────────────────────────────
+  lowstate:  {x:250,  y:900, w:TOPIC_W,kind:'topic',type:'src',    t1:'rt/lowstate', t2:'LowState', dds:true},
+  robstate:  {x:490,  y:902, w:NODE_W, kind:'node', type:'state',  t1:'robot_state', t2:''},
+  jstate:    {x:730,  y:852, w:TOPIC_W,kind:'topic',type:'src',    t1:'/joint_states', t2:'JointState'},
+  imu:       {x:730,  y:914, w:TOPIC_W,kind:'topic',type:'src',    t1:'/g1pilot/imu', t2:'Imu'},
+  motorst:   {x:730,  y:976, w:TOPIC_W,kind:'topic',type:'src',    t1:'/g1pilot/motor_state', t2:'Astroviz · MotorStateList'},
+
+  // ── Sinks ────────────────────────────────────────────────────────
+  robot:     {x:2010, y:470, w:190,    kind:'node', type:'robot',  t1:'Unitree G1', t2:'DDS / SDK · hardware & MuJoCo'},
+  rviz:      {x:1030, y:914, w:150,    kind:'node', type:'note',   t1:'RViz', t2:'visualization'},
+};
+
+// [from, to]  (topic/dds edges)
+const E = [
+  // teleop
+  ['ui','joy'],['ui','t_start'],['ui','t_estop'],['ui','t_bal'],['ui','t_walk'],['ui','t_cmdvel'],
+  ['joystick','joy_manual'],['joystick','auto_en'],
+  ['joy_manual','joy_mux'],['auto_en','joy_mux'],['auto_en','nav2'],
+  ['joy_mux','joy'],
+  // odometry / planner
+  ['pose','molafix'],['molafix','posefix'],
+  ['posefix','joy_mux'],['posefix','dijkstra'],['posefix','nav2'],
+  ['goal','dijkstra'],['map','dijkstra'],
+  ['dijkstra','path'],['path','nav2'],['path','joy_mux'],
+  ['nav2','auto_joy'],['auto_joy','joy_mux'],['nav2','wp_mark'],['nav2','goal_mark'],
+  // loco client
+  ['joy','loco'],['t_start','loco'],['t_estop','loco'],['t_bal','loco'],['t_walk','loco'],['t_cmdvel','loco'],
+  ['loco','move'],['loco','arms_en'],['loco','arms_home'],['loco','ha_r'],['loco','ha_l'],
+  ['move','robot'],
+  // arms
+  ['imarker','hg_r'],['imarker','hg_l'],
+  ['hg_r','armctl'],['hg_l','armctl'],['arms_en','armctl'],['arms_home','armctl'],
+  ['t_walk','armctl'],['t_bal','armctl'],
+  ['armctl','ws_l'],['armctl','ws_r'],['armctl','walk_rdy'],['armctl','arm_sdk'],['arm_sdk','robot'],
+  ['armctl','jstate'],
+  // hands
+  ['ha_r','inspire'],['ha_l','inspire'],
+  ['inspire','insp_cmd'],['insp_cmd','robot'],['insp_st','inspire'],['inspire','jstate'],
+  // state
+  ['lowstate','robstate'],['lowstate','armctl'],['robot','lowstate'],
+  ['robstate','jstate'],['robstate','imu'],['robstate','motorst'],
+  ['jstate','rviz'],
+];
+
+const canvas=document.getElementById('canvas'), svg=document.getElementById('edges');
+let maxX=0,maxY=0;
+for(const [id,n] of Object.entries(N)){
+  const h = n.t2 ? H2 : H1;
+  n.h=h;
+  const el=document.createElement('div');
+  el.className='box '+n.kind+' '+n.type;
+  el.style.left=n.x+'px'; el.style.top=n.y+'px'; el.style.width=n.w+'px'; el.style.minHeight=h+'px';
+  el.innerHTML='<div class="t1">'+n.t1+'</div>'+(n.t2?'<div class="t2">'+n.t2+'</div>':'');
+  canvas.appendChild(el);
+  maxX=Math.max(maxX,n.x+n.w); maxY=Math.max(maxY,n.y+h);
+}
+canvas.style.width=(maxX+40)+'px';
+canvas.style.height=(maxY+40)+'px';
+
+function C(n){return {l:n.x, r:n.x+n.w, t:n.y, b:n.y+n.h, cx:n.x+n.w/2, cy:n.y+n.h/2};}
+const NS='http://www.w3.org/2000/svg';
+
+// arrow markers
+const defs=document.createElementNS(NS,'defs');
+function marker(id,color){
+  const m=document.createElementNS(NS,'marker');
+  m.setAttribute('id',id);m.setAttribute('viewBox','0 0 10 10');
+  m.setAttribute('refX','8.5');m.setAttribute('refY','5');
+  m.setAttribute('markerWidth','7');m.setAttribute('markerHeight','7');m.setAttribute('orient','auto-start-reverse');
+  const p=document.createElementNS(NS,'path');p.setAttribute('d','M0,0 L10,5 L0,10 z');p.setAttribute('fill',color);
+  m.appendChild(p);defs.appendChild(m);
+}
+marker('a', getComputedStyle(document.documentElement).getPropertyValue('--edge').trim()||'#8a9099');
+marker('ad', getComputedStyle(document.documentElement).getPropertyValue('--edge-dds').trim()||'#c07a3a');
+svg.appendChild(defs);
+
+function draw(from,to,dds){
+  const s=C(N[from]), t=C(N[to]);
+  const dx=t.cx-s.cx, dy=t.cy-s.cy;
+  let p0,p1,c0,c1;
+  if(dx>10 && Math.abs(dx)>=Math.abs(dy)-30){            // forward (rightward)
+    p0={x:s.r,y:s.cy}; p1={x:t.l,y:t.cy};
+    const k=Math.max(30,Math.abs(dx)*0.4);
+    c0={x:p0.x+k,y:p0.y}; c1={x:p1.x-k,y:p1.y};
+  } else if(dx<-10 && Math.abs(dx)>=Math.abs(dy)-30){    // backward (leftward feedback) -> dip below
+    p0={x:s.cx,y:s.b}; p1={x:t.cx,y:t.b};
+    const dip=Math.max(s.b,t.b)+46;
+    c0={x:s.cx,y:dip}; c1={x:t.cx,y:dip};
+  } else if(dy>0){                                       // downward
+    p0={x:s.cx,y:s.b}; p1={x:t.cx,y:t.t};
+    const k=Math.max(24,Math.abs(dy)*0.4);
+    c0={x:p0.x,y:p0.y+k}; c1={x:p1.x,y:p1.y-k};
+  } else {                                               // upward
+    p0={x:s.cx,y:s.t}; p1={x:t.cx,y:t.b};
+    const k=Math.max(24,Math.abs(dy)*0.4);
+    c0={x:p0.x,y:p0.y-k}; c1={x:p1.x,y:p1.y+k};
+  }
+  const path=document.createElementNS(NS,'path');
+  path.setAttribute('d',`M${p0.x},${p0.y} C${c0.x},${c0.y} ${c1.x},${c1.y} ${p1.x},${p1.y}`);
+  path.setAttribute('fill','none');
+  path.setAttribute('stroke', dds?'var(--edge-dds)':'var(--edge)');
+  path.setAttribute('stroke-width', dds?'1.9':'1.5');
+  if(dds) path.setAttribute('stroke-dasharray','6 4');
+  path.setAttribute('marker-end', dds?'url(#ad)':'url(#a)');
+  svg.appendChild(path);
+}
+for(const [a,b] of E){ draw(a,b, !!(N[a].dds||N[b].dds)); }
+</script>
