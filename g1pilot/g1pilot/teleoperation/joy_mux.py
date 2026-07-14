@@ -89,9 +89,23 @@ class JoyMux(Node):
         self.t_last_manual = time.time()
 
     def cb_enable(self,msg:Bool):
+        was_enabled = self.auto_enabled
         self.auto_enabled=bool(msg.data)
         state = "ENABLED" if self.auto_enabled else "DISABLED"
         self.get_logger().info(f"[AUTO] {state}")
+        # Sicherheit: beim AUSschalten der Autonomie EINEN neutralen Stop-Joy
+        # senden (Achsen 0, Buttons 0). Sonst behaelt der Loco das zuletzt
+        # kommandierte Move() (loco_client: kein StopMove; loco_sim: kein
+        # cmd-Timeout) -> der Roboter liefe nach dem Disable weiter. Der Button-8
+        # 1->0-Uebergang loest auf real loco_client.StopMove aus; in der Sim
+        # uebersetzt joy_to_cmdvel die Nullachsen in loco_cmd_vel=0.
+        if was_enabled and not self.auto_enabled:
+            stop = Joy()
+            stop.header.stamp = self.get_clock().now().to_msg()
+            stop.axes = [0.0]*8
+            stop.buttons = [0]*14
+            self.pub.publish(stop)
+            self.last_auto = None
 
     def nearest_index(self):
         if not self.path:

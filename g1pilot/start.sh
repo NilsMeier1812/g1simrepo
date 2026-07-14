@@ -203,6 +203,12 @@ else
     export OPEN_GUIS=false
   fi
 
+  # ── 2c) Navigation (g1pilot-Ansatz) mitstarten ───────────────────────
+  ask_menu "2c) Navigation mitstarten? (dijkstra_planner + nav2point + Sim-Glue)" 2 "${G1_ENABLE_NAV:-}" \
+    "Ja  — Nav-Stack an (Ziel per RViz/CLI; siehe NAVIGATION.md)|1" \
+    "Nein — ohne Navigation (nur Teleop/Loco)|0"
+  export G1_ENABLE_NAV="$REPLY_VALUE"
+
   # ── 3) Rebuild ────────────────────────────────────────────────────────
   ask_menu "3) Docker-Images vor dem Start neu bauen?" 1 "" \
     "Nein — vorhandene Images nutzen (schnell)|0" \
@@ -228,6 +234,8 @@ else
   echo -e "   Lockstep       : ${G}SIM_LOCKSTEP=${SIM_LOCKSTEP}${R} ${DIM}(immer an, auf Echtzeit gedeckelt)${R}"
   echo -e "   Basis          : ${G}HOLD_BASE_MODE=${HOLD_BASE_MODE}${R} (Loco-Modus)"
   echo -e "   Loco-Policy    : ${G}g1_wholebody${R} ${DIM}(Stehen=cmd0; Laufen via Streamdeck)${R}"
+  _nav_lbl=$( [ "${G1_ENABLE_NAV}" = "1" ] && echo "an (dijkstra + nav2point + Sim-Glue)" || echo "aus" )
+  echo -e "   Navigation     : ${G}G1_ENABLE_NAV=${G1_ENABLE_NAV}${R} ${DIM}(${_nav_lbl})${R}"
   [ "${#PASSTHRU[@]}" -gt 0 ] && echo -e "   compose-Args   : ${G}${PASSTHRU[*]}${R}"
   echo
 fi

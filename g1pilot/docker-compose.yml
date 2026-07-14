@@ -88,6 +88,9 @@ services:
       # Inspire-Haende: bringup_sim.launch.py startet dann inspire_hand und setzt
       # robot_state publish_hand_joints:=false (sonst doppelte Finger-/joint_states).
       - G1_INSPIRE_HANDS=${G1_INSPIRE_HANDS:-0}
+      # Navigation (g1pilot-Ansatz) in der Sim mitstarten: dijkstra_planner +
+      # nav2point + Sim-Glue (sim_localization, joy_to_cmdvel). Siehe NAVIGATION.md.
+      - G1_ENABLE_NAV=${G1_ENABLE_NAV:-0}
     command: >
       bash -c "cd /ros2_ws &&
                source /opt/ros/humble/setup.bash &&

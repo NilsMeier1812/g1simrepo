@@ -370,3 +370,6 @@ ChannelFactoryInitialize(domain, iface)
 
 - [`g1pilot/CHEATS.md`](g1pilot/CHEATS.md) — alle Steuer-Topics + Live-Tuning-Parameter
 - [`g1pilot/TESTING_SIM.md`](g1pilot/TESTING_SIM.md) — Test-Ablauf
+- [`g1pilot/NAVIGATION.md`](g1pilot/NAVIGATION.md) — autonome Punkt-zu-Punkt-Navigation (Start, Bedienung, Aufbau)
+- [`g1pilot/PREFLIGHT.md`](g1pilot/PREFLIGHT.md) — Abnahme-Checkliste erster Real-Stand/-Gang
+- [`g1pilot/REAL_TESTING.md`](g1pilot/REAL_TESTING.md) — Hardware-Runbook
