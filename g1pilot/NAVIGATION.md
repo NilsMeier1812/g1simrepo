@@ -69,6 +69,12 @@ stehen.
   konfiguriert und der Fixed Frame ist `map` — es funktioniert also direkt, ohne
   Einstellungen. (Die leere graue Karte ist normal: `create_map` ist ein
   Dummy — geklickt werden kann trotzdem ueberall.)
+  > **Die Zieh-Richtung = die End-Ausrichtung.** Der Roboter faehrt zum Punkt und
+  > dreht sich dort **auf der Stelle** auf genau diesen Yaw (kuerzester Weg). Nur
+  > klicken (nicht ziehen) = Yaw 0. Tuning in `nav2point` (Live via `--ros-args -p`):
+  > `yaw_tol_deg` (Toleranz, Default 8°), `align_yaw_kp` (Dreh-Tempo),
+  > `yaw_hold_dist` (ab hier gerade reingleiten statt kreiseln, Default 0.5 m),
+  > `final_align:=false` schaltet die Endausrichtung ganz ab.
 - **CLI (immer):**
   ```bash
   ros2 topic pub --once /g1pilot/goal geometry_msgs/msg/PoseStamped \
