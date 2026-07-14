@@ -36,12 +36,16 @@ in der Sim übst, gilt 1:1 real.
 
 ```bash
 cd g1pilot && ./start.sh
-#  1) RViz:        Ja   (empfohlen — du willst Pfad/Ziel sehen)
-#  2) Inspire:     nach Bedarf
 #  2c) Navigation: JA   ← neuer Menüpunkt, startet den Nav-Stack
 ```
 
-Nicht-interaktiv geht auch: `USE_RVIZ=true G1_ENABLE_NAV=1 ./start.sh --yes`.
+Nicht-interaktiv: `G1_ENABLE_NAV=1 ./start.sh --yes`.
+
+> **Es gibt KEIN eigenes Nav-Fenster.** Die Navigation lebt in **RViz** (Karte,
+> Pfad, Ziel-Werkzeug). Bei `G1_ENABLE_NAV=1` wird **RViz automatisch gestartet**
+> mit der Nav-Ansicht `nav.rviz` (Fixed Frame `map`). Neben dem MuJoCo-Fenster
+> geht also ein RViz-Fenster auf, in dem eine (anfangs leere) Karte liegt — das
+> ist die Nav-Oberflaeche.
 
 **2) Roboter ins Laufen-bereit bringen** *(Nav bewegt ihn nur, wenn er laufen darf)*
 
@@ -60,9 +64,11 @@ stehen.
 
 **A) Ziel setzen** — Punkt in der Karte (`map`-Frame):
 
-- **RViz:** Werkzeug **„2D Nav Goal"** wählen und in die Szene klicken.
-  Einmalig das Tool-Topic auf `/g1pilot/goal` stellen (RViz → *Tool Properties*
-  → *2D Nav Goal* → *Topic* = `/g1pilot/goal`), und *Fixed Frame* = `map`.
+- **RViz:** oben in der Toolbar **„2D Goal Pose"** anklicken, dann in die Karte
+  klicken-ziehen. In `nav.rviz` ist das Werkzeug bereits auf `/g1pilot/goal`
+  konfiguriert und der Fixed Frame ist `map` — es funktioniert also direkt, ohne
+  Einstellungen. (Die leere graue Karte ist normal: `create_map` ist ein
+  Dummy — geklickt werden kann trotzdem ueberall.)
 - **CLI (immer):**
   ```bash
   ros2 topic pub --once /g1pilot/goal geometry_msgs/msg/PoseStamped \

@@ -41,6 +41,11 @@ def generate_launch_description():
     #  Nav-Stack ueber bringup_real (G1_ENABLE_LIDAR=1) mit MOLA + loco_client.
     enable_nav = os.environ.get('G1_ENABLE_NAV', '0').strip().lower() in ('1', 'true', 'yes', 'on')
 
+    # Navigation OHNE RViz waere blind (Karte/Pfad/Ziel-Werkzeug leben in RViz,
+    # es gibt kein eigenes Nav-Fenster) -> bei Nav RViz erzwingen.
+    if enable_nav:
+        use_rviz = 'true'
+
     nodes = [
 
         # ── 1. robot_state: liest LowState_ von MuJoCo über DDS lo ──────
@@ -60,6 +65,9 @@ def generate_launch_description():
                 # (Regelrate haengt am rt/lowstate-Eingang). Per Start-Menue/USE_RVIZ
                 # zuschaltbar. Der Roboter ist ohnehin im MuJoCo-Fenster sichtbar.
                 'use_rviz':             use_rviz,
+                # Bei Nav die Nav-Ansicht (Fixed Frame 'map', Ziel-Werkzeug ->
+                # /g1pilot/goal, Karte/Pfad sichtbar); sonst die Standard-Ansicht.
+                'rviz_config':          'nav.rviz' if enable_nav else '29dof.rviz',
             }.items()
         ),
 
