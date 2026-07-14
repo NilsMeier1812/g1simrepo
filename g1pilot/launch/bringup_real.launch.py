@@ -62,6 +62,10 @@ def generate_launch_description():
                 # RViz default AN: der rviz-Marker ist auf real das Interface
                 # fuer die Arm-Manipulation.
                 'use_rviz':             use_rviz,
+                # Ohne LiDAR keine MOLA-Odometrie -> mola_fixed wuerde nur idle
+                # auf /lidar_odometry/pose warten. Mit LiDAR (G1_ENABLE_LIDAR=1)
+                # wieder an.
+                'enable_mola':          'true' if enable_lidar else 'false',
             }.items()
         ),
 

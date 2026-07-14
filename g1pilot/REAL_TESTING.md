@@ -5,6 +5,10 @@ echten G1 (Arme + Inspire-Haende + eingebauter Unitree-Loco-Controller).
 **Die Stufen bauen aufeinander auf — in dieser Reihenfolge testen und erst
 weitergehen, wenn die Erwartung der Stufe erfuellt ist.**
 
+> 📋 **Zum Abhaken vor/waehrend des ersten Laufs:** die kompakte Gate-Liste in
+> [`PREFLIGHT.md`](PREFLIGHT.md) (dieses Dokument = das *Wie*, PREFLIGHT = das
+> *Ob-schon-sicher*).
+
 ---
 
 ## 0. Sicherheits-Checkliste (VOR dem ersten Start)
