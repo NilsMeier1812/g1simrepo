@@ -80,22 +80,23 @@ Der Planer publiziert daraufhin `/g1pilot/path` (in RViz als Linie sichtbar),
 
 **B) Autonomie scharfschalten** — erst jetzt fährt der Roboter los:
 
-```bash
-ros2 topic pub --once /g1pilot/auto_enable std_msgs/msg/Bool "{data: true}"
-```
+- **Streamdeck-GUI (empfohlen):** Button **AUTO NAV** klicken (er wird grün).
+  Der Button erscheint automatisch, sobald der Nav-Stack läuft (Sim:
+  `G1_ENABLE_NAV`, Real: `G1_ENABLE_LIDAR`).
+- **CLI (Alternative):**
+  ```bash
+  ros2 topic pub --once /g1pilot/auto_enable std_msgs/msg/Bool "{data: true}"
+  ```
+- **Real zusätzlich:** der PS4-Auto-Button (`joystick.py` toggelt `auto_enable`).
 
-*(Real zusätzlich möglich: der PS4-Auto-Button — `joystick.py` toggelt
-`/g1pilot/auto_enable`.)* Der Roboter folgt dem Pfad und **stoppt selbstständig
-am Ziel** (`goal_tolerance`).
+Der Roboter folgt dem Pfad und **stoppt selbstständig am Ziel** (`goal_tolerance`).
 
 **C) Autonomie abschalten / anhalten:**
 
-```bash
-ros2 topic pub --once /g1pilot/auto_enable std_msgs/msg/Bool "{data: false}"
-```
-
-Danach steht er wieder still (bzw. hört wieder auf manuelle Kommandos). Sanftes
-Not-Anhalten wie immer: **START BALANCING**. Harter Not-Aus: **EMERGENCY**.
+**AUTO NAV** erneut klicken (Button wird grau) — oder CLI mit `{data: false}`.
+Der Roboter stoppt dann sofort (`joy_mux` sendet beim Abschalten einen
+Stop-Befehl). Sanftes Not-Anhalten wie immer: **START BALANCING**. Harter
+Not-Aus: **EMERGENCY**.
 
 ---
 
