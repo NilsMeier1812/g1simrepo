@@ -57,7 +57,13 @@ def add_inertial(b,link):
 def add_geom(b,link):
     mb=mesh_base(link)
     if mb is None: return
-    g=ET.SubElement(b,'geom'); g.set('type','mesh'); g.set('contype','0'); g.set('conaffinity','0')
+    # Finger-/Handflaechen-Meshes MIT Kollision (contype/conaffinity=2): so gehen die
+    # Finger nicht mehr durcheinander (Daumen<->Zeigefinger kollidieren) und Objekte
+    # werden mit der ganzen Fingeroberflaeche gegriffen. Bit 2 = nur mit greifbaren
+    # Objekten/anderen Fingern, NICHT mit Boden/Koerper. MuJoCos filterparent (Default
+    # an) unterdrueckt die Selbstkollision direkt benachbarter Glieder -> Finger
+    # schliessen weiterhin voll. Kollision nutzt die konvexe Huelle des Meshes.
+    g=ET.SubElement(b,'geom'); g.set('type','mesh'); g.set('contype','2'); g.set('conaffinity','2')
     g.set('group','1'); g.set('density','0'); g.set('rgba','0.55 0.55 0.6 1'); g.set('mesh',os.path.splitext(mb)[0]); MESHES.add(mb)
 def emit(parent, joint):
     child=joint.find('child').get('link')

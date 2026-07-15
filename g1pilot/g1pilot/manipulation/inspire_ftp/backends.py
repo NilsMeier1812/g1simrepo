@@ -216,8 +216,9 @@ class MujocoContactBackend(HandBackend):
             a = 1000.0 * (1.0 - rad / closed) if closed > 1e-6 else 1000.0
             angle_act.append(int(round(_clamp(a, 0.0, 1000.0))))
         # force_act (6 DOF): Finger-Antriebskraft [Nm] -> Gramm (wie Register 1582).
-        # Betrag, an den echten Bereich (-4000..4000 g) geklemmt.
-        force_act = [_clamp(abs(float(drive6[d])) * self.drive_scale, 0.0, 4000.0)
+        # Betrag, an den echten Bereich (-4000..4000 g) geklemmt, GANZZAHLIG wie am
+        # echten Roboter (int16) — sonst zeigt die GUI 15+ Nachkommastellen.
+        force_act = [float(round(_clamp(abs(float(drive6[d])) * self.drive_scale, 0.0, 4000.0)))
                      for d in range(6)]
         # 17 Zonen-Kraefte [N] -> tactile-Id -> N (kanonische _ZONES-Reihenfolge).
         zone_n = {self._ZONES[i][1]: max(0.0, float(zf17[i])) for i in range(len(self._ZONES))}
