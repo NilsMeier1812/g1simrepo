@@ -116,14 +116,19 @@ class MujocoContactBackend(HandBackend):
         ``rt/inspire/cmd`` (LowCmd_, motor_cmd[k].q) -> Finger-Position-Servos.
       * Ist:  ``rt/inspire/state`` (LowState_): motor_state[0..23].q = ECHTE Winkel,
         motor_state[k].dq = Taktil-Kraefte [N] der 17 Zonen JE HAND (links k=0..16,
-        rechts k=17..33), in KANONISCHER Zonen-Reihenfolge (== Bridge/tactile.py).
+        rechts k=17..33), motor_state[k].tau_est = Finger-Antriebskraft [Nm] der 6 DOF
+        JE HAND (links k=0..5, rechts k=6..11). Alles in KANONISCHER Reihenfolge.
 
-    Die echte RH56DFTP-2 hat 17 Taktil-Zonen je Hand; das MJCF-Modell traegt genau
-    diese 17 <touch>-Sensoren pro Hand (palm + je Finger tip/nail/pad, Daumen auch
-    mid). Damit sieht der ftp_hand_controller/die GUI in der Sim DIESELBEN Zonen wie
-    am echten Roboter. MuJoCo liefert je Zone EINEN Kraft-Skalar (Summe der Normal-
-    Kontaktkraefte); die per-Taxel-Matrix der GUI wird daraus verteilt (der raeumliche
-    Feindruck INNERHALB einer Zone ist in MuJoCo nicht aufgeloest -> synthetisch).
+    Die echte RH56DFTP-2 hat ZWEI unabhaengige Kraft-Ausgaben, beide hier abgebildet:
+      1. ``force_act`` (Register 1582, 6/Hand, Gramm) = die vom jeweiligen FINGER
+         aufgebrachte Kraft. In der Sim = Finger-ANTRIEBSKRAFT (actuator_force) ->
+         waehrend Bewegung/Halten/Druecken != 0, wie am echten Roboter (unabhaengig
+         von externem Kontakt). Fuellt model.force_act -> Kraftbalken der Controller-GUI.
+      2. 17 Taktil-Zonen je Hand (Register 3000+) = die Kontakt-HAUT. Das MJCF-Modell
+         traegt genau diese 17 <touch>-Sensoren pro Hand (palm + je Finger tip/nail/
+         pad, Daumen auch mid). MuJoCo liefert je Zone EINEN Kraft-Skalar (Summe der
+         Normal-Kontaktkraefte); die per-Taxel-Matrix des Viewers wird daraus verteilt
+         (Feindruck INNERHALB einer Zone synthetisch, Zonen-Gesamtkraft echt).
 
     Fuellt /joint_states (echte Winkel) sowie model.angle_act / force_act / zones.
     """
@@ -132,7 +137,6 @@ class MujocoContactBackend(HandBackend):
     _SUFFIX12 = [f"{f}_{i}" for f, n in joint_map.HAND_FINGERS for i in range(1, n + 1)]
     # DOF -> repraesentatives (proximales) Gelenk fuer die Winkel-Rueckrechnung.
     _DOF_REP = ["little_1", "ring_1", "middle_1", "index_1", "thumb_2", "thumb_1"]
-    _DOF_FINGER = ["little", "ring", "middle", "index", "thumb", "thumb"]
     # 17 Zonen JE HAND, KANONISCH (== unitree_sdk2py_bridge.ZONE_SUFFIX). Jede Zone:
     # (mjcf_suffix, tactile.py-Zonen-Id). Die tactile-Id adressiert die GUI-Zone.
     _ZONES = [
@@ -143,18 +147,10 @@ class MujocoContactBackend(HandBackend):
         ("thumb_tip", "daumen_tip"), ("thumb_nail", "daumen_nail"), ("thumb_mid", "daumen_mid"),
         ("thumb_pad", "daumen_pad"), ("palm", "palme"),
     ]
-    # Finger -> seine tactile-Zonen-Ids (fuer die 6-DOF-Kraftbalken der GUI).
-    _FINGER_ZONE_IDS = {
-        "little": ["kleiner_tip", "kleiner_nail", "kleiner_pad"],
-        "ring": ["ring_tip", "ring_nail", "ring_pad"],
-        "middle": ["mittel_tip", "mittel_nail", "mittel_pad"],
-        "index": ["zeige_tip", "zeige_nail", "zeige_pad"],
-        "thumb": ["daumen_tip", "daumen_nail", "daumen_mid", "daumen_pad"],
-    }
 
     def __init__(self, publish_fn, interface: str = "lo",
                  closed_rad: Dict[str, float] | None = None, force_scale: float = 100.0,
-                 zone_scale: float = 150.0):
+                 zone_scale: float = 150.0, drive_scale: float = 2000.0):
         from g1pilot.utils.common import init_dds
         from unitree_sdk2py.core.channel import ChannelPublisher, ChannelSubscriber
         from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_, LowState_
@@ -162,8 +158,9 @@ class MujocoContactBackend(HandBackend):
 
         self.publish_fn = publish_fn
         self.closed = dict(closed_rad) if closed_rad else dict(joint_map.CLOSED_RAD)
-        self.force_scale = float(force_scale)   # N -> 0..1000 Kraftbalken der GUI
+        self.force_scale = float(force_scale)   # (frei/kompat) N-Skala
         self.zone_scale = float(zone_scale)     # N -> 0..4095 Taktil-Heatmap der GUI
+        self.drive_scale = float(drive_scale)   # Nm -> Gramm (force_act, ~Hebel/g)
         self._zone_shape = {z[0]: (z[4], z[5]) for z in tactile.TACTILE_ZONES}  # id->(rows,cols)
         self.joint_names = joint_map.hand_joint_names()   # 24, kanonisch
         self._state = None
@@ -207,7 +204,8 @@ class MujocoContactBackend(HandBackend):
                 out.append(int(peak * (0.55 + 0.45 * (1.0 - dist))))
         return out
 
-    def _fill_model(self, model: HandModel, q12: List[float], zf17: List[float]) -> None:
+    def _fill_model(self, model: HandModel, q12: List[float], zf17: List[float],
+                    drive6: List[float]) -> None:
         # Winkel-Rueckrechnung (6 DOF, 0..1000) aus den 12 Gelenk-Radiant.
         radmap = {self._SUFFIX12[i]: q12[i] for i in range(len(self._SUFFIX12))}
         angle_act = []
@@ -217,6 +215,10 @@ class MujocoContactBackend(HandBackend):
             rad = radmap.get(suf, 0.0)
             a = 1000.0 * (1.0 - rad / closed) if closed > 1e-6 else 1000.0
             angle_act.append(int(round(_clamp(a, 0.0, 1000.0))))
+        # force_act (6 DOF): Finger-Antriebskraft [Nm] -> Gramm (wie Register 1582).
+        # Betrag, an den echten Bereich (-4000..4000 g) geklemmt.
+        force_act = [_clamp(abs(float(drive6[d])) * self.drive_scale, 0.0, 4000.0)
+                     for d in range(6)]
         # 17 Zonen-Kraefte [N] -> tactile-Id -> N (kanonische _ZONES-Reihenfolge).
         zone_n = {self._ZONES[i][1]: max(0.0, float(zf17[i])) for i in range(len(self._ZONES))}
         # Taktil-Heatmap: JEDE der 17 Zonen aus ihrer echten Kontaktkraft fuellen.
@@ -225,12 +227,6 @@ class MujocoContactBackend(HandBackend):
             rows, cols = self._zone_shape.get(zid, (0, 0))
             if rows * cols:
                 zones[zid] = self._zone_cells(newton, rows, cols)
-        # 6-DOF-Kraftbalken: staerkste Zone des jeweiligen Fingers (responsiv).
-        force_act = []
-        for d in range(6):
-            zids = self._FINGER_ZONE_IDS[self._DOF_FINGER[d]]
-            fmax = max((zone_n.get(z, 0.0) for z in zids), default=0.0)
-            force_act.append(_clamp(fmax * self.force_scale, 0.0, 1000.0))
         with model.lock:
             model.angle_act = angle_act
             model.force_act = force_act
@@ -251,9 +247,10 @@ class MujocoContactBackend(HandBackend):
         if st is not None:
             q = [float(st.motor_state[k].q) for k in range(24)]      # 24 Finger-Winkel
             zf = [float(st.motor_state[k].dq) for k in range(34)]    # 34 Zonen-Kraefte [N]
+            df = [float(st.motor_state[k].tau_est) for k in range(12)]  # 12 Antriebskraefte [Nm]
             self.publish_fn(self.joint_names, q)
-            self._fill_model(models["left"], q[0:12], zf[0:17])
-            self._fill_model(models["right"], q[12:24], zf[17:34])
+            self._fill_model(models["left"], q[0:12], zf[0:17], df[0:6])
+            self._fill_model(models["right"], q[12:24], zf[17:34], df[6:12])
         else:
             # Noch kein State (Sim faehrt hoch) -> Soll publizieren, RViz bleibt nicht leer.
             self.publish_fn(names, positions)

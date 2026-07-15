@@ -90,10 +90,16 @@ daher ist `localhost` korrekt.
 ## Hinweise zur Sim
 
 **Stufe 2 (`mujoco`, Default)** — echte Kontaktsensorik:
-- Das MuJoCo-Modell hat **dieselben 17 Taktil-Zonen je Hand** wie die echte
-  RH56DFTP-2 (palm + je Finger tip/nail/pad, Daumen auch mid), platziert an den
-  `*_force_sensor_*`-Frames des URDF. Der Viewer zeigt echte, physikbasierte
-  Kontaktkraefte — greift die Hand etwas Greifbares, leuchten die Zonen auf.
+- Die echte Hand hat ZWEI unabhaengige Kraft-Ausgaben, beide in der Sim abgebildet:
+  - **`force_act`** (Register 1582, 6/Hand, Gramm) = die vom **Finger aufgebrachte
+    Kraft**, die die **Controller-GUI** als Kraftbalken zeigt. In der Sim = Finger-
+    **Antriebskraft** (`actuator_force`) -> waehrend Bewegung/Halten/Druecken != 0,
+    genau wie am echten Roboter (auch OHNE externen Kontakt kommt ein Wert zurueck).
+    Steigt stark, wenn ein Finger gegen Widerstand (Objekt) drueckt.
+  - **17 Taktil-Zonen je Hand** (Register 3000+) = die Kontakt-**Haut** (Viewer-
+    Heatmap). Platziert an den `*_force_sensor_*`-Frames des URDF, palm + je Finger
+    tip/nail/pad, Daumen auch mid. Echte, physikbasierte Kontaktkraefte — greift die
+    Hand etwas Greifbares, leuchten die Zonen auf.
 - **Greifbar = Kollisions-Bit 2**: Finger-Zonen kollidieren nur mit Objekten, die
   `contype`/`conaffinity` Bit 2 setzen (und untereinander), NICHT mit Boden/Koerper.
   Ohne so ein Objekt in Handnaehe bleiben die Kraefte 0 (nichts wird beruehrt).

@@ -83,6 +83,19 @@ class UnitreeSdk2Bridge:
                         self.mj_model, mujoco.mjtObj.mjOBJ_SENSOR, f"{side}_{suf}_touch")
                     self.zone_adr.append(
                         int(self.mj_model.sensor_adr[sid]) if sid >= 0 else -1)
+        # force_act der ECHTEN Hand (Register 1582, 6/Hand, Gramm) = die vom Finger
+        # AUFGEBRACHTE Kraft — ein EIGENER Sensor, NICHT die Taktil-Haut. In MuJoCo ist
+        # das die Finger-Antriebskraft (actuator_force des repraesentativen Gelenks je
+        # DOF). Sie ist waehrend Bewegung/Halten/Druecken != 0 (wie am echten Roboter),
+        # unabhaengig von externem Kontakt. DOF-Reihenfolge wie force_act der GUI.
+        self._DOF_REP = ["little_1", "ring_1", "middle_1", "index_1", "thumb_2", "thumb_1"]
+        self.force_dof_aids = []      # 12 Actuator-IDs: links 6 DOF, dann rechts 6 DOF (-1 = fehlt)
+        if self.num_hand:
+            for side in ("left", "right"):
+                for rep in self._DOF_REP:
+                    aid = mujoco.mj_name2id(
+                        self.mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, f"{side}_{rep}_joint")
+                    self.force_dof_aids.append(int(aid) if aid >= 0 else -1)
         self.dim_motor_sensor = MOTOR_SENSOR_NUM * self.num_motor
         if self.num_hand:
             nzones = sum(1 for a in self.zone_adr if a >= 0)
@@ -445,6 +458,11 @@ class UnitreeSdk2Bridge:
                 for i, adr in enumerate(self.zone_adr):
                     self.hand_state.motor_state[i].dq = (
                         float(self.mj_data.sensordata[adr]) if adr >= 0 else 0.0)
+                # force_act (6 DOF/Hand): Finger-Antriebskraft [Nm] -> motor_state[k].tau_est
+                # (links k=0..5, rechts k=6..11). Backend skaliert nach Gramm.
+                for i, aid in enumerate(self.force_dof_aids):
+                    self.hand_state.motor_state[i].tau_est = (
+                        float(self.mj_data.actuator_force[aid]) if aid >= 0 else 0.0)
                 self.hand_state_puber.Write(self.hand_state)
 
             if self.have_frame_sensor:
