@@ -17,7 +17,7 @@ bleiben in allen Modi identisch.
 | Stufe | Backend | Was passiert | Status |
 |-------|---------|--------------|--------|
 | **1** | `SimJointStateBackend` | Finger-Gelenke folgen der Steuerung in **RViz** (`/joint_states`). Kraft/Taktil = **0**. | ✅ |
-| **2** | `MujocoContactBackend` | Finger als echte **MuJoCo-Aktuatoren** (Greifen/Kollision) via DDS `rt/inspire/cmd\|state`; Fingerspitzen-Kraefte aus MuJoCo-**Touch-Sensoren**. | ✅ Sim-Default |
+| **2** | `MujocoContactBackend` | Finger als echte **MuJoCo-Aktuatoren** (Greifen/Kollision) via DDS `rt/inspire/cmd\|state`; **alle 17 Taktil-Zonen je Hand** aus MuJoCo-**Touch-Sensoren** (dieselben Zonen wie real). | ✅ Sim-Default |
 | **3** | `InspireModbusBackend` | **ECHTE Haende** via Modbus TCP (eine IP je Hand im Roboter-LAN; Register-Map aus `reference/ftp_hand_controller/`). Liest Ist-Winkel, Kraefte (Gramm) und **alle 17 Taktil-Zonen**. | ✅ Real-Default |
 
 Backend-Wahl: Parameter `backend` = `sim` / `mujoco` / `modbus`. Fuer
@@ -87,10 +87,23 @@ Die WebSockets bleiben unveraendert: `ws://localhost:8766` (Controller) bzw.
 `ws://localhost:8765` (Viewer). Der Container nutzt `network_mode: host`,
 daher ist `localhost` korrekt.
 
-## Hinweise zur Sim (Stufe 1)
+## Hinweise zur Sim
 
-- **Kraft/Taktil sind 0** — es gibt keine Sensorik in der Sim. Der Viewer laeuft
-  trotzdem (zeigt Nullen). Echte Werte kommen erst mit Stufe 2.
-- Die Ist-Winkel werden geschwindigkeitsbegrenzt nachgefuehrt
-  (`speed`-Slider wirkt), damit die GUI eine plausible Bewegung zeigt.
+**Stufe 2 (`mujoco`, Default)** — echte Kontaktsensorik:
+- Das MuJoCo-Modell hat **dieselben 17 Taktil-Zonen je Hand** wie die echte
+  RH56DFTP-2 (palm + je Finger tip/nail/pad, Daumen auch mid), platziert an den
+  `*_force_sensor_*`-Frames des URDF. Der Viewer zeigt echte, physikbasierte
+  Kontaktkraefte — greift die Hand etwas Greifbares, leuchten die Zonen auf.
+- **Greifbar = Kollisions-Bit 2**: Finger-Zonen kollidieren nur mit Objekten, die
+  `contype`/`conaffinity` Bit 2 setzen (und untereinander), NICHT mit Boden/Koerper.
+  Ohne so ein Objekt in Handnaehe bleiben die Kraefte 0 (nichts wird beruehrt).
+- MuJoCo liefert je Zone EINEN Kraft-Skalar (Summe der Normal-Kontaktkraefte); die
+  per-Taxel-Matrix des Viewers wird daraus verteilt. Der raeumliche Feindruck
+  INNERHALB einer Zone ist also synthetisch, die Zonen-Gesamtkraft ist echt.
+- Griffkraft ueber `FKP`/`FFRC` im MJCF-Generator (`gen_inspire_ftp_hand.py`)
+  tunebar; nach Aenderung das Modell neu generieren.
+
+**Stufe 1 (`sim`, nur RViz)** — keine Kontaktphysik:
+- Kraft/Taktil bleiben **0** (Platzhalter), nur die Ist-Winkel werden
+  geschwindigkeitsbegrenzt nachgefuehrt (`speed`-Slider wirkt).
 - `enabled` (Hauptschalter) gilt wie beim Original: ohne ihn bewegt sich nichts.
