@@ -41,6 +41,14 @@ try:
 except ImportError:  # pragma: no cover
     raise SystemExit("Fehlt: pip install websockets")
 
+# Der GUI-Watcher (start.sh) pingt den Controller-Port zyklisch mit einem rohen
+# TCP-Connect an, um zu erkennen, ob die Bridge lauscht. Jeder solche Probe ist
+# ein "kaputter" Handshake -> der websockets-Server loggt sonst einen vollen
+# Traceback ("did not receive a valid HTTP request") ~2x/s. Rein kosmetisch,
+# darum den Server-Logger stummschalten (Funktion bleibt unveraendert).
+import logging as _logging
+_logging.getLogger("websockets.server").setLevel(_logging.CRITICAL)
+
 from . import joint_map, tactile
 from .backends import SimJointStateBackend
 from .model import HandModel

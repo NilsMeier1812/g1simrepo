@@ -785,7 +785,7 @@ Visualization Manager:
   Enabled: true
   Global Options:
     Background Color: 9; 12; 40
-    Fixed Frame: pelvis
+    Fixed Frame: map
     Frame Rate: 30
   Name: root
   Tools:

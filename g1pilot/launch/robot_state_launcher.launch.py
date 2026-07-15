@@ -3,13 +3,13 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch_ros.substitutions import FindPackageShare
 from launch_ros.parameter_descriptions import ParameterValue
 import os
 
 package_name = "g1pilot"
 urdf_file_name = "g1_29dof_inspire_ftp.urdf"
-rviz_config_file_name = "29dof.rviz"
 
 def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
@@ -19,7 +19,8 @@ def generate_launch_description():
     interface = LaunchConfiguration("interface")
     sim_rate_hz = LaunchConfiguration("sim_rate_hz")
     use_rviz = LaunchConfiguration("use_rviz")
-    publish_hand_joints = LaunchConfiguration("publish_hand_joints")
+    enable_mola = LaunchConfiguration("enable_mola")
+    rviz_config = LaunchConfiguration("rviz_config")
 
     urdf = os.path.join(
         get_package_share_directory(package_name), "description_files/urdf", urdf_file_name
@@ -48,10 +49,16 @@ def generate_launch_description():
                                           "Regelschleife einbrechen)."),
         DeclareLaunchArgument("arm_controlled", default_value="both",
                                 description="Which arm to control: 'left', 'right', or 'both'"),
-        DeclareLaunchArgument("publish_hand_joints", default_value="true",
-                              description="Finger-Gelenke als /joint_states-Default (0) "
-                                          "mitpublizieren. Bei laufendem inspire_hand-Node "
-                                          "auf false setzen (sonst doppelte Finger-Quelle)."),
+        # MOLA-Odometrie-Fix-Node. Default an (Sim/Full-Stack). Im schlanken
+        # Real-Modus OHNE LiDAR abschaltbar (bringup_real setzt false): der Node
+        # wartet sonst nur idle auf /lidar_odometry/pose, das nie kommt.
+        DeclareLaunchArgument("enable_mola", default_value="true",
+                              description="mola_fixed-Node starten (MOLA-Odometrie-TF). "
+                                          "Ohne LiDAR (schlanker Real-Modus) auf false."),
+        # RViz-Config-Dateiname (in share/g1pilot/config). Nav nutzt nav.rviz
+        # (Fixed Frame 'map' + Ziel-Werkzeug auf /g1pilot/goal); sonst 29dof.rviz.
+        DeclareLaunchArgument("rviz_config", default_value="29dof.rviz",
+                              description="RViz-Config in config/ (29dof.rviz | nav.rviz)"),
 
         Node(
             package='g1pilot',
@@ -71,6 +78,7 @@ def generate_launch_description():
             package='g1pilot',
             executable='mola_fixed',
             name='mola_fixed',
+            condition=IfCondition(enable_mola),
             parameters=[{
             }],
             output='screen'
@@ -130,11 +138,9 @@ def generate_launch_description():
             condition=IfCondition(use_rviz),
             arguments=[
                 "-d",
-                os.path.join(
-                    get_package_share_directory(package_name),
-                    "config",
-                    rviz_config_file_name,
-                ),
+                PathJoinSubstitution([
+                    FindPackageShare(package_name), "config", rviz_config,
+                ]),
             ],
         ),
     ])

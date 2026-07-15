@@ -92,6 +92,10 @@ setup(
             'nav2point = g1pilot.navigation.nav2point:main',
             'create_map = g1pilot.navigation.create_map:main',
             'mola_fixed = g1pilot.navigation.fix_mola_odometry:main',
+            # Sim-Nav-Glue (nur Sim): Ersatz fuer MOLA (Pose aus rt/sportmodestate)
+            # und Joy->cmd_vel-Bruecke, damit der Real-Nav-Stack in MuJoCo laeuft.
+            'sim_localization = g1pilot.navigation.sim_localization:main',
+            'joy_to_cmdvel = g1pilot.navigation.joy_to_cmdvel:main',
 
             # Diagnostics / sim tools
             'sim_dds_check = g1pilot.tools.sim_dds_check:main',

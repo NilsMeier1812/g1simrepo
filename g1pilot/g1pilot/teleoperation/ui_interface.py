@@ -92,6 +92,9 @@ class StreamDeck(Node):
         self.pub_start_balancing = self.create_publisher(Bool, '/g1pilot/start_balancing', 10)
         self.pub_start_walking = self.create_publisher(Bool, '/g1pilot/start_walking', 10)
         self.pub_cmd_vel = self.create_publisher(Twist, '/g1pilot/loco_cmd_vel', 10)
+        # Navigation scharfschalten (AUTO NAV-Button): joy_mux gibt den Nav-Joy
+        # nur bei True weiter -> der Roboter faehrt das Ziel autonom an.
+        self.pub_auto_enable = self.create_publisher(Bool, '/g1pilot/auto_enable', 10)
         self.pub_arms_enabled = self.create_publisher(Bool, '/g1pilot/arms/enabled', 10)
         self.pub_arms_home = self.create_publisher(Bool, '/g1pilot/arms/home', 10)
         self.pub_marker_follow = self.create_publisher(Bool, '/g1pilot/marker_follow_ee', 10)
@@ -183,6 +186,18 @@ class ButtonGUI(QWidget):
 
             (4, 4): ("EMERGENCY\nSTOP", self.emergency_stop),
         }
+
+        # AUTO NAV: Navigation scharfschalten (Toggle). Nur einblenden, wenn der
+        # Nav-Stack ueberhaupt laeuft (Sim: G1_ENABLE_NAV, Real: G1_ENABLE_LIDAR) --
+        # sonst waere der Button eine Falle (publiziert an niemanden). Ablauf:
+        # erst laufbereit (START BALANCING [+ WALK in Sim]), Ziel setzen (RViz/CLI),
+        # DANN AUTO NAV -> der Roboter faehrt das Ziel an; erneut druecken = Stop.
+        def _envflag(name):
+            return os.environ.get(name, '0').strip().lower() in ('1', 'true', 'yes', 'on')
+        if _envflag('G1_ENABLE_NAV') or _envflag('G1_ENABLE_LIDAR'):
+            button_actions[(0, 3)] = (
+                "AUTO\nNAV",
+                lambda: self.toggle_button((0, 3), self.node.pub_auto_enable))
 
         # Stoer-Test: schubst den Sim-Roboter in zufaelliger Richtung, um die
         # Stoerunterdrueckung des Balancers zu pruefen. Auf dem echten G1 gibt

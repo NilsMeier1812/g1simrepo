@@ -34,6 +34,18 @@ def generate_launch_description():
     #  es zwei /joint_states-Quellen fuer dieselben Gelenke.
     inspire_hands = os.environ.get('G1_INSPIRE_HANDS', '0').strip().lower() in ('1', 'true', 'yes', 'on')
 
+    #  G1_ENABLE_NAV : "1"/"0" — den g1pilot-Nav-Stack (dijkstra_planner + nav2point)
+    #  in der Sim mitstarten. Ersetzt die auf real fehlenden Bausteine durch Sim-Glue:
+    #  sim_localization (Pose aus rt/sportmodestate statt MOLA) + joy_to_cmdvel
+    #  (Joy->loco_cmd_vel, weil loco_sim keinen Joy liest). Real laeuft derselbe
+    #  Nav-Stack ueber bringup_real (G1_ENABLE_LIDAR=1) mit MOLA + loco_client.
+    enable_nav = os.environ.get('G1_ENABLE_NAV', '0').strip().lower() in ('1', 'true', 'yes', 'on')
+
+    # Navigation OHNE RViz waere blind (Karte/Pfad/Ziel-Werkzeug leben in RViz,
+    # es gibt kein eigenes Nav-Fenster) -> bei Nav RViz erzwingen.
+    if enable_nav:
+        use_rviz = 'true'
+
     nodes = [
 
         # ── 1. robot_state: liest LowState_ von MuJoCo über DDS lo ──────
@@ -53,15 +65,10 @@ def generate_launch_description():
                 # (Regelrate haengt am rt/lowstate-Eingang). Per Start-Menue/USE_RVIZ
                 # zuschaltbar. Der Roboter ist ohnehin im MuJoCo-Fenster sichtbar.
                 'use_rviz':             use_rviz,
+                # Bei Nav die Nav-Ansicht (Fixed Frame 'map', Ziel-Werkzeug ->
+                # /g1pilot/goal, Karte/Pfad sichtbar); sonst die Standard-Ansicht.
+                'rviz_config':          'nav.rviz' if enable_nav else '29dof.rviz',
             }.items()
-        ),
-
-        # Statische TF: odom_unitree → base_link (Identity, da Physik in MuJoCo)
-        Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name='odom_to_base_link_sim_tf',
-            arguments=['0','0','0','0','0','0','odom_unitree','base_link']
         ),
 
         # ── 2. arm_controller: schreibt LowCmd_ zu MuJoCo über DDS lo ───
@@ -122,6 +129,57 @@ def generate_launch_description():
                 'backend':         'mujoco',
                 'interface':       'lo',
             }]
+        ))
+
+    # ── TF odom_unitree → base_link ─────────────────────────────────────────
+    #  OHNE Nav: statische Identity (Roboter fix im Ursprung, wie bisher).
+    #  MIT Nav: sim_localization publiziert diese Kante DYNAMISCH aus der echten
+    #  MuJoCo-Basispose (sonst Doppel-Parent) -> RViz zeigt den Roboter bewegt.
+    if not enable_nav:
+        nodes.append(Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name='odom_to_base_link_sim_tf',
+            arguments=['0', '0', '0', '0', '0', '0', 'odom_unitree', 'base_link']
+        ))
+
+    # ── 6. Navigation (g1pilot-Ansatz) in der Sim: G1_ENABLE_NAV=1 ──────────
+    if enable_nav:
+        # 'map' oben in den TF-Baum haengen (map -> world -> odom_unitree ->
+        # base_link[dyn] -> pelvis). Identity, da in der Sim keine SLAM-Drift.
+        nodes.append(Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name='map_to_world_sim_tf',
+            arguments=['0', '0', '0', '0', '0', '0', 'map', 'world']
+        ))
+        # Sim-Lokalisierung: Pose aus rt/sportmodestate -> /lidar_odometry/pose_fixed
+        # (Ersatz fuer MOLA) + dynamische TF odom_unitree -> base_link.
+        nodes.append(Node(
+            package='g1pilot', executable='sim_localization', name='sim_localization',
+            output='screen', parameters=[{'interface': 'lo'}]
+        ))
+        # Statische Belegungskarte (Dummy/leer; Hindernisse in create_map.py
+        # eintragbar). Frame 'map', damit Planer + Pose zusammenpassen.
+        nodes.append(Node(
+            package='g1pilot', executable='create_map', name='create_map',
+            output='screen', parameters=[{'frame_id': 'map'}]
+        ))
+        # Globaler Planer: /map + Pose + Ziel (/g1pilot/goal) -> /g1pilot/path.
+        nodes.append(Node(
+            package='g1pilot', executable='dijkstra_planner', name='dijkstra_planner',
+            output='screen'
+        ))
+        # Waypoint-Follower: Pose + Pfad -> /g1pilot/auto_joy (virtueller Joystick).
+        nodes.append(Node(
+            package='g1pilot', executable='nav2point', name='nav2point',
+            output='screen'
+        ))
+        # Sim-Bruecke: /g1pilot/joy (aus joy_mux, auto-gegated) -> /g1pilot/loco_cmd_vel,
+        # weil loco_sim keinen Joy liest. Auf real uebernimmt loco_client den Joy direkt.
+        nodes.append(Node(
+            package='g1pilot', executable='joy_to_cmdvel', name='joy_to_cmdvel',
+            output='screen'
         ))
 
     return LaunchDescription(nodes)

@@ -282,7 +282,7 @@ MuJoCo-`qpos` (nq=36): `[0:3]` Pelvis-Position, `[3:7]` Pelvis-Quaternion,
 │   ├── docker-compose.sim.yaml  ← Sim-Stack (zwei Container)
 │   ├── docker/                  ← Dockerfile.sim · Dockerfile.mujoco · cyclonedds.xml
 │   ├── launch/bringup_sim.launch.py   ← startet robot_state, arm, teleop, loco_sim
-│   ├── policies/g1/             ← RL-Policy (motion.pt) + g1.yaml (Obs/Gains/Scales)
+│   ├── policies/g1_wholebody/   ← RL-Policy (policy.onnx) + deploy.yaml (Obs/Gains/Scales)
 │   ├── g1pilot/
 │   │   ├── state/robot_state.py        ← LowState_ → /joint_states + /tf
 │   │   ├── manipulation/arm_controller.py · interactive_marker.py
@@ -349,7 +349,9 @@ ChannelFactoryInitialize(domain, iface)
 | LiDAR / SLAM | aus | Livox + MOLA an |
 
 > ⚠️ **Vor jedem Real-Start:** E-Stop erreichbar, ≥ 2 m Freifläche, erst in Sim
-> validieren, Arm-Befehle klein anfangen, Drehmoment-Limits beachten.
+> validieren, Arm-Befehle klein anfangen, Drehmoment-Limits beachten. Abhak-
+> Checkliste: [`g1pilot/PREFLIGHT.md`](g1pilot/PREFLIGHT.md), Runbook:
+> [`g1pilot/REAL_TESTING.md`](g1pilot/REAL_TESTING.md).
 
 ---
 
@@ -368,3 +370,6 @@ ChannelFactoryInitialize(domain, iface)
 
 - [`g1pilot/CHEATS.md`](g1pilot/CHEATS.md) — alle Steuer-Topics + Live-Tuning-Parameter
 - [`g1pilot/TESTING_SIM.md`](g1pilot/TESTING_SIM.md) — Test-Ablauf
+- [`g1pilot/NAVIGATION.md`](g1pilot/NAVIGATION.md) — autonome Punkt-zu-Punkt-Navigation (Start, Bedienung, Aufbau)
+- [`g1pilot/PREFLIGHT.md`](g1pilot/PREFLIGHT.md) — Abnahme-Checkliste erster Real-Stand/-Gang
+- [`g1pilot/REAL_TESTING.md`](g1pilot/REAL_TESTING.md) — Hardware-Runbook

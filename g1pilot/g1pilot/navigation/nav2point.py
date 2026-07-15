@@ -43,10 +43,27 @@ class Nav2Point(Node):
         self.wz_lim = self.get_parameter('wz_limit').value
         self.auto_enable_topic = self.get_parameter('auto_enable_topic').value
 
+        # Endausrichtung: am Ziel auf den vorgegebenen Ziel-Yaw (Pfeil im RViz-
+        # "2D Goal Pose") drehen -- auf der Stelle, kuerzester Weg. Und: kurz vor
+        # dem Ziel NICHT mehr zum Punkt drehen (sonst umkreist der Roboter ihn).
+        self.declare_parameter('goal_topic', '/g1pilot/goal')
+        self.declare_parameter('final_align', True)     # am Ziel auf Ziel-Yaw drehen
+        self.declare_parameter('yaw_tol_deg', 8.0)      # Toleranz Endausrichtung [deg]
+        self.declare_parameter('align_yaw_kp', 1.2)     # Dreh-Regler beim Ausrichten
+        self.declare_parameter('yaw_hold_dist', 0.5)    # ab hier Yaw-Jagen aus (Orbit-Fix) [m]
+        goal_topic = self.get_parameter('goal_topic').value
+        self.final_align = bool(self.get_parameter('final_align').value)
+        self.yaw_tol = math.radians(float(self.get_parameter('yaw_tol_deg').value))
+        self.align_yaw_kp = float(self.get_parameter('align_yaw_kp').value)
+        self.yaw_hold_dist = float(self.get_parameter('yaw_hold_dist').value)
+
         qos = QoSProfile(depth=10)
         self.sub_odom = self.create_subscription(Odometry, '/lidar_odometry/pose_fixed', self.cb_odom, qos)
         self.sub_auto_enable = self.create_subscription(Bool, self.auto_enable_topic, self.cb_auto_enable, qos)
         self.sub_path = self.create_subscription(Path, self.path_topic, self.cb_path, qos)
+        # Ziel-Yaw direkt aus dem Ziel lesen (dijkstra ueberschreibt die Pfad-
+        # Orientierung mit Segmentrichtungen -> der Ziel-Yaw ginge dort verloren).
+        self.sub_goal_pose = self.create_subscription(PoseStamped, goal_topic, self.cb_goal_pose, qos)
         self.pub_joy = self.create_publisher(Joy, self.joy_topic, qos)
         self.pub_wp_marker = self.create_publisher(Marker, '/g1pilot/waypoint_marker', qos)
         self.pub_goal_marker = self.create_publisher(Marker, '/g1pilot/goal_marker', qos)
@@ -58,6 +75,8 @@ class Nav2Point(Node):
         self.path_frame = self.frame_id
         self.idx = 0
         self.x = self.y = self.yaw = 0.0
+        self.goal_yaw = None      # Ziel-Yaw aus /g1pilot/goal (None = keiner)
+        self.aligning = False     # True = am Ziel, dreht auf Ziel-Yaw
 
         self.logged_no_pose = False
         self.logged_no_path = False
@@ -78,10 +97,24 @@ class Nav2Point(Node):
         self.path = [(p.pose.position.x, p.pose.position.y) for p in msg.poses]
         self.path_frame = msg.header.frame_id if msg.header.frame_id else self.frame_id
         self.idx = 0
+        self.aligning = False      # neuer Pfad -> Ausrichtungsphase zuruecksetzen
         self.logged_no_path = False
         self.logged_end_path = False
         if self.path:
             self.publish_goal_marker(self.path[-1][0], self.path[-1][1])
+
+    def cb_goal_pose(self, msg: PoseStamped):
+        o = msg.pose.orientation
+        self.goal_yaw = yaw_from_quat(o.x, o.y, o.z, o.w)
+        self.aligning = False      # neues Ziel -> Ausrichtungsphase zuruecksetzen
+
+    @staticmethod
+    def _wrap(a):
+        while a > math.pi:
+            a -= 2 * math.pi
+        while a < -math.pi:
+            a += 2 * math.pi
+        return a
 
     def publish_goal_marker(self, gx, gy):
         m = Marker()
@@ -164,19 +197,34 @@ class Nav2Point(Node):
             axes = [0.0] * 8
             buttons = [0] * 14
 
-            if dist_goal <= self.goal_tol:
-                joy.axes = axes
-                joy.buttons = buttons
+            # ── Endphase: am Ziel auf der Stelle auf den Ziel-Yaw drehen ──────
+            #  aligning latcht, sobald der Zielpunkt erreicht war -> KEINE
+            #  Translation mehr (kein Umkreisen), nur noch Drehen auf Ziel-Yaw
+            #  (kuerzester Weg -> nie 270°). Ohne Ziel-Yaw / final_align: nur Stop.
+            if self.aligning or dist_goal <= self.goal_tol:
+                self.aligning = True
+                if self.final_align and self.goal_yaw is not None:
+                    yaw_err = self._wrap(self.goal_yaw - self.yaw)
+                    if abs(yaw_err) <= self.yaw_tol:
+                        self.pub_joy.publish(joy)     # axes/buttons = 0 -> Stop
+                        self.path = []
+                        self.aligning = False
+                        return
+                    wz = max(-self.wz_lim, min(self.wz_lim, self.align_yaw_kp * yaw_err))
+                    axes[2] = max(-1.0, min(1.0, -wz / self.wz_lim))
+                    buttons[8] = 1
+                    joy.axes = axes
+                    joy.buttons = buttons
+                    self.pub_joy.publish(joy)
+                    return
                 self.pub_joy.publish(joy)
                 self.path = []
+                self.aligning = False
                 return
 
+            # ── Anfahrt: holonom zum Zielpunkt, Yaw in Fahrtrichtung ──────────
             desired_yaw = math.atan2(dy, dx)
-            yaw_err = desired_yaw - self.yaw
-            while yaw_err > math.pi:
-                yaw_err -= 2 * math.pi
-            while yaw_err < -math.pi:
-                yaw_err += 2 * math.pi
+            yaw_err = self._wrap(desired_yaw - self.yaw)
 
             vx_w = max(-self.vx_lim, min(self.vx_lim, self.pos_kp * dx))
             vy_w = max(-self.vy_lim, min(self.vy_lim, self.pos_kp * dy))
@@ -186,15 +234,16 @@ class Nav2Point(Node):
             vx_b = c * vx_w - s * vy_w
             vy_b = s * vx_w + c * vy_w
 
-            wz = max(-self.wz_lim, min(self.wz_lim, self.yaw_kp * yaw_err))
+            # Orbit-Fix: nahe am Ziel NICHT mehr zum (dann instabilen) Punkt
+            # drehen -> die letzten Zentimeter gerade reingleiten, dann ausrichten.
+            if dist_goal < self.yaw_hold_dist:
+                wz = 0.0
+            else:
+                wz = max(-self.wz_lim, min(self.wz_lim, self.yaw_kp * yaw_err))
 
-            ax1 = max(-1.0, min(1.0, -vx_b / self.vx_lim))
-            ax0 = max(-1.0, min(1.0, -vy_b / self.vy_lim))
-            ax3 = max(-1.0, min(1.0, -wz / self.wz_lim))
-
-            axes[1] = ax1
-            axes[0] = ax0
-            axes[2] = ax3
+            axes[1] = max(-1.0, min(1.0, -vx_b / self.vx_lim))
+            axes[0] = max(-1.0, min(1.0, -vy_b / self.vy_lim))
+            axes[2] = max(-1.0, min(1.0, -wz / self.wz_lim))
             buttons[8] = 1
 
             joy.axes = axes
