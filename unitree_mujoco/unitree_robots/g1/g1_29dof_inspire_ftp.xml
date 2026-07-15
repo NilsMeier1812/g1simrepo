@@ -658,4 +658,18 @@
     <touch name="right_little_tip_touch" site="right_little_tip" />
     <touch name="right_little_pad_touch" site="right_little_pad" />
   </sensor>
+  <contact>
+    <exclude body1="left_thumb_1" body2="left_thumb_3" />
+    <exclude body1="left_thumb_1" body2="left_thumb_4" />
+    <exclude body1="left_thumb_2" body2="left_thumb_4" />
+    <exclude body1="left_base_link" body2="left_thumb_2" />
+    <exclude body1="left_base_link" body2="left_thumb_3" />
+    <exclude body1="left_base_link" body2="left_thumb_4" />
+    <exclude body1="right_thumb_1" body2="right_thumb_3" />
+    <exclude body1="right_thumb_1" body2="right_thumb_4" />
+    <exclude body1="right_thumb_2" body2="right_thumb_4" />
+    <exclude body1="right_base_link" body2="right_thumb_2" />
+    <exclude body1="right_base_link" body2="right_thumb_3" />
+    <exclude body1="right_base_link" body2="right_thumb_4" />
+  </contact>
 </mujoco>

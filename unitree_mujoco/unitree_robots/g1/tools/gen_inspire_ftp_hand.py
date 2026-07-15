@@ -152,6 +152,25 @@ for j in u.findall('joint'):
 for sn,site in TOUCH:
     t_=ET.SubElement(sens,'touch'); t_.set('name',sn); t_.set('site',site)
 
+# ── Selbstkollision des Daumens unterdruecken ────────────────────────────────
+# MuJoCos filterparent (Default an) schliesst nur DIREKT benachbarte Glieder von
+# der Kollision aus. Der Daumen kreist beim Schliessen ueber die Handflaeche und
+# krummt sich (4 Glieder) -> seine konvexen Mesh-Huellen ueberlappen mit sich selbst
+# (nicht benachbarte Glieder 1-3/1-4/2-4) UND mit der Handflaeche (base_link, der
+# Grosselternkoerper). Beides blockierte den Daumen bei ~halb. Diese Paare je Hand
+# explizit ausschliessen. Die 2-gliedrigen Finger krummen NICHT ueber die Flaeche
+# und haben nur das benachbarte Paar (1-2) -> sie schliessen ohne Extra-Regel voll.
+contact=root.find('contact')
+if contact is None:
+    contact=ET.SubElement(root,'contact')
+for side in ("left","right"):
+    pairs=[(f"{side}_thumb_1",f"{side}_thumb_3"), (f"{side}_thumb_1",f"{side}_thumb_4"),
+           (f"{side}_thumb_2",f"{side}_thumb_4"),
+           (f"{side}_base_link",f"{side}_thumb_2"), (f"{side}_base_link",f"{side}_thumb_3"),
+           (f"{side}_base_link",f"{side}_thumb_4")]
+    for a,b in pairs:
+        ex=ET.SubElement(contact,'exclude'); ex.set('body1',a); ex.set('body2',b)
+
 root.set('model','g1_29dof_inspire_ftp')
 ET.indent(t,space="  "); t.write(OUT,encoding='unicode',xml_declaration=False)
 print("OK. finger actuators:", len(CANON), "| touch sensors:", len(TOUCH), "| total actuators:", len(act))
