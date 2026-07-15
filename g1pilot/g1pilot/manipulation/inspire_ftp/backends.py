@@ -165,6 +165,23 @@ class MujocoContactBackend(HandBackend):
         self.joint_names = joint_map.hand_joint_names()   # 24, kanonisch
         self._state = None
 
+        # Kraft-Limit (force_set der GUI, Register 1498 der echten Hand): wird als
+        # DYNAMISCHE Kraftgrenze des Finger-Aktuators an die Sim-Bridge geschickt
+        # (rt/inspire/cmd, motor_cmd[k].kp = Grenze in Nm). Die MuJoCo-Position-Servos
+        # koennen dann physikalisch nicht mehr Kraft aufbringen als force_set -> harte
+        # Garantie ohne Ueberschiessen (wie die force-limitierte Griffregelung der
+        # echten Hand: Finger schliesst bis force_set und bremst dort). Gramm->Nm ueber
+        # drive_scale (Kehrwert der force_act-Umrechnung), an die Modell-forcerange
+        # geklemmt; ein kleiner Mindestwert haelt die Finger gegen die Schwerkraft.
+        self.max_force_nm = 2.0     # = FFRC des Modells (Aktuator-Auslegung)
+        self.min_force_nm = 0.03    # Finger koennen ihre Pose immer gegen g halten
+        _suf_dof = {suf: dof for dof, sufs in enumerate(joint_map.DOF_TO_JOINTS) for suf in sufs}
+        self._cap_dof = []          # je 24-Gelenk: (side, dof) fuer die force_set-Zuordnung
+        for nm in self.joint_names:
+            side = "left" if nm.startswith("left") else "right"
+            suf = nm.replace(side + "_", "").replace("_joint", "")
+            self._cap_dof.append((side, _suf_dof[suf]))
+
         init_dds(interface)
         self.cmd_pub = ChannelPublisher("rt/inspire/cmd", LowCmd_)
         self.cmd_pub.Init()
@@ -235,12 +252,20 @@ class MujocoContactBackend(HandBackend):
             model.connected = True
 
     def update(self, models: Dict[str, HandModel], dt: float) -> None:
-        # 1) Soll-Winkel beider Haende -> 24 Gelenk-Radiant -> rt/inspire/cmd.
+        # 1) Soll-Winkel beider Haende -> 24 Gelenk-Radiant, + Kraft-Limit je Gelenk.
         left = self._resolve_targets(models["left"])
         right = self._resolve_targets(models["right"])
         names, positions = joint_map.build_joint_state(left, right, self.closed)
+        with models["left"].lock:
+            fs = {"left": list(models["left"].force_set)}
+        with models["right"].lock:
+            fs["right"] = list(models["right"].force_set)
         for k in range(min(24, len(positions))):
+            side, dof = self._cap_dof[k]
+            cap = _clamp(float(fs[side][dof]) / self.drive_scale,
+                         self.min_force_nm, self.max_force_nm)
             self.cmd_msg.motor_cmd[k].q = float(positions[k])
+            self.cmd_msg.motor_cmd[k].kp = cap    # Kraftgrenze [Nm] -> Bridge
         self.cmd_pub.Write(self.cmd_msg)
 
         # 2) Ist-Zustand aus der Sim -> /joint_states + Models (echte Winkel + Taktil).

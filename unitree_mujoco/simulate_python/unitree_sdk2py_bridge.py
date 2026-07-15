@@ -371,10 +371,18 @@ class UnitreeSdk2Bridge:
         # Finger-Position-Servos (Inspire-Hand): Ziel-Winkel aus rt/inspire/cmd, je
         # Sim-Schritt gesetzt. Unabhaengig vom Body-Zustand -> Finger immer steuerbar.
         # Ohne Hand (hand_act_ids leer) ist das ein No-op. ctrl=0 -> offene Hand.
+        # motor_cmd[k].kp = KRAFT-LIMIT [Nm] (aus force_set der GUI) -> als dynamische
+        # actuator_forcerange gesetzt: der Servo kann physikalisch nie mehr Kraft
+        # aufbringen als force_set -> harte Griffkraft-Grenze ohne Ueberschiessen.
         if self.num_hand:
             hc = self.hand_cmd
             for k, aid in enumerate(self.hand_act_ids):
                 self.mj_data.ctrl[aid] = float(hc.motor_cmd[k].q) if hc is not None else 0.0
+                if hc is not None:
+                    cap = float(hc.motor_cmd[k].kp)
+                    if cap > 0.0:
+                        self.mj_model.actuator_forcerange[aid][0] = -cap
+                        self.mj_model.actuator_forcerange[aid][1] = cap
         legs = self.low_cmd_legs
         arm = self.low_cmd_arm
         if self.managed_weld:
