@@ -29,7 +29,7 @@ class HandModel:
 
         # ── Ist-Werte (vom Backend gefuellt) ─────────────────────────────────
         self.angle_act: List[int] = [1000] * 6   # 0..1000, Start = offen
-        self.force_act: List[float] = [0.0] * 6  # g (Finger-Kraft; Sim: aus Antriebskraft)
+        self.force_act: List[float] = [0.0] * 6  # g (echte Kontaktkraft je Finger, ungedeckelt)
         self.zones: Dict[str, List[int]] = tactile.zero_zones()
         self.connected: bool = False
 

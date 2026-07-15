@@ -91,11 +91,11 @@ daher ist `localhost` korrekt.
 
 **Stufe 2 (`mujoco`, Default)** — echte Kontaktsensorik:
 - Die echte Hand hat ZWEI unabhaengige Kraft-Ausgaben, beide in der Sim abgebildet:
-  - **`force_act`** (Register 1582, 6/Hand, Gramm) = die vom **Finger aufgebrachte
-    Kraft**, die die **Controller-GUI** als Kraftbalken zeigt. In der Sim = Finger-
-    **Antriebskraft** (`actuator_force`) -> waehrend Bewegung/Halten/Druecken != 0,
-    genau wie am echten Roboter (auch OHNE externen Kontakt kommt ein Wert zurueck).
-    Steigt stark, wenn ein Finger gegen Widerstand (Objekt) drueckt.
+  - **`force_act`** (Register 1582, 6/Hand, Gramm) = die **echte Kontaktkraft je
+    Finger** (Summe seiner Taktil-Zonen), die die **Controller-GUI** als Kraftbalken
+    zeigt. **UNGEDECKELT**: zeigt die tatsaechliche Kraft — auch wenn sie das Limit
+    (`force_set`) beim Aufprall kurz uebersteigt (der Wert wird NICHT beschoenigt).
+    Ohne Kontakt = 0 (ein Kraftsensor misst nur, was der Finger tatsaechlich drueckt).
   - **17 Taktil-Zonen je Hand** (Register 3000+) = die Kontakt-**Haut** (Viewer-
     Heatmap). Platziert an den `*_force_sensor_*`-Frames des URDF, palm + je Finger
     tip/nail/pad, Daumen auch mid. Echte, physikbasierte Kontaktkraefte — greift die
@@ -106,6 +106,12 @@ daher ist `localhost` korrekt.
 - MuJoCo liefert je Zone EINEN Kraft-Skalar (Summe der Normal-Kontaktkraefte); die
   per-Taxel-Matrix des Viewers wird daraus verteilt. Der raeumliche Feindruck
   INNERHALB einer Zone ist also synthetisch, die Zonen-Gesamtkraft ist echt.
+- **Kraft-Limit `force_set`** (GUI-Slider, Register 1498): begrenzt die
+  ANTRIEBSKRAFT des Finger-Servos (dynamische `actuator_forcerange` in der Bridge)
+  -> der Finger schliesst bis zum Limit und **bremst dort**, kann also nicht mehr
+  aktiv druecken als `force_set`. Die GEMESSENE Kontaktkraft (`force_act`) kann beim
+  Aufprall trotzdem kurz darueber springen (Stoss-Impuls) und wird ehrlich so
+  angezeigt — nicht auf das Limit geschoenigt.
 - Griffkraft ueber `FKP`/`FFRC` im MJCF-Generator (`gen_inspire_ftp_hand.py`)
   tunebar; nach Aenderung das Modell neu generieren.
 
