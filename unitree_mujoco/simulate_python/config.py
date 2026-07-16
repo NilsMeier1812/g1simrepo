@@ -7,6 +7,15 @@ ROBOT = "g1" # Robot name, "go2", "b2", "b2w", "h1", "go2w", "g1"
 _INSPIRE = str(os.environ.get("G1_INSPIRE_HANDS", "")).strip().lower() in ("1", "true", "yes", "on")
 _SCENE = "scene_inspire_ftp.xml" if _INSPIRE else "scene.xml"
 ROBOT_SCENE = "../unitree_robots/" + ROBOT + "/" + _SCENE # Robot scene
+
+# Greifbares Test-Objekt (opt-in via G1_GRASP_TEST=1): legt beim Laden in JEDE
+# Inspire-Handflaeche eine kleine, fest mit der Palme verbundene greifbare Kugel
+# (Kollisions-Bit 2, wie andere greifbare Objekte). So sieht man beim Schliessen der
+# Hand sofort echte Griffkraefte in der GUI (Baukasten-Testfall) — ohne dass ein
+# freies Objekt wegfaellt. Ohne Inspire-Haende (kein base_link) wirkungslos.
+GRASP_TEST = str(os.environ.get("G1_GRASP_TEST", "")).strip().lower() in ("1", "true", "yes", "on")
+GRASP_TEST_POS = (0.0, 0.036, 0.122)   # base_link-Frame: Griffzone der Finger (getunt)
+GRASP_TEST_RADIUS = 0.03               # kleine Kugel; offen kein Kontakt, ~70% zu = Griff
 DOMAIN_ID = 1 # Domain id
 INTERFACE = "lo" # Interface 
 

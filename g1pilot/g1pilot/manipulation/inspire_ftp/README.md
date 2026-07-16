@@ -103,6 +103,11 @@ daher ist `localhost` korrekt.
 - **Greifbar = Kollisions-Bit 2**: Finger-Zonen kollidieren nur mit Objekten, die
   `contype`/`conaffinity` Bit 2 setzen (und untereinander), NICHT mit Boden/Koerper.
   Ohne so ein Objekt in Handnaehe bleiben die Kraefte 0 (nichts wird beruehrt).
+- **Test-Objekt zum Ausprobieren** (`G1_GRASP_TEST=1` beim Sim-Start): legt eine
+  kleine, fest mit jeder Handflaeche verbundene greifbare Kugel in die Griffzone.
+  Beim Schliessen der Hand (~70 %) greifen alle Finger + Handflaeche zu -> man sieht
+  sofort echte Griffkraefte in der GUI. Offen = kein Kontakt. Faellt nicht weg (starr
+  an der Palme), stoert Loco/Nav nicht (nur bei gesetzter Env-Variable, ~6 g).
 - MuJoCo liefert je Zone EINEN Kraft-Skalar (Summe der Normal-Kontaktkraefte); die
   per-Taxel-Matrix des Viewers wird daraus verteilt. Der raeumliche Feindruck
   INNERHALB einer Zone ist also synthetisch, die Zonen-Gesamtkraft ist echt.

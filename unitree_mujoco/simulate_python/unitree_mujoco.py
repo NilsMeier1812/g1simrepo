@@ -14,7 +14,31 @@ from push_listener import PushListener
 
 locker = threading.Lock()
 
-mj_model = mujoco.MjModel.from_xml_path(config.ROBOT_SCENE)
+if getattr(config, "GRASP_TEST", False):
+    # Opt-in: greifbare Test-Kugel fest in jede Inspire-Handflaeche (base_link)
+    # einfuegen. Kein Gelenk -> starr an der Palme (faellt nicht) -> beim Schliessen
+    # der Hand echte Griffkraefte in der GUI. Bit 2 = greifbar (nur Finger). Da die
+    # Kugel-Bodies KEINE Gelenke/Aktuatoren haben, bleiben nu/qpos und damit alle
+    # Bridge-Mappings unveraendert.
+    _spec = mujoco.MjSpec.from_file(config.ROBOT_SCENE)
+    _added = 0
+    for _b in list(_spec.bodies):
+        if _b.name in ("left_base_link", "right_base_link"):
+            _obj = _b.add_body(name=_b.name.split("_")[0] + "_grasp_test",
+                               pos=list(config.GRASP_TEST_POS))
+            _g = _obj.add_geom()
+            _g.type = mujoco.mjtGeom.mjGEOM_SPHERE
+            _g.size = [config.GRASP_TEST_RADIUS, 0.0, 0.0]
+            _g.contype = 2
+            _g.conaffinity = 2
+            _g.rgba = [0.1, 0.8, 0.2, 1.0]
+            _g.density = 50.0    # ~6 g -> vernachlaessigbare Zusatzlast am Arm
+            _added += 1
+    print(f"[SIM] G1_GRASP_TEST: {_added} greifbare Test-Kugel(n) in die "
+          f"Handflaeche(n) eingefuegt.", flush=True)
+    mj_model = _spec.compile()
+else:
+    mj_model = mujoco.MjModel.from_xml_path(config.ROBOT_SCENE)
 mj_data = mujoco.MjData(mj_model)
 
 # HOLD_BASE: Oberkoerper fuer Arm-Tests ruhig halten (bis ein Loco-Controller
