@@ -226,6 +226,11 @@ class LocoSim(Node):
         self._push_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.create_subscription(Bool, "/g1pilot/push", self._on_push, 10)
 
+        # GRASP BOX: Streamdeck-Toggle -> UDP an die Sim (greifbare Test-Kugel an/aus).
+        self._grasp_port = int(os.environ.get("SIM_GRASP_PORT", "47901"))
+        self._grasp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.create_subscription(Bool, "/g1pilot/grasp_box", self._on_grasp_box, 10)
+
         self._run_thread = threading.Thread(target=self._control_loop, daemon=True)
         self._run_thread.start()
         self.get_logger().info(
@@ -362,6 +367,15 @@ class LocoSim(Node):
             self.get_logger().info("PUSH -> Stoer-Impuls an die Sim.")
         except OSError as e:
             self.get_logger().warn(f"PUSH nicht gesendet: {e}")
+
+    def _on_grasp_box(self, msg: Bool):
+        """Streamdeck-Toggle -> greifbare Test-Kugel in der Sim an/aus."""
+        payload = b"on" if msg.data else b"off"
+        try:
+            self._grasp_sock.sendto(payload, ("127.0.0.1", self._grasp_port))
+            self.get_logger().info(f"GRASP BOX -> {'AN' if msg.data else 'AUS'} an die Sim.")
+        except OSError as e:
+            self.get_logger().warn(f"GRASP BOX nicht gesendet: {e}")
 
     def _on_cmd_vel(self, msg: Twist):
         if self.state not in (STAND, WALK):

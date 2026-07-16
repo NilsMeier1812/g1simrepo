@@ -103,11 +103,14 @@ daher ist `localhost` korrekt.
 - **Greifbar = Kollisions-Bit 2**: Finger-Zonen kollidieren nur mit Objekten, die
   `contype`/`conaffinity` Bit 2 setzen (und untereinander), NICHT mit Boden/Koerper.
   Ohne so ein Objekt in Handnaehe bleiben die Kraefte 0 (nichts wird beruehrt).
-- **Test-Objekt zum Ausprobieren** (`G1_GRASP_TEST=1` beim Sim-Start): legt eine
-  kleine, fest mit jeder Handflaeche verbundene greifbare Kugel in die Griffzone.
+- **Test-Objekt zum Ausprobieren** (Streamdeck-Button **"GRASP BOX"**, Toggle): legt
+  eine kleine, fest mit jeder Handflaeche verbundene greifbare Kugel in die Griffzone.
   Beim Schliessen der Hand (~70 %) greifen alle Finger + Handflaeche zu -> man sieht
   sofort echte Griffkraefte in der GUI. Offen = kein Kontakt. Faellt nicht weg (starr
-  an der Palme), stoert Loco/Nav nicht (nur bei gesetzter Env-Variable, ~6 g).
+  an der Palme). Live schaltbar (kein Neustart): der Box-Koerper wird bei Inspire-
+  Haenden immer eingefuegt, ist aber AUS unsichtbar+inert (~6 g, keine Kollision) und
+  stoert Loco/Nav nicht. `G1_GRASP_TEST=1` startet ihn direkt AN, `G1_GRASP_BOX=0`
+  laesst ihn ganz weg. Ohne ROS toggeln: `echo -n on|nc -u -w0 127.0.0.1 47901`.
 - MuJoCo liefert je Zone EINEN Kraft-Skalar (Summe der Normal-Kontaktkraefte); die
   per-Taxel-Matrix des Viewers wird daraus verteilt. Der raeumliche Feindruck
   INNERHALB einer Zone ist also synthetisch, die Zonen-Gesamtkraft ist echt.

@@ -57,6 +57,19 @@ Kraft/Dauer per Env an der Sim (Default 150 N, 120 ms): `SIM_PUSH_FORCE_N`,
 `SIM_PUSH_DURATION_S`. Direkt ohne ROS: `echo -n 250 | nc -u -w0 127.0.0.1 47900`
 (Payload = Kraft in N).
 
+### GRASP BOX (greifbare Test-Kugel an/aus, nur Sim, nur Inspire-Haende)
+Legt in jede Handflaeche eine kleine greifbare Kugel -> beim Schliessen der Hand
+sofort echte Griffkraefte in der Hand-GUI. Als Streamdeck-Button "GRASP BOX" (Toggle)
+oder:
+```bash
+ros2 topic pub --once /g1pilot/grasp_box std_msgs/msg/Bool "{data: true}"   # an
+ros2 topic pub --once /g1pilot/grasp_box std_msgs/msg/Bool "{data: false}"  # aus
+```
+Direkt ohne ROS: `echo -n on | nc -u -w0 127.0.0.1 47901` (`on`/`off`/sonst = toggle).
+Beim Sim-Start direkt AN: `G1_GRASP_TEST=1`. Ganz weglassen: `G1_GRASP_BOX=0`.
+Die Kugel haengt starr in der Griffzone der Palme (faellt nicht) und ist im Aus-
+Zustand unsichtbar und inert (~6 g, keine Kollision).
+
 ## PUBLISHING COMMANDS FOR NAVIGATION
 
 ###  PUBLISH GOAL

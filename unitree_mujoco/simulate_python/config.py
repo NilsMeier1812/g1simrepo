@@ -16,6 +16,14 @@ ROBOT_SCENE = "../unitree_robots/" + ROBOT + "/" + _SCENE # Robot scene
 GRASP_TEST = str(os.environ.get("G1_GRASP_TEST", "")).strip().lower() in ("1", "true", "yes", "on")
 GRASP_TEST_POS = (0.0, 0.036, 0.122)   # base_link-Frame: Griffzone der Finger (getunt)
 GRASP_TEST_RADIUS = 0.03               # kleine Kugel; offen kein Kontakt, ~70% zu = Griff
+# Damit die Box zur LAUFZEIT ein-/ausgeschaltet werden kann (Streamdeck-Button, kein
+# Neustart noetig), wird ihr Koerper bei Inspire-Haenden IMMER ins Modell eingefuegt —
+# aber standardmaessig AUS (unsichtbar, keine Kollision, ~6 g inert an der Palme). Der
+# Toggle schaltet Kollision+Sichtbarkeit live. G1_GRASP_TEST=1 startet ihn direkt AN;
+# G1_GRASP_BOX=0 laesst ihn ganz weg (blankes Modell).
+_gb = os.environ.get("G1_GRASP_BOX", "").strip().lower()
+GRASP_BOX = _INSPIRE if _gb == "" else (_gb in ("1", "true", "yes", "on"))
+GRASP_UDP_PORT = int(os.environ.get("SIM_GRASP_PORT", "47901"))   # Live-Toggle-Trigger
 DOMAIN_ID = 1 # Domain id
 INTERFACE = "lo" # Interface 
 
