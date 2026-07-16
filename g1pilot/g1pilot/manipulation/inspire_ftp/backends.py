@@ -130,9 +130,14 @@ class MujocoContactBackend(HandBackend):
          Normal-Kontaktkraefte); die per-Taxel-Matrix des Viewers wird daraus verteilt
          (Feindruck INNERHALB einer Zone synthetisch, Zonen-Gesamtkraft echt).
 
-    Das Kraft-LIMIT (force_set) begrenzt die ANTRIEBSKRAFT (actuator_forcerange in der
-    Bridge) -> der Finger bremst am Limit; die gemessene Kontaktkraft (force_act) kann
-    beim Aufprall trotzdem kurz darueber liegen und wird ehrlich so angezeigt.
+    Das Kraft-LIMIT (force_set, Gramm) wird als echte KRAFTREGELUNG umgesetzt (wie die
+    force-limitierte Griffregelung der echten Hand): die gemessene Kontaktkraft
+    (force_act, Gramm) wird laufend gegen force_set (Gramm, gleiche Einheit) verglichen.
+    Uebersteigt sie das Limit, faehrt der Finger seinen Winkel-Sollwert aktiv WIEDER AUF
+    (oeffnet), bis die Kraft drunter ist; faellt sie klar unter das Limit, schliesst er
+    sanft bis zum Wunsch nach. Gleichgewicht: Kraft ~= Limit. Der Servo hat dabei die
+    volle Modell-Antriebskraft (kein zusaetzlicher Nm-Deckel mehr) -> kurze Aufprall-
+    Spitze in force_act wird EHRLICH angezeigt und dann weggeregelt (nicht beschoenigt).
 
     Fuellt /joint_states (echte Winkel) sowie model.angle_act / force_act / zones.
     """
@@ -174,27 +179,26 @@ class MujocoContactBackend(HandBackend):
         self.closed = dict(closed_rad) if closed_rad else dict(joint_map.CLOSED_RAD)
         self.force_scale = float(force_scale)   # (frei/kompat) N-Skala
         self.zone_scale = float(zone_scale)     # N -> 0..4095 Taktil-Heatmap der GUI
-        self.drive_scale = float(drive_scale)   # Nm -> Gramm (force_act, ~Hebel/g)
+        self.drive_scale = float(drive_scale)   # (kompat/ungenutzt; force_act via _G_PER_N)
         self._zone_shape = {z[0]: (z[4], z[5]) for z in tactile.TACTILE_ZONES}  # id->(rows,cols)
         self.joint_names = joint_map.hand_joint_names()   # 24, kanonisch
         self._state = None
 
-        # Kraft-Limit (force_set der GUI, Register 1498 der echten Hand): wird als
-        # DYNAMISCHE Kraftgrenze des Finger-Aktuators an die Sim-Bridge geschickt
-        # (rt/inspire/cmd, motor_cmd[k].kp = Grenze in Nm). Die MuJoCo-Position-Servos
-        # koennen dann physikalisch nicht mehr Kraft aufbringen als force_set -> harte
-        # Garantie ohne Ueberschiessen (wie die force-limitierte Griffregelung der
-        # echten Hand: Finger schliesst bis force_set und bremst dort). Gramm->Nm ueber
-        # drive_scale (Kehrwert der force_act-Umrechnung), an die Modell-forcerange
-        # geklemmt; ein kleiner Mindestwert haelt die Finger gegen die Schwerkraft.
-        self.max_force_nm = 2.0     # = FFRC des Modells (Aktuator-Auslegung)
-        self.min_force_nm = 0.03    # Finger koennen ihre Pose immer gegen g halten
-        _suf_dof = {suf: dof for dof, sufs in enumerate(joint_map.DOF_TO_JOINTS) for suf in sufs}
-        self._cap_dof = []          # je 24-Gelenk: (side, dof) fuer die force_set-Zuordnung
-        for nm in self.joint_names:
-            side = "left" if nm.startswith("left") else "right"
-            suf = nm.replace(side + "_", "").replace("_joint", "")
-            self._cap_dof.append((side, _suf_dof[suf]))
+        # Kraft-Limit (force_set der GUI, Register 1498 der echten Hand, Gramm): wird
+        # als echte KRAFTREGELUNG umgesetzt. Der Servo bekommt die volle Modell-
+        # Antriebskraft (max_force_nm = FFRC); das Limit greift NICHT als Nm-Deckel,
+        # sondern ueber die Winkel-Rueckfuehrung in _regulate() (Gramm gegen Gramm).
+        self.max_force_nm = 2.0     # = FFRC des Modells (volle Aktuator-Auslegung)
+
+        # Kraftgeregelte Rueckwaertsbewegung ("force protection" wie die echte Hand):
+        # gemessene Kontaktkraft je DOF gegen force_set. Ueber Limit -> Winkel-Sollwert
+        # aufmachen (oeffnen); klar drunter -> sanft Richtung Wunsch nachschliessen; im
+        # Band dazwischen halten (verhindert Grenz-Zyklen/Zittern). Raten in Winkel-
+        # Einheiten (0..1000) pro Sekunde -> unabhaengig von der Update-Rate.
+        self._eff = {"left": [1000.0] * 6, "right": [1000.0] * 6}  # effektiver Soll-Winkel
+        self.retract_open_rate = 600.0    # Winkel/s: oeffnen (zurueckfahren) ueber Limit
+        self.retract_close_rate = 700.0   # Winkel/s: freies Schliessen ohne Kontakt
+        self.retract_resume = 0.80        # ab 80% des Limits schliessen abbremsen/halten
 
         init_dds(interface)
         self.cmd_pub = ChannelPublisher("rt/inspire/cmd", LowCmd_)
@@ -266,21 +270,62 @@ class MujocoContactBackend(HandBackend):
             model.zones = zones
             model.connected = True
 
+    def _regulate(self, side: str, desired: List[float], dt: float,
+                  force_act: List[float], force_set: List[float]) -> List[float]:
+        """Kraftgeregelter effektiver Soll-Winkel je DOF (0..1000). Vergleicht die
+        GEMESSENE Kontaktkraft (force_act, Gramm) mit dem Limit (force_set, Gramm):
+          * ueber Limit  -> Winkel aufmachen (oeffnen = Richtung 1000), Finger faehrt
+            aktiv zurueck, bis die Kraft drunter ist;
+          * unter Limit  -> Richtung Wunsch schliessen, aber die Schliessrate wird bei
+            Annaeherung an das Limit (ab resume*Limit) linear auf 0 gebremst -> zuegig
+            im Freien, sanft am Objekt, kein Ueberschiessen/Grenz-Zyklus.
+        Oeffnen auf Wunsch (Loslassen) folgt immer sofort. Nie fester schliessen als der
+        Wunsch. Winkel: 1000 = offen, 0 = zu."""
+        eff = self._eff[side]
+        d_open = self.retract_open_rate * max(dt, 0.0)
+        d_close_full = self.retract_close_rate * max(dt, 0.0)
+        for i in range(6):
+            des = _clamp(float(desired[i]), 0.0, 1000.0)
+            e = eff[i]
+            lim = float(force_set[i])
+            f = float(force_act[i])
+            if lim > 0.0 and f > lim:
+                # Rueckzug PROPORTIONAL zur Ueberschreitung: kleine Ueberlast -> kleiner
+                # Schritt (setzt sich am Limit ab, statt vom Objekt wegzuspringen),
+                # grosse Ueberlast (harter Aufprall) -> voller Rueckzug.
+                over = _clamp((f - lim) / lim, 0.08, 1.0)
+                e = min(1000.0, e + d_open * over)    # ueber Limit -> zurueckfahren
+            elif des < e:                            # Wunsch: weiter schliessen
+                if lim <= 0.0:
+                    e = max(des, e - d_close_full)    # kein Limit -> volle Rate
+                else:
+                    thresh = self.retract_resume * lim
+                    # Schliessrate mit Naehe zum Limit linear ausblenden (bei thresh -> 0).
+                    scale = _clamp((thresh - f) / thresh, 0.0, 1.0) if thresh > 0.0 else 0.0
+                    e = max(des, e - d_close_full * scale)
+            else:                                    # Wunsch: oeffnen -> frei folgen
+                e = des
+            eff[i] = _clamp(e, 0.0, 1000.0)
+        return list(eff)
+
     def update(self, models: Dict[str, HandModel], dt: float) -> None:
-        # 1) Soll-Winkel beider Haende -> 24 Gelenk-Radiant, + Kraft-Limit je Gelenk.
-        left = self._resolve_targets(models["left"])
-        right = self._resolve_targets(models["right"])
-        names, positions = joint_map.build_joint_state(left, right, self.closed)
-        with models["left"].lock:
-            fs = {"left": list(models["left"].force_set)}
-        with models["right"].lock:
-            fs["right"] = list(models["right"].force_set)
+        # 1) Wunsch-Winkel + Kraft-Limit + zuletzt gemessene Kraft je Hand lesen und
+        #    daraus den kraftgeregelten EFFEKTIVEN Soll-Winkel bilden (Rueckwaerts-
+        #    bewegung bei Ueberlast). force_act stammt aus dem letzten _fill_model.
+        eff_sides = {}
+        for side in ("left", "right"):
+            desired = self._resolve_targets(models[side])
+            with models[side].lock:
+                force_set = list(models[side].force_set)
+                force_act = list(models[side].force_act)
+            eff_sides[side] = self._regulate(side, desired, dt, force_act, force_set)
+        names, positions = joint_map.build_joint_state(
+            eff_sides["left"], eff_sides["right"], self.closed)
+        # Servo mit voller Modell-Antriebskraft ansteuern (Limit wirkt ueber die
+        # Winkel-Rueckfuehrung, nicht als Nm-Deckel).
         for k in range(min(24, len(positions))):
-            side, dof = self._cap_dof[k]
-            cap = _clamp(float(fs[side][dof]) / self.drive_scale,
-                         self.min_force_nm, self.max_force_nm)
             self.cmd_msg.motor_cmd[k].q = float(positions[k])
-            self.cmd_msg.motor_cmd[k].kp = cap    # Kraftgrenze [Nm] -> Bridge
+            self.cmd_msg.motor_cmd[k].kp = self.max_force_nm
         self.cmd_pub.Write(self.cmd_msg)
 
         # 2) Ist-Zustand aus der Sim -> /joint_states + Models (echte Winkel + Taktil).

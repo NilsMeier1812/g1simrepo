@@ -111,12 +111,18 @@ daher ist `localhost` korrekt.
 - MuJoCo liefert je Zone EINEN Kraft-Skalar (Summe der Normal-Kontaktkraefte); die
   per-Taxel-Matrix des Viewers wird daraus verteilt. Der raeumliche Feindruck
   INNERHALB einer Zone ist also synthetisch, die Zonen-Gesamtkraft ist echt.
-- **Kraft-Limit `force_set`** (GUI-Slider, Register 1498): begrenzt die
-  ANTRIEBSKRAFT des Finger-Servos (dynamische `actuator_forcerange` in der Bridge)
-  -> der Finger schliesst bis zum Limit und **bremst dort**, kann also nicht mehr
-  aktiv druecken als `force_set`. Die GEMESSENE Kontaktkraft (`force_act`) kann beim
-  Aufprall trotzdem kurz darueber springen (Stoss-Impuls) und wird ehrlich so
-  angezeigt — nicht auf das Limit geschoenigt.
+- **Kraft-Limit `force_set`** (GUI-Slider, Register 1498, Gramm) = echte
+  **Kraftregelung** wie an der Hardware: die GEMESSENE Kontaktkraft (`force_act`,
+  Gramm) wird laufend gegen `force_set` (gleiche Einheit) verglichen. Uebersteigt
+  sie das Limit, **faehrt der Finger seinen Winkel aktiv wieder auf** (oeffnet), bis
+  die Kraft drunter ist — man sieht den Winkel in der GUI zurueckgehen. Faellt die
+  Kraft klar unter das Limit, schliesst er sanft bis zum Wunsch nach. Gleichgewicht:
+  Kraft ~= Limit (Finger stoppt am Objekt, statt bis "zu" durchzuziehen). Der Servo
+  hat dabei die volle Modell-Antriebskraft; das Limit wirkt ueber die Winkel-
+  Rueckfuehrung, NICHT als kuenstlicher Nm-Deckel. Die kurze Aufprall-Spitze in
+  `force_act` (Stoss-Impuls) wird darum ehrlich angezeigt und dann weggeregelt —
+  nicht auf das Limit geschoenigt. Regel-Parameter (`retract_open_rate`/
+  `retract_close_rate`/`retract_resume`) im `MujocoContactBackend` tunebar.
 - Griffkraft ueber `FKP`/`FFRC` im MJCF-Generator (`gen_inspire_ftp_hand.py`)
   tunebar; nach Aenderung das Modell neu generieren.
 
