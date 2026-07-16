@@ -1,0 +1,9 @@
+# virtualenv des Editors (nicht einchecken - per ./setup.sh erzeugen)
+.venv/
+
+# lokale RoBits-Config (wird automatisch angelegt)
+.robits_config/
+
+# Python-Cache
+__pycache__/
+*.pyc

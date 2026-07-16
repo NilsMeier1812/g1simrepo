@@ -1,0 +1,53 @@
+<mujoco model="environment_starter">
+  <!-- =====================================================================
+       ENVIRONMENT / PROPS-Szene  (OHNE Roboter)
+       ---------------------------------------------------------------------
+       Das ist die Datei, die du im mujoco-scene-editor oeffnest und
+       bearbeitest:   ./launch.sh edit
+       Sie enthaelt NUR die Welt (Boden, Objekte, eigene STLs) - kein G1.
+       Den Roboter setzt g1_playground.xml per <include> obendrauf, damit
+       der Editor nicht am Robotermodell herumschneidet.
+
+       Mesh-Pfade sind relativ zu dieser Datei angegeben (../meshes/...).
+       ===================================================================== -->
+
+  <statistic center="0 0 0.5" extent="2.5"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="-130" elevation="-20"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge"
+             rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+
+    <!-- ====== EIGENE STL-MESHES ======
+         So bindest du ein eigenes STL ein: eine Zeile hier + ein <geom> unten.
+         scale skaliert das Mesh. STL aus CAD ist oft in mm -> dann scale="0.001 0.001 0.001".
+         Diese Beispiel-STLs sind bereits in Metern modelliert -> scale=1. -->
+    <mesh name="sample_crate" file="../meshes/sample_crate.stl"/>
+    <mesh name="sample_ramp"  file="../meshes/sample_ramp.stl"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 2.5" dir="0 0 -1" directional="true"/>
+
+    <!-- Boden -->
+    <geom name="floor" type="plane" size="0 0 0.05" material="groundplane"/>
+
+    <!-- ====== PRIMITIVE (kein Mesh noetig) ======
+         type: box | sphere | cylinder | capsule | ellipsoid
+         size-Bedeutung haengt vom Typ ab (box = halbe Kantenlaengen). -->
+    <geom name="box_demo"      type="box"      pos="1.0  0.6 0.15" size="0.15 0.15 0.15" rgba="0.85 0.45 0.20 1"/>
+    <geom name="cylinder_demo" type="cylinder" pos="1.0 -0.6 0.25" size="0.15 0.25"      rgba="0.30 0.55 0.75 1"/>
+
+    <!-- ====== EIGENE STL-MESHES platziert ======
+         type="mesh" + mesh="<name aus asset>". pos verschiebt, euler dreht (rad). -->
+    <geom name="crate_demo" type="mesh" mesh="sample_crate" pos="1.6  0.0 0.15" rgba="0.60 0.60 0.62 1"/>
+    <geom name="ramp_demo"  type="mesh" mesh="sample_ramp"  pos="2.0 -0.3 0.0"  rgba="0.45 0.70 0.45 1"/>
+  </worldbody>
+</mujoco>
