@@ -17,11 +17,34 @@ weitergehen, wenn die Erwartung der Stufe erfuellt ist.**
       oder mindestens 2 m freie Sturzflaeche in alle Richtungen.
 - [ ] **Zweite Person** anwesend, die die Unitree-Fernbedienung haelt
       (die Fernbedienung ist IMMER der uebergeordnete Not-Aus).
-- [ ] **E-Stop-Semantik verstanden**: Der Streamdeck-EMERGENCY-STOP ruft
-      `Damp()` → alle Motoren daempfen → **der Roboter sackt zusammen**.
+- [ ] **E-Stop-Semantik verstanden**: Der Streamdeck-EMERGENCY-STOP stoppt
+      ALLES sofort. Beine/Koerper: `Damp()` an den Loco-Controller. Arme:
+      der arm_controller haelt das **arm_sdk-Gewicht auf 1** (behaelt die
+      Autoritaet) und kommandiert kp=0/tau=0 mit leichter Daempfung (kd) →
+      die Arme werden **drehmomentfrei und sacken gedaempft**. Inspire-Haende
+      werden disabled (halten Position). → **Der Roboter sackt zusammen**
+      (haengend: Seile fangen ihn).
+      **WICHTIG (der Grund fuer Weight=1):** Wuerde der E-Stop das Gewicht
+      auf 0 setzen, uebernaehme der Unitree-Onboard-Regler die Arme und
+      faehrt sie AKTIV mit voller Geschwindigkeit in seine Default-Pose
+      (Sprung in die Home-Pose!). Genau das darf ein Not-Aus nicht.
       Das ist die letzte Instanz, nicht der "Anhalten"-Knopf. Sanftes
       Anhalten beim Gehen = **START BALANCING** klicken (StopMove, Roboter
       bleibt stehen und balanciert).
+      **Quittieren nach E-Stop:** **START** klicken (hebt den Latch in
+      loco_client UND arm_controller auf). Die Arme bleiben danach gedaempft
+      schlaff, bis **ENABLE MANIPULATION** die Kontrolle bewusst zurueckholt
+      (kein automatischer Rueckgang an den Onboard-Regler). Daempfung via
+      `estop_arm_kd` (Default 3.0; 0 = voellig frei).
+- [ ] **Speedlimits aktiv**: Armbewegungen sind auf **0.25 m/s** an Hand-TCP
+      und Ellbogen begrenzt (ISO 10218-1 / ISO TS 15066 "reduced speed")
+      plus 1.5 rad/s je Gelenk. Auch wenn der IK-Solver eine wirre
+      Konfiguration vorschlaegt, faehrt der Arm sie nur mit diesem Tempo an.
+      Anpassbar via `G1_ARM_VEL_LIMIT` / `G1_EE_VEL_LIMIT` (Env vor start.sh).
+- [ ] **Selbstkollisions-Gate aktiv**: jede kommandierte Armpose wird vor dem
+      Senden gegen Selbstkollision geprueft (3 cm Marge, Convex-Hulls,
+      Arm↔Torso/Kopf/Hueften + Arm↔Arm). Bei Verletzung haelt der Arm an und
+      loggt eine Warnung -- Marker einfach zurueckziehen.
 - [ ] **Kein Auto-Start**: Im Real-Modus aktiviert der Streamdeck NICHTS von
       selbst. Der Roboter bewegt sich erst nach euren Klicks.
 - [ ] Akku geladen, Umgebung frei von Hindernissen/Kabeln in Fussnaehe.
@@ -29,15 +52,43 @@ weitergehen, wenn die Erwartung der Stufe erfuellt ist.**
 
 ---
 
-## 1. Netzwerk
+## 1. Netzwerk (Ersteinrichtung — auch ohne G1-Vorerfahrung)
+
+**Vorweg: "Ports" muss man NICHT konfigurieren.** Der G1 spannt sein eigenes
+LAN auf (`192.168.123.0/24`); DDS laeuft als UDP direkt auf dem Interface
+(bindet das Unitree-SDK selbst, sobald start.sh das Interface kennt), Modbus
+zu den Haenden ist ausgehend (TCP 6000), die Hand-GUIs (8765-8767) sind rein
+lokal. Einzige Pflicht: dem PC-Ethernet-Port eine **statische IP** im
+Roboter-Subnetz geben — im Roboter-LAN gibt es keinen DHCP-Server.
+
+| Adresse            | Wer                                          |
+|--------------------|----------------------------------------------|
+| `192.168.123.161`  | G1 Onboard-PC (DDS-Quelle)                   |
+| `192.168.123.210/.211` | Inspire-Hand links/rechts (Modbus TCP 6000) |
+| `192.168.123.222`  | dein PC (selbst vergeben, Konvention)        |
+
+**Voraussetzung:** nativer Linux-PC mit freiem Ethernet-Port. KEIN WSL2 fuer
+den echten Roboter — das SDK braucht die physische NIC direkt, das geht
+durch die WSL2-NAT nicht zuverlaessig (Sim unter WSL2 ist ok).
 
 1. G1 einschalten und per **Ethernet-Kabel** mit dem PC verbinden.
-2. Dem PC-Interface eine statische IP im Roboter-LAN geben (Beispiel):
+2. Interface-Namen finden (wechselt beim Einstecken auf UP):
+   ```bash
+   ip -br link        # z.B. enp3s0, eth0, enx... (lo/wlp... ignorieren)
+   ```
+3. Statische IP vergeben (fluechtig, nach Reboot weg):
    ```bash
    sudo ip addr add 192.168.123.222/24 dev <NIC>
    sudo ip link set <NIC> up
    ```
-3. Erreichbarkeit pruefen:
+   Dauerhaft via NetworkManager (KEIN Gateway/DNS eintragen, sonst will der
+   PC uebers Roboter-LAN ins Internet):
+   ```bash
+   sudo nmcli con add type ethernet ifname <NIC> con-name g1-robot \
+        ipv4.method manual ipv4.addresses 192.168.123.222/24
+   sudo nmcli con up g1-robot
+   ```
+4. Erreichbarkeit pruefen:
    ```bash
    ping -c3 192.168.123.161     # G1 Onboard-PC (Standard-Adresse)
    # Mit Inspire-Haenden zusaetzlich:
@@ -47,6 +98,13 @@ weitergehen, wenn die Erwartung der Stufe erfuellt ist.**
    ```
    **Abbruch-Kriterium:** Ohne Ping zum Roboter hat nichts Weiteres Sinn —
    Kabel/IP/Interface pruefen.
+5. Firewall beachten: `sudo ufw status` — falls aktiv, blockt sie den
+   DDS-UDP-Traffic → `sudo ufw allow in on <NIC>` (oder deaktivieren).
+
+WLAN darf parallel anbleiben (anderes Subnetz, stoert nicht). Die
+Interface-Auswahl in start.sh markiert die NIC mit der 192.168.123.x-IP
+automatisch als Default — Schritt 3 ist also die Voraussetzung dafuer,
+dass dort einfach ENTER reicht.
 
 ---
 
@@ -117,15 +175,34 @@ folgt exakt; die IK-Marker folgen den Haenden (marker_follow_ee).
    bringen (fuer den ersten Test: haengend).
 2. Streamdeck **ENABLE MANIPULATION** → das arm_sdk-Gewicht rampt **2 s**
    von 0 auf 1. **Erwartung:** Arme uebernehmen die aktuelle Pose OHNE Ruck
-   und halten sie (Schwerkraft-Feedforward aktiv).
-3. In RViz einen Marker **wenige cm** ziehen. Erwartung: Hand folgt ruhig,
-   haelt die Zielposition stabil.
-4. **HOMING ARMS** testen → definierte Home-Pose.
-5. **ENABLE MANIPULATION** wieder aus → Gewicht rampt 2 s auf 0, die
+   und halten sie (Schwerkraft-Feedforward aktiv). Beim Enable werden alte
+   IK-Ziele/Homing-Reste verworfen -- der Arm HAELT immer erst die
+   aktuelle Stellung.
+3. In RViz einen Marker **wenige cm** ziehen. Erwartung: Hand folgt ruhig
+   (max. 0.25 m/s), haelt die Zielposition stabil.
+4. **Gate-Test:** Marker absichtlich IN den Torso ziehen. Erwartung: Arm
+   stoppt vor dem Koerper, Log zeigt "Selbstkollisions-Gate: ... Arm haelt
+   an". Marker zurueckziehen → Arm folgt wieder.
+5. **HOMING ARMS** testen → definierte Home-Pose (geht nur bei aktiver
+   Manipulation).
+6. **E-Stop-Test (haengend!):** EMERGENCY STOP druecken → Arme werden
+   SOFORT drehmomentfrei und sacken **gedaempft** (keine 2-s-Rampe, KEIN
+   Sprung in die Home-Pose). Danach START (quittiert, Arme bleiben schlaff)
+   → ENABLE MANIPULATION: Arme uebernehmen wieder ruckfrei die aktuelle Pose.
+   **Erwartung explizit:** Die Arme fahren beim E-Stop NICHT aktiv irgendwohin
+   — sie geben nach. Tun sie das nicht (Sprung/aktive Bewegung), sofort
+   Fernbedienungs-Not-Aus und melden.
+7. **ENABLE MANIPULATION** wieder aus → Gewicht rampt 2 s auf 0, die
    Roboter-eigene Armsteuerung uebernimmt weich.
 
 **Abbruch:** Ruckt oder schwingt etwas → sofort disable; kp/kd im
-arm_controller pruefen, bevor es weitergeht.
+arm_controller pruefen, bevor es weitergeht (Real-Bringup setzt die
+Unitree-Beispielwerte kp=60/kd=1.5; die Sim faehrt bewusst andere Gains).
+
+**Hinweis Regelrate:** Waehrend ein Marker-Ziel AKTIV verfolgt wird, kostet
+der IK-Solve ~20-30 ms/Zyklus -> der Regel-Loop laeuft dann effektiv mit
+~30-50 Hz statt 250 Hz. Alle Limits rechnen mit dem echten dt und bleiben
+korrekt; im Halten-Zustand laeuft der Loop mit voller Rate.
 
 ---
 

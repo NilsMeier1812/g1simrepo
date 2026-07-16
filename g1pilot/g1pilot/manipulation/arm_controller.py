@@ -36,7 +36,6 @@ from g1pilot.utils.common import (
     MotorState,
     G1_29_JointArmIndex,
     G1_29_JointWristIndex,
-    G1_29_JointWeakIndex,
     G1_29_JointIndex,
     DataBuffer,
     init_dds,
@@ -139,7 +138,24 @@ class ArmController(Node):
 
         self.declare_parameter("use_robot", True)
         self.declare_parameter("interface", "eth0")
-        self.declare_parameter("arm_velocity_limit", 5.0)
+        # Gelenk-Geschwindigkeitslimit [rad/s]. Frueher 5.0 -- viel zu schnell
+        # fuer echte Hardware (und der Launcher hat seinen 2.0-Default nie an
+        # den Node uebergeben, d.h. es galt immer 5.0).
+        self.declare_parameter("arm_velocity_limit", 1.5)
+        # Kartesisches Speedlimit [m/s] fuer Hand-TCP UND Ellbogen. 0.25 m/s =
+        # "reduced speed" nach ISO 10218-1 / ISO TS 15066 (Industriewert fuer
+        # Betrieb mit Personen im Schutzraum). Faengt den Fall ab, dass der
+        # IK-Solver eine wirre Konfiguration vorschlaegt: der Arm darf da
+        # hinfahren, aber nur mit dieser Geschwindigkeit. 0.0 = aus.
+        self.declare_parameter("ee_velocity_limit", 0.25)
+        # Selbstkollisions-Gate: kommandierte Konfiguration wird VOR dem Senden
+        # gegen Selbstkollision geprueft (Marge s. ik_solver.collision_margin);
+        # bei Verletzung haelt der Arm an, statt in den Koerper zu fahren.
+        self.declare_parameter("self_collision_gate", True)
+        # Daempfung [kd] der Arm-Gelenke im E-Stop/Slack-Zustand. kp=0/tau=0 ->
+        # keine Positionshaltung; kleines kd -> die Arme sacken GEDAEMPFT statt
+        # frei zu fallen (an Seilen abgefangen). 0.0 = voellig frei (harter Fall).
+        self.declare_parameter("estop_arm_kd", 3.0)
         self.declare_parameter("rate_hz", 250.0)
         self.declare_parameter("ik_world_frame", "pelvis")
         self.declare_parameter("ik_alpha", 0.2)
@@ -173,6 +189,9 @@ class ArmController(Node):
         self.use_robot = bool(self.get_parameter("use_robot").value)
         self.interface = str(self.get_parameter("interface").value)
         self.arm_velocity_limit = float(self.get_parameter("arm_velocity_limit").value)
+        self.ee_velocity_limit = float(self.get_parameter("ee_velocity_limit").value)
+        self.self_collision_gate = bool(self.get_parameter("self_collision_gate").value)
+        self.estop_arm_kd = float(self.get_parameter("estop_arm_kd").value)
         self.rate_hz = float(self.get_parameter("rate_hz").value)
         self.frame = str(self.get_parameter("ik_world_frame").value)
         self.ik_alpha = float(self.get_parameter("ik_alpha").value)
@@ -207,6 +226,16 @@ class ArmController(Node):
         # die Uebergabe an die Roboter-eigene Steuerung weich ist.
         self._arm_sdk_weight = 0.0
         self._weight_state = "off"
+        # E-Stop-Latch: nach /g1pilot/emergency_stop=true verstummt der Node
+        # SOFORT (eine letzte Nachricht mit Weight=0 + kp/kd=0 -> Arme schlaff,
+        # Damp() faengt den Rest). Quittiert wird ueber /g1pilot/start --
+        # dieselbe Semantik wie robot_stopped im loco_client.
+        self.estop_active = False
+        # Slack-Latch: Arme werden gedaempft-drehmomentfrei gehalten (Weight=1,
+        # kp=0), OHNE Rueckgabe an den Onboard-Regler. Bleibt nach dem
+        # Quittieren (START) aktiv, bis ENABLE MANIPULATION die Kontrolle
+        # bewusst zurueckholt.
+        self._arm_slack = False
         self.homing_active = False
         self.homing_reached = False
         self.homing_tolerance = 0.02
@@ -227,6 +256,24 @@ class ArmController(Node):
         self.ik_solver = G1IKSolver(debug=False)
         if hasattr(self.ik_solver, "set_orientation_mode"):
             self.ik_solver.set_orientation_mode(self.ik_orientation_mode)
+
+        # Kartesisches Speedlimit: ueberwachte Punkte = Hand-TCPs + Ellbogen
+        # (der Ellbogen kann bei reiner Schulterdrehung schneller sein als die
+        # Hand). Eigenes pin.Data, damit die FK hier den Solver-Zustand nicht
+        # anfasst.
+        self._speed_data = pin.Data(self.ik_solver.model)
+        self._speed_fids = [f for f in (self.ik_solver._fid_left,
+                                        self.ik_solver._fid_right) if f is not None]
+        for link in ("left_elbow_link", "right_elbow_link"):
+            try:
+                self._speed_fids.append(self.ik_solver.model.getFrameId(link))
+            except Exception:
+                pass
+        if self.self_collision_gate and not getattr(self.ik_solver, "_gate_ready", False):
+            self.get_logger().warn(
+                "Selbstkollisions-Gate NICHT verfuegbar (s. IK-Log) -- "
+                "Arm-Kommandos werden ungeprueft gesendet!")
+        self._gate_last_warn = 0.0
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -280,6 +327,10 @@ class ArmController(Node):
         # Loco-Zustand: bei WALK Arme in die Lauf-Pose, bei BALANCING wieder frei.
         self.create_subscription(Bool, "/g1pilot/start_walking", self._on_walk_mode, 10)
         self.create_subscription(Bool, "/g1pilot/start_balancing", self._on_balance_mode, 10)
+        # E-Stop: sofort verstummen + Arme schlaff schalten (Weight=0, kp/kd=0).
+        # /g1pilot/start quittiert den Latch (wie robot_stopped im loco_client).
+        self.create_subscription(Bool, "/g1pilot/emergency_stop", self._on_emergency_stop, 10)
+        self.create_subscription(Bool, "/g1pilot/start", self._on_start, 10)
 
         
         self._init_robot_interface()
@@ -554,19 +605,33 @@ class ArmController(Node):
         self.msg.mode_machine = self.get_mode_machine()
         self.all_motor_q = self.get_current_motor_q()
 
-        # PD-Gains. kp wie auf dem echten Roboter; kd in der Sim deutlich
-        # hoeher, weil die MuJoCo-Gelenke (anders als echte Motoren mit
-        # Getriebereibung) sonst unterdaempft um die Sollpose schwingen
-        # (Dauerzittern). Als ROS-Parameter ausgelegt -> real kann via Launch
-        # niedrigere kd setzen, ohne den Code zu aendern.
+        # PD-Gains. Defaults = Sim-Tuning (kd hoch, weil die MuJoCo-Gelenke
+        # sonst unterdaempft um die Sollpose schwingen). Das REAL-Bringup
+        # (bringup_real -> manipulation_launcher) ueberschreibt auf die im
+        # offiziellen Unitree-g1_arm7_sdk-Beispiel erprobten Werte kp=60,
+        # kd=1.5 -- NICHT die Sim-Werte auf echte Motoren loslassen.
         def _gain(name, default):
             if not self.has_parameter(name):
                 self.declare_parameter(name, default)
             return float(self.get_parameter(name).value)
 
-        self.kp_high  = _gain("kp_high",  300.0); self.kd_high  = _gain("kd_high",  12.0)
         self.kp_low   = _gain("kp_low",   150.0); self.kd_low   = _gain("kd_low",   12.0)
         self.kp_wrist = _gain("kp_wrist",  40.0); self.kd_wrist = _gain("kd_wrist",  4.0)
+
+        # NUR die 14 Arm-Gelenke (15..28) + Weight (29) werden je beschrieben --
+        # exakt wie im offiziellen Unitree-g1_arm7_sdk-Beispiel. Alle anderen
+        # Eintraege werden hier einmalig explizit inert gesetzt und danach NIE
+        # angefasst: Beine gehoeren nicht in rt/arm_sdk, und die Taille (12-14)
+        # ist via arm_sdk real ansteuerbar -- ein Kommando dort wuerde gegen
+        # den Unitree-Loco-Controller kaempfen. (Frueher schrieb
+        # _hold_non_arm_joints Beine+Taille mit kp=300 in die Message.)
+        arm_vals = {m.value for m in G1_29_JointArmIndex}
+        for jid in G1_29_JointIndex:
+            if jid.value in arm_vals:
+                continue
+            mc = self.msg.motor_cmd[jid]
+            mc.mode = 0
+            mc.q = 0.0; mc.dq = 0.0; mc.tau = 0.0; mc.kp = 0.0; mc.kd = 0.0
 
         wrist_vals = {m.value for m in G1_29_JointWristIndex}
         for jid in G1_29_JointArmIndex:
@@ -650,39 +715,87 @@ class ArmController(Node):
             full[jidx] = self._last_q_target[7 + i]
         return full
 
-    def _hold_non_arm_joints(self):
-        """
-        Maintain non-arm joints in their current positions while arms are disabled.
+    def _full_config_with_arms(self, q14: np.ndarray) -> np.ndarray:
+        """29-DOF-Konfiguration: Arme aus q14, Rest (Beine/Taille) aus der
+        Messung (real) bzw. neutral (Sim)."""
+        if self.use_robot:
+            try:
+                full = self.get_current_motor_q()
+            except Exception:
+                full = np.zeros(29, dtype=float)
+        else:
+            full = np.zeros(29, dtype=float)
+        for i, jidx in enumerate(LEFT_JOINT_INDICES_LIST):
+            full[jidx] = q14[i]
+        for i, jidx in enumerate(RIGHT_JOINT_INDICES_LIST):
+            full[jidx] = q14[7 + i]
+        return full
 
-        For all joints not belonging to the arm, send hold-position commands with
-        appropriate gains depending on their classification (weak or strong).
+    def _arm_points(self, q14: np.ndarray) -> np.ndarray:
+        """Positionen der ueberwachten Punkte (Hand-TCPs + Ellbogen) fuer die
+        Arm-Konfiguration q14 (Nicht-Arm-Gelenke neutral -- fuer die
+        RELATIVE Verschiebung zwischen zwei Ticks ausreichend)."""
+        ik = self.ik_solver
+        q_full = pin.neutral(ik.model)
+        for i, arm_i in enumerate(LEFT_JOINT_INDICES_LIST):
+            q_full[ik._name_to_q_index[ik._ros_joint_names[arm_i]]] = float(q14[i])
+        for i, arm_i in enumerate(RIGHT_JOINT_INDICES_LIST):
+            q_full[ik._name_to_q_index[ik._ros_joint_names[arm_i]]] = float(q14[7 + i])
+        pin.forwardKinematics(ik.model, self._speed_data, q_full)
+        pin.updateFramePlacements(ik.model, self._speed_data)
+        return np.array([self._speed_data.oMf[f].translation for f in self._speed_fids])
 
-        Notes
-        -----
-        - Does nothing in simulation mode (`use_robot=False`).
-        - Uses high or low gains depending on whether the joint is weak.
-        """
+    def _limit_cartesian_speed(self, q_prev: np.ndarray, q_new: np.ndarray,
+                               dt: float) -> np.ndarray:
+        """Schritt q_prev->q_new so skalieren, dass kein ueberwachter Punkt
+        schneller als ee_velocity_limit [m/s] faehrt (ISO 10218-1 reduced
+        speed). Skaliert den GESAMTEN Gelenkschritt richtungserhaltend."""
+        if self.ee_velocity_limit <= 0.0 or not self._speed_fids:
+            return q_new
+        dq = q_new - q_prev
+        if float(np.max(np.abs(dq))) < 1e-9:
+            return q_new
+        try:
+            disp = float(np.max(np.linalg.norm(
+                self._arm_points(q_new) - self._arm_points(q_prev), axis=1)))
+        except Exception:
+            return q_new
+        lim = self.ee_velocity_limit * dt
+        if disp <= lim or disp < 1e-12:
+            return q_new
+        return q_prev + dq * (lim / disp)
 
-        if not self.use_robot:
-            return
-        arm_vals  = {m.value for m in G1_29_JointArmIndex}
-        weak_vals = {m.value for m in G1_29_JointWeakIndex}
-        current_all = self.get_current_motor_q()
-
-        self.msg.mode_pr = 0
-        for jid in G1_29_JointIndex:
-            if jid.value in arm_vals:
-                continue
-            self.msg.motor_cmd[jid].mode = 1
-            if jid.value in weak_vals:
-                self.msg.motor_cmd[jid].kp = self.kp_low
-                self.msg.motor_cmd[jid].kd = self.kd_low
-            else:
-                self.msg.motor_cmd[jid].kp = self.kp_high
-                self.msg.motor_cmd[jid].kd = self.kd_high
-            self.msg.motor_cmd[jid].q   = float(current_all[jid.value])
-            self.msg.motor_cmd[jid].dq  = 0.0
-            self.msg.motor_cmd[jid].tau = 0.0
+    def _apply_collision_gate(self, q_prev: np.ndarray, q_new: np.ndarray) -> np.ndarray:
+        """Selbstkollisions-Gate auf dem KOMMANDIERTEN Schritt:
+          * Kandidat frei                      -> senden.
+          * Kandidat in HARTER Kollision       -> halten (q_prev).
+          * Kandidat im Margenband, aktueller Zustand auch -> zulassen
+            (Rueckzug aus dem Band muss moeglich sein; Tempo ist ohnehin
+            durch das kartesische Limit gedeckelt).
+          * Kandidat faehrt NEU ins Band       -> halten (q_prev)."""
+        if not self.self_collision_gate:
+            return q_new
+        ik = self.ik_solver
+        if not getattr(ik, "_gate_ready", False):
+            return q_new
+        if float(np.max(np.abs(q_new - q_prev))) < 1e-9:
+            return q_new
+        try:
+            if not ik.arm_command_in_collision(self._full_config_with_arms(q_new)):
+                return q_new
+            if not ik.arm_command_in_collision(self._full_config_with_arms(q_new), hard=True):
+                if ik.arm_command_in_collision(self._full_config_with_arms(q_prev)):
+                    return q_new     # schon im Band -> langsames Herausfahren erlaubt
+        except Exception as e:
+            self.get_logger().warn(f"Kollisions-Gate-Fehler: {e} -- halte Pose.")
+            return q_prev
+        now = time.time()
+        if now - self._gate_last_warn > 1.0:
+            self._gate_last_warn = now
+            self.get_logger().warn(
+                "Selbstkollisions-Gate: Zielbewegung wuerde in den Koerper "
+                "fahren -- Arm haelt an (Marker zurueckziehen).")
+        return q_prev
 
     def _advance_arm_weight(self, dt: float) -> float:
         """arm_sdk-Gewicht (motor_cmd[29].q) einen Tick weiterfahren.
@@ -731,6 +844,77 @@ class ArmController(Node):
             self.get_logger().info("arm_sdk-Gewicht auf 0 -- Arme an die "
                                    "Roboter-Steuerung uebergeben.")
 
+    def _publish_arm_slack(self):
+        """Arme drehmomentfrei / leicht gedaempft halten -- OHNE die Kontrolle
+        an den Unitree-Onboard-Regler zurueckzugeben.
+
+        KRITISCH: das arm_sdk-Gewicht bleibt hier auf 1. Setzt man es auf 0
+        (frueheres E-Stop-Verhalten!), uebernimmt der Onboard-Regler die Arme
+        und faehrt sie AKTIV mit voller Geschwindigkeit in seine Default-Pose
+        (sieht aus wie ein Sprung in die Home-Pose). Mit Gewicht=1 behaelt
+        arm_sdk die Autoritaet: kp=0 -> keine Positionshaltung, tau=0 -> kein
+        Feedforward, kd klein -> die Arme sacken GEDAEMPFT (an Seilen
+        abgefangen). Muss WEITER gesendet werden, sonst greift der arm_sdk-
+        Watchdog und der Onboard-Regler schnappt doch noch zu."""
+        if not self.use_robot or not getattr(self, "_initialized", False):
+            return
+        try:
+            cur = self.get_current_motor_q()
+        except Exception:
+            cur = None
+        try:
+            self.msg.mode_machine = self.get_mode_machine()
+            for jid in G1_29_JointArmIndex:
+                mc = self.msg.motor_cmd[jid]
+                mc.mode = 1
+                mc.kp = 0.0
+                mc.kd = self.estop_arm_kd
+                mc.tau = 0.0
+                mc.dq = 0.0
+                if cur is not None:
+                    mc.q = float(cur[jid.value])   # bei kp=0 ohne Wirkung, sauber
+            # Weight = 1: arm_sdk behaelt die Autoritaet (KEIN Onboard-Snap).
+            self.msg.motor_cmd[G1_29_JointIndex.kNotUsedJoint0].q = 1.0
+            self.msg.crc = self.crc.Crc(self.msg)
+            self.lowcmd_publisher.Write(self.msg)
+        except Exception as e:
+            self.get_logger().error(f"Arm-Slack-Nachricht fehlgeschlagen: {e}")
+
+    def _on_emergency_stop(self, msg: Bool):
+        """E-STOP: Arme drehmomentfrei/gedaempft, OHNE Onboard-Uebergabe.
+
+        Der Slack-Zustand wird ab jetzt in jedem Tick weiter gesendet
+        (_publish_arm_slack) -- kein Handover-Fenster, in dem der Onboard-
+        Regler die Arme in die Home-Pose reissen koennte. Der Latch
+        (estop_active) blockiert ENABLE, bis via /g1pilot/start quittiert
+        wird; die Arme bleiben schlaff, bis ENABLE die Kontrolle bewusst
+        zurueckholt. Beine/Koerper werden separat von loco_client gedaempft
+        (Damp)."""
+        if not msg.data or self.estop_active:
+            return
+        self.estop_active = True
+        self._arm_slack = True
+        self.arms_enabled = False
+        self.homing_active = False
+        self.homing_reached = False
+        self.walk_mode = False
+        self._weight_state = "off"
+        self._arm_sdk_weight = 1.0     # Autoritaet behalten (kein Onboard-Snap)
+        self._publish_arm_slack()
+        self.get_logger().warn("EMERGENCY STOP: Arme drehmomentfrei/gedaempft "
+                               "(arm_sdk behaelt Autoritaet, KEIN Sprung in "
+                               "Home). Quittieren: START.")
+
+    def _on_start(self, msg: Bool):
+        """START (Streamdeck) quittiert den E-Stop-Latch. Die Arme bleiben
+        schlaff (_arm_slack) und werden weiter gedaempft gehalten, bis ENABLE
+        MANIPULATION die Kontrolle bewusst zurueckholt -- NICHT an den
+        Onboard-Regler zurueckgeben (der wuerde sie posieren)."""
+        if msg.data and self.estop_active:
+            self.estop_active = False
+            self.get_logger().info("E-Stop quittiert (START) -- Arme bleiben "
+                                   "gedaempft schlaff bis ENABLE MANIPULATION.")
+
     def _arms_controlled_callback(self, msg: Bool):
         """
         ROS 2 callback to enable or disable arm control.
@@ -746,8 +930,14 @@ class ArmController(Node):
         - On disable: stops sending active motion commands.
         """
 
+        if msg.data and self.estop_active:
+            self.get_logger().warn("ENABLE ignoriert: E-Stop aktiv -- erst mit "
+                                   "START quittieren.")
+            return
         self.arms_enabled = msg.data
         if self.arms_enabled:
+            # Slack-Latch aufheben: ENABLE holt die Kontrolle bewusst zurueck.
+            self._arm_slack = False
             try:
                 cur = self.get_current_motor_q()
                 left = [cur[j] for j in LEFT_JOINT_INDICES_LIST]
@@ -755,6 +945,15 @@ class ArmController(Node):
                 self._last_q_target = np.array(left + right, dtype=float)
             except Exception:
                 pass
+            # Reste einer frueheren Session verwerfen: alte IK-Ziele wuerden den
+            # Arm beim Re-Enable SOFORT auf ein altes Marker-Ziel losfahren
+            # lassen, ein altes homing_reached wuerde ihn zur Home-Pose treiben.
+            # Stattdessen: HALTEN an der aktuellen Stellung, bis der Nutzer
+            # einen Marker zieht.
+            self.homing_active = False
+            self.homing_reached = False
+            self._align_ik_to_config(self._last_q_target[0:7],
+                                     self._last_q_target[7:14])
             # Gewicht sanft hochfahren (bzw. Abwaertsrampe nahtlos umkehren).
             if self._weight_state != "on":
                 self._weight_state = "ramp_up"
@@ -790,6 +989,13 @@ class ArmController(Node):
         """
 
         if msg.data:
+            # Nur bei aktiver Manipulation annehmen. Frueher wurde ein Homing-
+            # Klick im disabled-Zustand GESPEICHERT und feuerte dann beim
+            # naechsten Enable als Ueberraschungsbewegung.
+            if not self.arms_enabled or self.estop_active:
+                self.get_logger().warn("HOMING ignoriert: Manipulation nicht "
+                                       "aktiv (erst ENABLE MANIPULATION).")
+                return
             self.get_logger().info("Moving both arms to HOME position.")
             self.homing_active = True
             self.homing_reached = False
@@ -1065,7 +1271,15 @@ class ArmController(Node):
 
         if not getattr(self, "_initialized", False):
             return
-        
+
+        # E-STOP / Slack: Arme drehmomentfrei/gedaempft halten und WEITER
+        # senden -- ohne die Kontrolle an den Onboard-Regler zurueckzugeben
+        # (der wuerde die Arme in seine Default-Pose reissen). Laeuft, bis
+        # ENABLE MANIPULATION den Slack-Latch aufhebt.
+        if self._arm_slack and not self.arms_enabled:
+            self._publish_arm_slack()
+            return
+
         if self.use_robot:
             robot_data = self.lowstate_subscriber.Read()
             if robot_data is not None:
@@ -1078,8 +1292,8 @@ class ArmController(Node):
             if self._weight_state == "ramp_down":
                 # Weiche Uebergabe: Gewicht 1->0 fahren, solange weiter senden.
                 self._publish_weight_ramp_down()
-            else:
-                self._hold_non_arm_joints()
+            # Sonst: STILL sein. (Frueher wurden hier Beine+Taille mit kp=300
+            # in self.msg geschrieben -- die gehoeren nicht in rt/arm_sdk.)
             return
 
         if self.walk_mode:
@@ -1187,11 +1401,18 @@ class ArmController(Node):
 
         q_unsmoothed = self._last_q_target + dq
         q_smooth = (1.0 - self.ik_alpha) * self._last_q_target + self.ik_alpha * q_unsmoothed
+        # Kartesisches Speedlimit (TCP + Ellbogen, ISO 10218-1 reduced speed):
+        # begrenzt auch die Faelle, in denen ein kleiner Gelenkschritt eine
+        # grosse Handbewegung erzeugt (gestreckter Arm, Schulterdrehung).
+        q_smooth = self._limit_cartesian_speed(self._last_q_target, q_smooth, dt)
+        # Selbstkollisions-Gate: nie in den eigenen Koerper fahren.
+        q_smooth = self._apply_collision_gate(self._last_q_target, q_smooth)
         self._last_q_target = q_smooth.copy()
 
         if self.use_robot:
             self.msg.mode_machine = self.get_mode_machine()
-            self.msg.mode_pr = 1
+            # mode_pr NICHT setzen (bleibt 0 wie im Unitree-arm_sdk-Beispiel;
+            # betrifft nur die Knoechel-Interpretation, die uns nichts angeht).
 
             try:
                 self.msg.motor_cmd[G1_29_JointIndex.kNotUsedJoint0].q = \

@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 
 import os
-import math
 import numpy as np
 import pinocchio as pin
 from pinocchio import SE3
@@ -50,8 +49,7 @@ class G1IKSolver:
                  null_space_gain=0.15,
                  debug=False,
                  enable_collision_avoidance=True,
-                 collision_distance_thresh=0.05,
-                 collision_gain=10.0):
+                 collision_margin=0.03):
         self.alpha = alpha
         self.max_dq_step = max_dq_step
         self.damping = damping
@@ -77,10 +75,9 @@ class G1IKSolver:
         self.frame_left = frame_left
         self.frame_right = frame_right
 
-        # Collision avoidance parameters
+        # Selbstkollisions-Gate (s. _init_collision_gate / arm_command_in_collision)
         self.enable_collision_avoidance = enable_collision_avoidance
-        self.collision_distance_thresh = collision_distance_thresh
-        self.collision_gain = collision_gain
+        self.collision_margin = float(collision_margin)
 
         # Load model
         try:
@@ -111,23 +108,20 @@ class G1IKSolver:
 
 
             self.data = pin.Data(self.model)
-            self.collision_data = pin.GeometryData(self.collision_model)
-
-            # --- Debug: check collision model content ---
-            # print(f"Loaded {len(self.collision_model.geometryObjects)} collision geometries.", flush=True)
-            # print(f"Number of collision pairs initially: {len(self.collision_model.collisionPairs)}", flush=True)
-            # if len(self.collision_model.collisionPairs) == 0:
-            #     print("No collision pairs defined — generating all-vs-all pairs...", flush=True)
-            #     geom_ids = range(len(self.collision_model.geometryObjects))
-            #     for i in geom_ids:
-            #         for j in geom_ids:
-            #             if i < j:
-            #                 self.collision_model.addCollisionPair(pin.CollisionPair(i, j))
-            #     print(f"Added {len(self.collision_model.collisionPairs)} collision pairs.", flush=True)
-
 
         except Exception as e:
             raise RuntimeError(f"Failed to load URDF: {e}")
+
+        # Selbstkollisions-Gate aufbauen (kuratierte Paare + Convex-Hulls).
+        # WICHTIG: buildModelsFromUrdf legt KEINE collisionPairs an -- ohne
+        # diesen Schritt waere jede Kollisionspruefung ein No-Op (so war es
+        # frueher: die "collision avoidance" hat nie etwas geprueft).
+        self._gate_ready = False
+        if self.enable_collision_avoidance:
+            try:
+                self._init_collision_gate()
+            except Exception as e:
+                print(f"[IK] WARN: Kollisions-Gate nicht verfuegbar: {e}", flush=True)
 
         # Joint mapping
         self._ros_joint_names = [JOINT_NAMES_ROS[i] for i in range(29)]
@@ -209,68 +203,100 @@ class G1IKSolver:
         qf = quat_slerp(q0, q1, self.goal_filter_alpha)
         return SE3(quat_wxyz_to_matrix(qf), p)
 
-    def _collision_repulsion(self, q):
-        """
-        Compute joint-space repulsion (dq_repulse) based on proximity collisions.
-        Prints debug info when collisions are detected.
-        """
-        if not self.enable_collision_avoidance:
-            return np.zeros(self.model.nv)
+    # --------------------------------------------------------
+    # Selbstkollisions-Gate
+    # --------------------------------------------------------
+    #
+    # Konzept: KEINE Distanz-Abfragen (computeDistances auf den G1-Meshes
+    # kostet ~2 s pro Aufruf -> unbrauchbar), sondern ein BINAERER
+    # Kollisionscheck mit security_margin auf kuratierten Paaren und
+    # Convex-Hull-Geometrien. Gemessen: ~0.3 ms pro Check -> laeuft in
+    # jedem 250-Hz-Tick des arm_controller. Der Controller prueft damit die
+    # KOMMANDIERTE Konfiguration, BEVOR sie zum Roboter geht, und haelt die
+    # Arme an, statt in den eigenen Koerper zu fahren.
 
-        pin.updateGeometryPlacements(self.model, self.data, self.collision_model, self.collision_data)
-        pin.computeCollisions(self.model, self.data, self.collision_model, self.collision_data, q, False)
+    # Bewegliche Armteile, die den Koerper treffen koennen. shoulder_pitch/
+    # shoulder_roll bewegen sich kaum vom Torso weg; shoulder_yaw sitzt
+    # konstruktionsbedingt dauerhaft ~2.8 cm am Torso und wuerde mit Marge
+    # permanent "kollidieren" -> bewusst NICHT gegen den Torso geprueft.
+    _GATE_ARM_KEYS = ("elbow", "wrist", "base_link", "palm")
+    _GATE_BODY_GEOMS = (
+        "torso_link_0", "head_link_0", "pelvis_contour_link_0", "logo_link_0",
+        "left_hip_pitch_link_0", "right_hip_pitch_link_0",
+        "left_hip_roll_link_0", "right_hip_roll_link_0",
+        "left_hip_yaw_link_0", "right_hip_yaw_link_0",
+        "left_knee_link_0", "right_knee_link_0",
+    )
 
-        dq_repulse = np.zeros(self.model.nv)
-        total_weight = 0.0
-        collision_detected = False
+    def _init_collision_gate(self):
+        cm = self.collision_model
+        # 1) Meshes -> Convex-Hulls: schneller UND konservativer (Hull
+        #    umschliesst das Mesh). Nicht jede hppfcl/coal-Version kann das ->
+        #    per hasattr abgesichert; ohne Hulls funktioniert der Check auch,
+        #    nur langsamer.
+        for g in cm.geometryObjects:
+            geom = g.geometry
+            if hasattr(geom, "buildConvexRepresentation"):
+                try:
+                    geom.buildConvexRepresentation(False)
+                    if geom.convex is not None:
+                        g.geometry = geom.convex
+                except Exception:
+                    pass
 
-        for res in self.collision_data.collisionResults:
-            if not res.isCollision():
-                continue
+        # 2) Kuratierte Paare: bewegliche Armteile gegen Koerper + Arm gegen Arm.
+        names = {g.name for g in cm.geometryObjects}
+        moving = {
+            side: [n for n in names
+                   if n.startswith(side) and any(k in n for k in self._GATE_ARM_KEYS)
+                   # Finger-Geometrien nicht pruefen: die Hand darf greifen;
+                   # die Handbasis (base_link/palm) deckt den Koerperschutz ab.
+                   and not any(f in n for f in ("index", "middle", "ring",
+                                                "little", "thumb"))]
+            for side in ("left", "right")
+        }
+        body = [n for n in self._GATE_BODY_GEOMS if n in names]
+        for side in ("left", "right"):
+            for a in moving[side]:
+                for b in body:
+                    cm.addCollisionPair(pin.CollisionPair(
+                        cm.getGeometryId(a), cm.getGeometryId(b)))
+        for a in moving["left"]:
+            for b in moving["right"]:
+                cm.addCollisionPair(pin.CollisionPair(
+                    cm.getGeometryId(a), cm.getGeometryId(b)))
 
-            d = res.distance
-            # Ignore degenerate near-zero distances and pairs beyond the threshold.
-            # (Frueher 1e-1: zusammen mit thresh=0.05 war das akzeptierte Band leer ->
-            # Abstossung nie aktiv. 1e-4 laesst echte Naeherungen wieder durch.)
-            if d <= 1e-4 or d > self.collision_distance_thresh:
-                continue
+        # 3) Zwei GeometryData: mit Sicherheitsmarge (Fruehwarnband) und hart
+        #    (echte Durchdringung). Eigenes pin.Data, damit der Gate-FK nicht
+        #    self.data (Solver-Zustand) ueberschreibt.
+        self._gate_data = pin.Data(self.model)
+        self._gate_cdata_margin = pin.GeometryData(cm)
+        self._gate_cdata_hard = pin.GeometryData(cm)
+        try:
+            for req in self._gate_cdata_margin.collisionRequests:
+                req.security_margin = self.collision_margin
+        except Exception:
+            # Alte hppfcl ohne security_margin: Marge entfaellt, harter
+            # Check bleibt wirksam.
+            self._gate_cdata_margin = self._gate_cdata_hard
+        self._gate_ready = True
+        print(f"[IK] Kollisions-Gate aktiv: {len(cm.collisionPairs)} Paare, "
+              f"Marge {self.collision_margin*100:.0f} cm.", flush=True)
 
-            collision_detected = True
-            if self.debug:
-                print("\nCollision detected:", flush=True)
-                print(f"  → distance: {d:.4f} m", flush=True)
-                print(f"  → geom A: {self.collision_model.geometryObjects[res.firstGeomIdx].name}", flush=True)
-                print(f"  → geom B: {self.collision_model.geometryObjects[res.secondGeomIdx].name}", flush=True)
-
-            weight = math.exp(-4.0 * d / self.collision_distance_thresh)
-            n = np.array(res.normal)
-            f_repulse = self.collision_gain * weight * (self.collision_distance_thresh - d) * n
-
-            geom_id = res.firstGeomIdx
-            geom = self.collision_model.geometryObjects[geom_id]
-            parent_joint = geom.parentJoint
-            joint_name = self.model.names[parent_joint]
-
-            J = pin.computeJointJacobian(self.model, self.data, q, parent_joint)
-            J_norm = np.linalg.norm(J)
-            if J_norm < 1e-8:
-                continue
-
-            dq_local = (J.T @ np.concatenate([f_repulse, np.zeros(3)])) / J_norm
-            dq_repulse += dq_local
-            total_weight += 1.0
-
-            if self.debug:
-                print(f"  → joint: {joint_name}, dq_local norm: {np.linalg.norm(dq_local):.5f}")
-
-        if collision_detected and self.debug:
-            print(f"Total {int(total_weight)} collision(s) considered for repulsion.")
-
-        if total_weight > 0:
-            dq_repulse /= total_weight
-
-        dq_repulse = np.clip(dq_repulse, -0.05, 0.05)
-        return dq_repulse
+    def arm_command_in_collision(self, current_all, hard=False) -> bool:
+        """True, wenn die 29-DOF-Konfiguration current_all (ROS-Gelenkreihenfolge)
+        eine Selbstkollision (hard=True) bzw. eine Annaeherung unter die
+        Sicherheitsmarge (hard=False) enthaelt. Bei nicht verfuegbarem Gate
+        immer False (Verhalten wie bisher, aber der Controller loggt das)."""
+        if not self._gate_ready:
+            return False
+        q = pin.neutral(self.model)
+        for jid_idx, ros_name in enumerate(self._ros_joint_names):
+            if ros_name in self._name_to_q_index:
+                q[self._name_to_q_index[ros_name]] = float(current_all[jid_idx])
+        cdata = self._gate_cdata_hard if hard else self._gate_cdata_margin
+        return bool(pin.computeCollisions(
+            self.model, self._gate_data, self.collision_model, cdata, q, True))
 
 
 
@@ -462,11 +488,6 @@ class G1IKSolver:
                 J_pinv = _dpinv(J_eff)
                 N = np.eye(len(arm_ids)) - J_pinv @ J_eff
                 dq_red += N @ (self.null_space_gain * (rest - q_arm))
-
-            # Collision avoidance (joint-space correction)
-            if getattr(self, "enable_collision_avoidance", False):
-                dq_repulse = self._collision_repulsion(q)
-                dq_red += dq_repulse[[self._name_to_v_index[self._ros_joint_names[i]] for i in arm_ids]]
 
             # Integrate step. Schritt RICHTUNGSERHALTEND skalieren (statt per
             # Gelenk zu clippen): per-Gelenk-Clipping verdreht die Schrittrichtung,
