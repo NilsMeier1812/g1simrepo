@@ -17,7 +17,8 @@ Helfer-Skripte.
 ```
 scene_editor/
 ├── setup.sh                    # einmaliges Setup (virtualenv + Installation)
-├── launch.sh                   # Editor / Viewer starten
+├── launch.sh                   # Menue / Editor / Viewer starten
+├── run_editor.py               # Editor-Start mit festem Export-Pfad (scenes/)
 ├── requirements.txt
 ├── meshes/
 │   ├── sample_crate.stl        # Beispiel-STL zum Import-Testen
@@ -52,13 +53,36 @@ Abhaengigkeit `yourdfpy` – die installiert `setup.sh` gleich mit.
 
 ---
 
-## 2. Umgebung im Editor bauen
+## 2. Starten – interaktives Menue
+
+Einfach ohne Argument starten:
 
 ```bash
-./launch.sh edit          # oeffnet scenes/environment_starter.xml
-# oder leer anfangen:
-./launch.sh new
+./launch.sh
 ```
+
+Das listet **alle vorhandenen Szenen nummeriert** auf und du waehlst per
+Zahl, welche gestartet wird:
+
+```
+=================== MuJoCo Scene Editor ===================
+Verfuegbare Szenen:
+    1) Umgebung   scenes/environment_starter.xml
+    2) [G1]       ../unitree_robots/g1/scene_g1_playground.xml
+    n) neue leere Szene im Editor
+    q) beenden
+----------------------------------------------------------
+Auswahl (Zahl / n / q): 1
+Aktion [e=Editor bearbeiten / v=Viewer ansehen] (Default e):
+```
+
+- Zahl = die Szene waehlen, dann **e** (im Editor bearbeiten) oder **v**
+  (im MuJoCo-Viewer ansehen). `[G1]`-Szenen sind auf Ansehen (v) vorbelegt.
+- **n** = mit einer leeren Szene neu anfangen.
+
+Neue Szenen aus `scenes/` tauchen automatisch in der Liste auf.
+
+## 3. Umgebung im Editor bauen & speichern
 
 Der Editor startet einen lokalen Webserver und oeffnet den Browser
 (**http://127.0.0.1:8080**). Dort kannst du:
@@ -66,17 +90,18 @@ Der Editor startet einen lokalen Webserver und oeffnet den Browser
 - **Shapes platzieren** – Box, Kugel, Zylinder ... per Maus setzen/verschieben
 - **Meshes importieren** – `Add Asset` -> eigenes STL/OBJ vom Dateisystem
   (z.B. `meshes/sample_crate.stl`)
-- **exportieren** – `Export` schreibt die Szene als MuJoCo-XML zurueck
+- **Speichern** – im `Export`-Feld ist der Pfad schon fest auf den
+  `scenes/`-Ordner vorbelegt. Du tippst nur noch **den Namen** (z.B.
+  `scene.xml` -> `kueche.xml`) und klickst **`Export scene`**. Ergebnis:
+  `scenes/kueche.xml` (+ `.json` zum spaeteren Weiterbearbeiten) – und die
+  Szene erscheint beim naechsten `./launch.sh` direkt im Menue.
 
-Zum schnellen Ansehen ohne Roboter:
-
-```bash
-./launch.sh view          # environment_starter.xml im MuJoCo-Viewer
-```
+> Der feste Speicherpfad kommt aus `run_editor.py` (setzt den Export-Default
+> auf `scenes/`). `launch.sh` startet den Editor immer darueber.
 
 ---
 
-## 3. Mit dem G1 zusammen ansehen
+## 4. Mit dem G1 zusammen ansehen
 
 ```bash
 ./launch.sh view-g1       # G1 + Objekte (scene_g1_playground.xml)
@@ -148,6 +173,7 @@ Mehr dazu in `meshes/README.md`.
 ## launch.sh – Uebersicht
 
 ```bash
+./launch.sh                 # interaktives Menue (Szenen nummeriert waehlen)
 ./launch.sh new             # leere Szene im Editor
 ./launch.sh edit [datei]    # Szene im Editor (Default: environment_starter.xml)
 ./launch.sh prompt "..."    # Szene per Text-Prompt generieren (braucht LLM-API-Key)
