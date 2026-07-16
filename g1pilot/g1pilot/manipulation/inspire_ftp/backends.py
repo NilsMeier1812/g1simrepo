@@ -203,8 +203,15 @@ class MujocoContactBackend(HandBackend):
         # geloest, wenn der Nutzer aktiv ENGER kommandiert oder aufmacht.
         self._hold = {"left": [None] * 6, "right": [None] * 6}      # gelatchte Halteposition
         self._committed = {"left": [None] * 6, "right": [None] * 6}  # Wunsch beim Latchen
-        self.retract_open_rate = 600.0    # Winkel/s: oeffnen (zurueckfahren) ueber Limit
-        self.retract_close_rate = 700.0   # Winkel/s: freies Schliessen ohne Kontakt
+        # Bewegungsrate = vom GESCHWINDIGKEITS-Slider (speed_set 0..1000) gesteuert, GLEICH
+        # fuer Oeffnen UND Schliessen (sonst wirkt Oeffnen "sofort", Schliessen langsam).
+        # rate[Winkel/s] = clamp(speed_set * speed_scale, min, max).
+        self.speed_scale = 1.5            # speed_set -> Winkel/s (500 -> 750/s, 1000 -> 1500/s)
+        self.move_min_rate = 60.0         # nie ganz eingefroren (auch bei speed 0)
+        self.move_max_rate = 2000.0
+        # Sicherheits-Rueckzug bei Ueberlast: bewusst schnell und UNABHAENGIG vom Speed
+        # (Kraftschutz soll immer zuegig greifen).
+        self.retract_open_rate = 600.0    # Winkel/s: zurueckfahren ueber dem Limit
 
         init_dds(interface)
         self.cmd_pub = ChannelPublisher("rt/inspire/cmd", LowCmd_)
@@ -279,54 +286,57 @@ class MujocoContactBackend(HandBackend):
     _LATCH_EPS = 2.0   # Winkel-Toleranz fuer "Nutzer kommandiert enger / oeffnet"
 
     def _regulate(self, side: str, desired: List[float], dt: float,
-                  force_act: List[float], force_set: List[float]) -> List[float]:
+                  force_act: List[float], force_set: List[float],
+                  move_rate: float) -> List[float]:
         """Kraftgeregelter effektiver Soll-Winkel je DOF (0..1000). Vergleicht die
         GEMESSENE Kontaktkraft (force_act, Gramm) mit dem Limit (force_set, Gramm):
-          * ueber Limit -> Winkel aufmachen (Finger faehrt aktiv zurueck) UND die
+          * Nutzer OEFFNET (Wunsch > Position) -> Latch loesen, mit move_rate oeffnen;
+          * ueber Limit -> zurueckfahren (Kraftschutz, retract_open_rate) UND die
             erreichte Halteposition LATCHEN;
           * gelatcht    -> genau dort halten, NICHT wieder ans Ziel schliessen (bricht
             den Grenz-Zyklus "anfahren -> zu stark -> zurueck -> anfahren ...");
-          * frei (kein Latch) -> Richtung Wunsch schliessen.
-        Der Latch wird nur geloest, wenn der Nutzer aktiv ENGER kommandiert (Wunsch
-        deutlich kleiner als beim Latchen) oder AUFMACHT (Wunsch > aktuelle Position).
-        Winkel: 1000 = offen, 0 = zu."""
+          * sonst SCHLIESSEN Richtung Wunsch mit move_rate.
+        move_rate (Winkel/s) kommt vom Geschwindigkeits-Slider und gilt symmetrisch fuer
+        Oeffnen und Schliessen. Der Latch loest, wenn der Nutzer aktiv ENGER kommandiert
+        (Wunsch deutlich kleiner als beim Latchen) oder AUFMACHT. Winkel: 1000=offen, 0=zu."""
         eff = self._eff[side]
         hold = self._hold[side]
         comm = self._committed[side]
-        d_open = self.retract_open_rate * max(dt, 0.0)
-        d_close = self.retract_close_rate * max(dt, 0.0)
+        d_move = max(0.0, move_rate) * max(dt, 0.0)
+        d_retract = self.retract_open_rate * max(dt, 0.0)
         eps = self._LATCH_EPS
         for i in range(6):
             des = _clamp(float(desired[i]), 0.0, 1000.0)
             e = eff[i]
             lim = float(force_set[i])
             f = float(force_act[i])
-            # Nutzer will ENGER als beim Latchen -> Latch loesen (neuer Griff-Versuch).
-            if hold[i] is not None and comm[i] is not None and des < comm[i] - eps:
-                hold[i] = None
-                comm[i] = None
             if des > e + eps:
-                # Nutzer oeffnet ueber die aktuelle Position -> frei folgen, Latch loesen.
-                e = des
+                # Nutzer oeffnet ueber die aktuelle Position -> Latch loesen, geschwindig-
+                # keitsbegrenzt oeffnen (nicht mehr "sofort").
                 hold[i] = None
                 comm[i] = None
-            elif lim > 0.0 and f > lim:
-                # Ueber Limit: PROPORTIONAL zurueckfahren und Halteposition latchen.
-                # Sobald gelatcht, wird NICHT mehr Richtung Ziel geschlossen -> der Finger
-                # setzt sich einmal am Limit ab und bleibt (kein "immer wieder versuchen").
-                over = _clamp((f - lim) / lim, 0.08, 1.0)
-                e = min(1000.0, e + d_open * over)
-                hold[i] = e            # ratscht nur auf (nie zu) -> bis Kraft stabil unter Limit
-                comm[i] = des
-            elif hold[i] is not None:
-                # GELATCHT: Halteposition halten, NICHT wieder Richtung Ziel schliessen.
-                e = hold[i]
-            elif des < e:
-                # Kein Latch -> zuegig Richtung Wunsch schliessen (bis Kontakt das Limit
-                # ausloest und latcht). Volle Rate, damit ein ENGER-Befehl auch wirklich
-                # weiterfaehrt (kein Abbremsen als "weiche Wand" unter dem Limit).
-                e = max(des, e - d_close)
-            # else: des == e -> halten
+                e = min(des, e + d_move)
+            else:
+                # Nutzer will ENGER als beim Latchen -> Latch loesen (neuer Griff-Versuch).
+                if hold[i] is not None and comm[i] is not None and des < comm[i] - eps:
+                    hold[i] = None
+                    comm[i] = None
+                if lim > 0.0 and f > lim:
+                    # Ueber Limit: PROPORTIONAL zurueckfahren (Kraftschutz) und latchen.
+                    # Sobald gelatcht, wird NICHT mehr Richtung Ziel geschlossen -> der
+                    # Finger setzt sich einmal am Limit ab und bleibt (kein Retry).
+                    over = _clamp((f - lim) / lim, 0.08, 1.0)
+                    e = min(1000.0, e + d_retract * over)
+                    hold[i] = e        # ratscht nur auf (nie zu) -> bis Kraft stabil drunter
+                    comm[i] = des
+                elif hold[i] is not None:
+                    # GELATCHT: Halteposition halten, NICHT wieder ans Ziel schliessen.
+                    e = hold[i]
+                elif des < e - eps:
+                    # Kein Latch -> geschwindigkeitsbegrenzt Richtung Wunsch schliessen
+                    # (bis Kontakt das Limit ausloest und latcht).
+                    e = max(des, e - d_move)
+                # else: des ~= e -> halten
             eff[i] = _clamp(e, 0.0, 1000.0)
         return list(eff)
 
@@ -340,7 +350,10 @@ class MujocoContactBackend(HandBackend):
             with models[side].lock:
                 force_set = list(models[side].force_set)
                 force_act = list(models[side].force_act)
-            eff_sides[side] = self._regulate(side, desired, dt, force_act, force_set)
+                speed = models[side].speed_set[0] if models[side].speed_set else 500
+            move_rate = _clamp(float(speed) * self.speed_scale,
+                               self.move_min_rate, self.move_max_rate)
+            eff_sides[side] = self._regulate(side, desired, dt, force_act, force_set, move_rate)
         names, positions = joint_map.build_joint_state(
             eff_sides["left"], eff_sides["right"], self.closed)
         # Servo mit voller Modell-Antriebskraft ansteuern (Limit wirkt ueber die

@@ -162,6 +162,8 @@ main {
   display: flex; flex-direction: column; align-items: center; gap: 10px;
 }
 .dof-card:last-child { border-right: none; }
+/* Subtile Abgrenzung zwischen Daumen-Paar und den vier Fingern */
+.dof-card.grp-sep { border-left: 1px solid rgba(0,229,255,.32); }
 
 .dof-name {
   font-family: var(--display); font-size: .55rem; font-weight: 700;
@@ -385,6 +387,35 @@ let DOF_NAMES = ["Kleiner", "Ring", "Mittel", "Zeige", "Daumen-B", "Daumen-R"];
 const MAX_FORCE  = 3000;
 const MAX_ANGLE  = 1000;
 
+// ── Ziel-Slider an die ECHTE Gelenkposition koppeln ──────────────────────────
+// Der Ziel-Slider (blau) folgt dem Ist-Winkel, wenn der Nutzer ihn NICHT gerade
+// zieht und der Finger zur Ruhe gekommen ist. Damit:
+//  * startet der Marker beim Verbinden auf der echten Position (nicht auf 0);
+//  * springt er nach einem Latch-Rueckzug (Kraftschutz) auf die eingependelte Lage.
+// Waehrend einer Bewegung bleibt der Slider auf dem Nutzer-Ziel (kein Zurueckspringen).
+const drag = {};            // key -> true, solange dieser Slider gezogen wird
+const prevAct = {};         // key -> zuletzt gesehener Ist-Winkel
+const movedSince = {};      // key -> Finger hat sich seit dem letzten Befehl bewegt
+const SETTLE_EPS = 4;       // |Δ Ist| <= -> "steht ruhig"
+const MOVE_EPS   = 4;       // |Δ Ist| >  -> "hat sich bewegt"
+const SYNC_DELTA = 5;       // Slider nur nachziehen, wenn er >= so weit daneben liegt
+
+function dragStart(side, dof) { drag[`${side}-${dof}`] = true; }
+document.addEventListener('pointerup',     () => { for (const k in drag) drag[k] = false; });
+document.addEventListener('pointercancel', () => { for (const k in drag) drag[k] = false; });
+
+// Slider-Anzeige (Wert + Fuellung + Soll-Text) setzen, OHNE ans Backend zu senden.
+function setAngleSlider(side, dof, val) {
+  const el = document.getElementById(`as-${side}-${dof}`);
+  if (!el) return;
+  el.value = val;
+  const pct = val / MAX_ANGLE * 100;
+  el.style.setProperty('--pct', pct + '%');
+  el.style.background = `linear-gradient(90deg, var(--accent) ${pct}%, var(--border) ${pct}%)`;
+  const av = document.getElementById(`av-${side}-${dof}`);
+  if (av) av.textContent = val;
+}
+
 // ═══════════════════════════════════════════════════════
 //  DOM AUFBAUEN
 // ═══════════════════════════════════════════════════════
@@ -393,10 +424,15 @@ function buildDOF(side) {
   grid.innerHTML = '';
 
   const indices = side === 'right' ? [...DOF_NAMES.keys()].reverse() : [...DOF_NAMES.keys()];
+  let prevThumb = null;
 indices.forEach((i) => {
     const name = DOF_NAMES[i];
+    const isThumb = /daumen|thumb/i.test(name);
     const card = document.createElement('div');
     card.className = 'dof-card';
+    // Subtiler Trenner an der Grenze Daumen <-> Finger.
+    if (prevThumb !== null && isThumb !== prevThumb) card.className += ' grp-sep';
+    prevThumb = isThumb;
     card.innerHTML = `
       <!-- Finger-Name -->
       <div class="dof-name" title="${name}">${name}</div>
@@ -407,6 +443,7 @@ indices.forEach((i) => {
         <input type="range" class="vslider" id="as-${side}-${i}"
                min="0" max="${MAX_ANGLE}" value="0"
                style="--pct:0%"
+               onpointerdown="dragStart('${side}',${i})"
                oninput="onAngle('${side}',${i},+this.value)">
         <div class="vmarker" id="am-${side}-${i}" style="bottom:0%"></div>
       </div>
@@ -447,6 +484,10 @@ function onAngle(side, dof, val) {
   // Update gradient manuell (Firefox braucht das)
   el.style.background = `linear-gradient(90deg, var(--accent) ${pct}%, var(--border) ${pct}%)`;
   document.getElementById(`av-${side}-${dof}`).textContent = val;
+  // Neuer Nutzer-Befehl: erst nach echter Bewegung wieder auf Ist synchronisieren
+  // (sonst wuerde der Slider direkt nach dem Loslassen auf die alte Ist-Lage
+  // zurueckspringen, bevor der Finger ueberhaupt losfaehrt).
+  movedSince[`${side}-${dof}`] = false;
   send({ type: 'set_angle', side, dof, value: val });
 }
 
@@ -481,23 +522,23 @@ function setEnabled(side, enabled) {
   send({ type: 'set_enabled', side, value: enabled });
 }
 
-// ÖFFNEN = Winkel 0 (Finger gerade / offen)
-// SCHLIESSEN = Winkel 1000 (Finger gebeugt / geschlossen)
+// ÖFFNEN = Winkel 1000 (Finger gerade / offen)
+// SCHLIESSEN = Winkel 0 (Daumen-Beugung nicht ganz zu = 200, wie in der Bridge)
+// Die Bridge treibt die Finger ueber die open_hand/close_hand-Nachricht; hier wird
+// nur der Slider auf das Ziel gestellt (ohne separates set_angle), danach zieht die
+// Ist-Kopplung ihn aufs Eingependelte nach.
 function openHand(side) {
   DOF_NAMES.forEach((_, i) => {
-    document.getElementById(`as-${side}-${i}`).value = 1000;
-    onAngle(side, i, 0);
+    setAngleSlider(side, i, 1000);
+    movedSince[`${side}-${i}`] = false;
   });
   send({ type: 'open_hand', side });
 }
 
 function closeHand(side) {
   DOF_NAMES.forEach((_, i) => {
-    document.getElementById(`as-${side}-${i}`).value = 0;
-    document.getElementById(`as-${side}-${4}`).value = 200;
-    document.getElementById(`as-${side}-${5}`).value = 100;
-
-    onAngle(side, i, 1000);
+    setAngleSlider(side, i, i === 4 ? 200 : 0);
+    movedSince[`${side}-${i}`] = false;
   });
   send({ type: 'close_hand', side });
 }
@@ -524,6 +565,20 @@ function updateHand(side, data) {
     const markerPct = aa / MAX_ANGLE * 100;
     const marker = document.getElementById(`am-${side}-${i}`);
     if (marker) marker.style.bottom = markerPct + '%';
+
+    // Ziel-Slider an die echte Position koppeln (siehe oben).
+    const key = `${side}-${i}`;
+    const prev = prevAct[key];
+    const first = prev === undefined;
+    if (!first && Math.abs(aa - prev) > MOVE_EPS) movedSince[key] = true;
+    const settled = !first && Math.abs(aa - prev) <= SETTLE_EPS;
+    prevAct[key] = aa;
+    const slider = document.getElementById(`as-${side}-${i}`);
+    if (slider && !drag[key] &&
+        (first || (settled && movedSince[key])) &&
+        Math.abs((+slider.value) - aa) >= SYNC_DELTA) {
+      setAngleSlider(side, i, aa);   // startup (#1) bzw. nach Latch-Einpendeln (#3)
+    }
 
     // Ist-Winkel Text
     const ael = document.getElementById(`aa-${side}-${i}`);
@@ -571,6 +626,11 @@ function toggleConn() {
           DOF_NAMES = msg.dof_names;
           buildDOF('left'); buildDOF('right');
         }
+        // Sync-State zuruecksetzen -> Slider koppeln beim (Neu-)Verbinden einmalig
+        // auf die echte Position (#1), auch nach einem Reconnect.
+        for (const k in prevAct)   delete prevAct[k];
+        for (const k in movedSince) delete movedSince[k];
+        for (const k in drag)       drag[k] = false;
         updateHand('left',  msg.left);
         updateHand('right', msg.right);
       } else if (msg.type === 'state') {
