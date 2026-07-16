@@ -12,9 +12,11 @@ OUT =os.path.join(REPO,"unitree_mujoco/unitree_robots/g1/g1_29dof_inspire_ftp.xm
 CANON=[f"{s}_{f}_{i}_joint" for s in ("left","right")
        for f,n in (("thumb",4),("index",2),("middle",2),("ring",2),("little",2))
        for i in range(1,n+1)]
-FKP=2.0      # Position-Servo-Steifigkeit der Finger (tunebar)
+FKP=10.0     # Position-Servo-Steifigkeit der Finger (tunebar). 2.0 war zu weich:
+             # bei Kontakt drueckte das Objekt den Finger zurueck (Ist-Kraft ~0).
+             # 10.0 haelt gegen einen Griff -> die Touch-Sensoren melden echte Kraft.
 FDAMP=0.05   # Gelenkdaempfung
-FFRC=2.0     # Drehmoment-Limit der Finger-Servos
+FFRC=2.0     # Drehmoment-Limit der Finger-Servos (Nm) — deckelt die max. Greifkraft
 
 def rpy2quat(r,p,y):
     cr,sr=math.cos(r/2),math.sin(r/2); cp,sp=math.cos(p/2),math.sin(p/2); cy,sy=math.cos(y/2),math.sin(y/2)
@@ -55,7 +57,13 @@ def add_inertial(b,link):
 def add_geom(b,link):
     mb=mesh_base(link)
     if mb is None: return
-    g=ET.SubElement(b,'geom'); g.set('type','mesh'); g.set('contype','0'); g.set('conaffinity','0')
+    # Finger-/Handflaechen-Meshes MIT Kollision (contype/conaffinity=2): so gehen die
+    # Finger nicht mehr durcheinander (Daumen<->Zeigefinger kollidieren) und Objekte
+    # werden mit der ganzen Fingeroberflaeche gegriffen. Bit 2 = nur mit greifbaren
+    # Objekten/anderen Fingern, NICHT mit Boden/Koerper. MuJoCos filterparent (Default
+    # an) unterdrueckt die Selbstkollision direkt benachbarter Glieder -> Finger
+    # schliessen weiterhin voll. Kollision nutzt die konvexe Huelle des Meshes.
+    g=ET.SubElement(b,'geom'); g.set('type','mesh'); g.set('contype','2'); g.set('conaffinity','2')
     g.set('group','1'); g.set('density','0'); g.set('rgba','0.55 0.55 0.6 1'); g.set('mesh',os.path.splitext(mb)[0]); MESHES.add(mb)
 def emit(parent, joint):
     child=joint.find('child').get('link')
@@ -97,33 +105,71 @@ for jn in CANON:
     p=ET.SubElement(act,'position'); p.set('name',jn); p.set('joint',jn)
     p.set('kp',str(FKP)); p.set('ctrlrange',fmt(lo,hi)); p.set('forcerange',fmt(-FFRC,FFRC))
 
-# ── Phase 2: Fingerspitzen-Kollision + Touch-Sensoren ─────────────────────────
-# Pro Fingerspitze (letztes Glied) ein kleiner Kollisions-Sphere + Touch-Site an der
-# Pose des letzten URDF-Force-Sensor-Frames. contype/conaffinity=2 -> Finger
-# kollidieren NUR mit Objekten, die Bit 2 setzen (greifbare Objekte), NICHT mit Boden
-# (Bit 1) oder dem Roboter selbst -> keine Self/Floor-Kollision -> stabil.
-FINGERS=(("thumb",4),("index",2),("middle",2),("ring",2),("little",2))
+# ── Phase 2 (real-treu): Touch-Sensor an JEDER echten Taktil-Zone ─────────────
+# Die echte RH56DFTP-2 hat 17 Taktil-Zonen JE HAND. Im URDF sind das exakt die
+# *_force_sensor_*-Frames: palm(1) + thumb(4: tip/nail/mid/pad) + je 3 an index/
+# middle/ring/little (tip/nail/pad) = 17. An JEDEN dieser Frames kommt ein kleiner
+# Kollisions-Sphere + Touch-Site + <touch>-Sensor -> die Sim-Hand hat DIESELBEN
+# Kontakt-Zonen wie die echte Hand (der ftp_hand_controller/die GUI sehen dieselben
+# 17 Zonen wie am realen Roboter).
+#
+# contype/conaffinity=2: Zonen kollidieren nur mit greifbaren Objekten (Bit 2) und
+# untereinander (auch real beruehren sich Finger/Handflaeche beim Faustschluss),
+# NICHT mit Boden (Bit 1) oder dem Roboter -> keine Self/Floor-Kollision -> stabil.
+# Sphere 0.006 + Site 0.007 sind klein genug, dass benachbarte Zonen sich nicht
+# ueberlappen (sonst wuerde EIN Kontakt von zwei Sensoren doppelt gezaehlt).
+# Zonen-Nummerierung: hoechste *_force_sensor_N-Nummer = Fingerspitze (tip).
+FINGER_ZONES={
+    "thumb":  {4:"tip", 3:"nail", 2:"mid", 1:"pad"},
+    "index":  {3:"tip", 2:"nail", 1:"pad"},
+    "middle": {3:"tip", 2:"nail", 1:"pad"},
+    "ring":   {3:"tip", 2:"nail", 1:"pad"},
+    "little": {3:"tip", 2:"nail", 1:"pad"},
+}
 TOUCH=[]
 sens=root.find('sensor')
-for s_ in ("left","right"):
-    for f,n in FINGERS:
-        tip=f"{s_}_{f}_{n}"
-        b=BODIES.get(tip)
-        if b is None: continue
-        fs=[j for j in ch.get(tip,[]) if 'force_sensor' in j.get('name')]
-        if fs:
-            fs.sort(key=lambda j:int(re.findall(r"(\d+)",j.get('name'))[-1]))
-            o=fs[-1].find('origin'); pad=[float(t) for t in (o.get('xyz','0 0 0').split())]
-        else:
-            pad=[0.0,0.0,0.0]
-        g=ET.SubElement(b,'geom'); g.set('type','sphere'); g.set('size','0.008')
-        g.set('pos',fmt(*pad)); g.set('contype','2'); g.set('conaffinity','2')
-        g.set('group','3'); g.set('rgba','0.9 0.2 0.2 1')
-        st=ET.SubElement(b,'site'); st.set('name',f"{s_}_{f}_pad"); st.set('type','sphere')
-        st.set('size','0.012'); st.set('pos',fmt(*pad)); st.set('group','4'); st.set('rgba','1 0 0 0.3')
-        TOUCH.append((f"{s_}_{f}_touch", f"{s_}_{f}_pad"))
+for j in u.findall('joint'):
+    name=j.get('name')
+    if 'force_sensor' not in name: continue
+    mo=re.match(r'(left|right)_(\w+?)_force_sensor(?:_(\d+))?_joint', name)
+    if mo is None: continue
+    side,part,num=mo.group(1),mo.group(2),mo.group(3)
+    b=BODIES.get(j.find('parent').get('link'))
+    if b is None: continue
+    o=j.find('origin'); pad=[float(t) for t in (o.get('xyz','0 0 0').split())]
+    if part=="palm":
+        zone=f"{side}_palm"
+    else:
+        z=FINGER_ZONES.get(part,{}).get(int(num) if num else -1)
+        if z is None: continue
+        zone=f"{side}_{part}_{z}"
+    g=ET.SubElement(b,'geom'); g.set('type','sphere'); g.set('size','0.006')
+    g.set('pos',fmt(*pad)); g.set('contype','2'); g.set('conaffinity','2')
+    g.set('group','3'); g.set('rgba','0.9 0.2 0.2 1')
+    st=ET.SubElement(b,'site'); st.set('name',zone); st.set('type','sphere')
+    st.set('size','0.007'); st.set('pos',fmt(*pad)); st.set('group','4'); st.set('rgba','1 0 0 0.3')
+    TOUCH.append((f"{zone}_touch", zone))
 for sn,site in TOUCH:
     t_=ET.SubElement(sens,'touch'); t_.set('name',sn); t_.set('site',site)
+
+# ── Selbstkollision des Daumens unterdruecken ────────────────────────────────
+# MuJoCos filterparent (Default an) schliesst nur DIREKT benachbarte Glieder von
+# der Kollision aus. Der Daumen kreist beim Schliessen ueber die Handflaeche und
+# krummt sich (4 Glieder) -> seine konvexen Mesh-Huellen ueberlappen mit sich selbst
+# (nicht benachbarte Glieder 1-3/1-4/2-4) UND mit der Handflaeche (base_link, der
+# Grosselternkoerper). Beides blockierte den Daumen bei ~halb. Diese Paare je Hand
+# explizit ausschliessen. Die 2-gliedrigen Finger krummen NICHT ueber die Flaeche
+# und haben nur das benachbarte Paar (1-2) -> sie schliessen ohne Extra-Regel voll.
+contact=root.find('contact')
+if contact is None:
+    contact=ET.SubElement(root,'contact')
+for side in ("left","right"):
+    pairs=[(f"{side}_thumb_1",f"{side}_thumb_3"), (f"{side}_thumb_1",f"{side}_thumb_4"),
+           (f"{side}_thumb_2",f"{side}_thumb_4"),
+           (f"{side}_base_link",f"{side}_thumb_2"), (f"{side}_base_link",f"{side}_thumb_3"),
+           (f"{side}_base_link",f"{side}_thumb_4")]
+    for a,b in pairs:
+        ex=ET.SubElement(contact,'exclude'); ex.set('body1',a); ex.set('body2',b)
 
 root.set('model','g1_29dof_inspire_ftp')
 ET.indent(t,space="  "); t.write(OUT,encoding='unicode',xml_declaration=False)

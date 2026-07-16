@@ -4,12 +4,15 @@
 tactile.py — Taktil-/Kraft-Zonenlayout der Inspire RH56DFTP-2
 =============================================================
 Uebernommen aus dem urspruenglichen inspire_hand_bridge.py (Viewer). Beschreibt
-die Sensor-Zonen je Finger (Name, Finger, Zone, Modbus-Reg-Adresse, rows, cols).
+die 17 Sensor-Zonen je Hand (Name, Finger, Zone, Modbus-Reg-Adresse, rows, cols).
 
-In der Sim gibt es keine echten Taktilsensoren (Stufe 1): Die Werte werden mit
-Nullen der richtigen Form gefuellt, damit der HTML-Viewer unveraendert laeuft.
-Stufe 2 (MujocoContactBackend) kann hier spaeter aus MuJoCo-Kontaktkraeften
-synthetische Sensordaten einspeisen.
+Diese 17 Zonen sind die EINZIGE Wahrheit fuer alle Backends:
+  * Stufe 3 (echte Hand): liest sie per Modbus (reg-Adressen 3000..5123).
+  * Stufe 2 (MuJoCo-Sim): das Modell g1_29dof_inspire_ftp traegt genau diese 17
+    <touch>-Sensoren JE HAND (an den *_force_sensor_*-Frames des URDF). Der
+    MujocoContactBackend fuellt daraus echte, physikbasierte Kontaktkraefte in
+    dieselben Zonen -> der Viewer zeigt in Sim UND real identische Zonen.
+  * Stufe 1 (RViz-only): keine Kontaktphysik -> ``zero_zones()`` (Platzhalter).
 """
 
 from __future__ import annotations
@@ -47,7 +50,7 @@ FINGER_LAYOUT = {
 
 
 def zero_zones() -> Dict[str, List[int]]:
-    """Leere (Null-)Zonen in der richtigen Form — Platzhalter fuer die Sim."""
+    """Leere (Null-)Zonen in der richtigen Form — Startwert (Stufe 1 / kein Kontakt)."""
     return {z[0]: [0] * (z[4] * z[5]) for z in TACTILE_ZONES}
 
 

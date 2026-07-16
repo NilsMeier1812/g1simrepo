@@ -1,7 +1,6 @@
 import mujoco
 import numpy as np
 import pygame
-import sys
 import struct
 
 from unitree_sdk2py.core.channel import ChannelSubscriber, ChannelPublisher
@@ -60,22 +59,35 @@ class UnitreeSdk2Bridge:
             self.hand_act_ids, self.hand_joint_qadr, self.num_hand = [], [], 0
             self.num_motor = nu
         self.hand_cmd = None          # letzter rt/inspire/cmd (LowCmd_)
-        # Touch-Sensoren der Fingerspitzen (Phase 2). Adressen in sensordata per Name
-        # (kanonische Reihenfolge: links dann rechts, thumb/index/middle/ring/little).
-        # Werte werden im rt/inspire/state in motor_state[24..].q transportiert.
-        self.touch_adr = []
+        # Taktil-Sensoren (Phase 2, real-treu). Die echte RH56DFTP-2 hat 17 Zonen JE
+        # HAND; im MJCF gibt es genau diese 17 <touch>-Sensoren pro Hand (palm, je
+        # Finger tip/nail/pad, Daumen zusaetzlich mid). ZONE_SUFFIX ist die KANONISCHE
+        # Reihenfolge (identisch zu MujocoContactBackend + tactile.TACTILE_ZONES).
+        # Uebertragung im rt/inspire/state: Winkel -> motor_state[0..23].q, Zonen-
+        # Kraefte [N] -> motor_state[k].dq (links k=0..16, rechts k=17..33). q und dq
+        # sind getrennte Felder -> kein Konflikt, alles passt in die 35 Motor-Slots.
+        self.ZONE_SUFFIX = [
+            "little_tip", "little_nail", "little_pad",
+            "ring_tip", "ring_nail", "ring_pad",
+            "middle_tip", "middle_nail", "middle_pad",
+            "index_tip", "index_nail", "index_pad",
+            "thumb_tip", "thumb_nail", "thumb_mid", "thumb_pad",
+            "palm",
+        ]
+        self.zone_adr = []            # 34 Adressen: 17 links, dann 17 rechts (-1 = fehlt)
         if self.num_hand:
-            _TOUCH = [f"{s}_{f}_touch" for s in ("left", "right")
-                      for f in ("thumb", "index", "middle", "ring", "little")]
-            for nm in _TOUCH:
-                sid = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_SENSOR, nm)
-                if sid >= 0:
-                    self.touch_adr.append(int(self.mj_model.sensor_adr[sid]))
+            for side in ("left", "right"):
+                for suf in self.ZONE_SUFFIX:
+                    sid = mujoco.mj_name2id(
+                        self.mj_model, mujoco.mjtObj.mjOBJ_SENSOR, f"{side}_{suf}_touch")
+                    self.zone_adr.append(
+                        int(self.mj_model.sensor_adr[sid]) if sid >= 0 else -1)
         self.dim_motor_sensor = MOTOR_SENSOR_NUM * self.num_motor
         if self.num_hand:
+            nzones = sum(1 for a in self.zone_adr if a >= 0)
             print(f"[BRIDGE] Inspire-Hand: {self.num_hand} Finger-Position-Aktuatoren "
-                  f"(rt/inspire/cmd -> Ziele, rt/inspire/state -> Winkel), "
-                  f"Body-Motoren={self.num_motor}.", flush=True)
+                  f"(rt/inspire/cmd -> Ziele, rt/inspire/state -> Winkel + {nzones} "
+                  f"Taktil-Zonen), Body-Motoren={self.num_motor}.", flush=True)
         self.have_imu = False
         self.have_frame_sensor = False
         self.dt = self.mj_model.opt.timestep
@@ -345,10 +357,18 @@ class UnitreeSdk2Bridge:
         # Finger-Position-Servos (Inspire-Hand): Ziel-Winkel aus rt/inspire/cmd, je
         # Sim-Schritt gesetzt. Unabhaengig vom Body-Zustand -> Finger immer steuerbar.
         # Ohne Hand (hand_act_ids leer) ist das ein No-op. ctrl=0 -> offene Hand.
+        # motor_cmd[k].kp = KRAFT-LIMIT [Nm] (aus force_set der GUI) -> als dynamische
+        # actuator_forcerange gesetzt: der Servo kann physikalisch nie mehr Kraft
+        # aufbringen als force_set -> harte Griffkraft-Grenze ohne Ueberschiessen.
         if self.num_hand:
             hc = self.hand_cmd
             for k, aid in enumerate(self.hand_act_ids):
                 self.mj_data.ctrl[aid] = float(hc.motor_cmd[k].q) if hc is not None else 0.0
+                if hc is not None:
+                    cap = float(hc.motor_cmd[k].kp)
+                    if cap > 0.0:
+                        self.mj_model.actuator_forcerange[aid][0] = -cap
+                        self.mj_model.actuator_forcerange[aid][1] = cap
         legs = self.low_cmd_legs
         arm = self.low_cmd_arm
         if self.managed_weld:
@@ -422,14 +442,16 @@ class UnitreeSdk2Bridge:
                     i + 2 * self.num_motor
                 ]
 
-            # Inspire-Hand: Finger-Ist-Winkel separat publizieren (rt/inspire/state).
-            # Direkt aus qpos (kein eigener Sensor -> Body-Sensor-Offsets unberuehrt).
+            # Inspire-Hand: Finger-Ist-Winkel + Taktil-Zonen publizieren (rt/inspire/state).
             if self.num_hand:
+                # Winkel: direkt aus qpos (kein eigener Sensor -> Body-Offsets unberuehrt).
                 for k, qadr in enumerate(self.hand_joint_qadr):
                     self.hand_state.motor_state[k].q = float(self.mj_data.qpos[qadr])
-                # Fingerspitzen-Kraefte [N] in motor_state[24..].q (Touch-Sensoren).
-                for i, adr in enumerate(self.touch_adr):
-                    self.hand_state.motor_state[24 + i].q = float(self.mj_data.sensordata[adr])
+                # 17 Taktil-Zonen-Kraefte [N] JE HAND -> motor_state[k].dq
+                # (links k=0..16, rechts k=17..33), kanonische ZONE_SUFFIX-Reihenfolge.
+                for i, adr in enumerate(self.zone_adr):
+                    self.hand_state.motor_state[i].dq = (
+                        float(self.mj_data.sensordata[adr]) if adr >= 0 else 0.0)
                 self.hand_state_puber.Write(self.hand_state)
 
             if self.have_frame_sensor:

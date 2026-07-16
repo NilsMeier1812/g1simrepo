@@ -10,11 +10,44 @@ from unitree_sdk2py_bridge import UnitreeSdk2Bridge, ElasticBand
 import config
 from hold_base import HoldBase
 from push_listener import PushListener
+from grasp_box import GraspBox
 
 
 locker = threading.Lock()
 
-mj_model = mujoco.MjModel.from_xml_path(config.ROBOT_SCENE)
+if getattr(config, "GRASP_BOX", False):
+    # Greifbare Test-Kugel fest in jede Inspire-Handflaeche (base_link) einfuegen.
+    # Kein Gelenk -> starr an der Palme (faellt nicht) -> beim Schliessen der Hand echte
+    # Griffkraefte in der GUI. Bit 2 = greifbar (nur Finger). Da die Kugel-Bodies KEINE
+    # Gelenke/Aktuatoren haben, bleiben nu/qpos und alle Bridge-Mappings unveraendert.
+    # Wird IMMER eingefuegt (damit der Streamdeck-Toggle sie live schalten kann), aber
+    # nur bei GRASP_TEST direkt AN; sonst inert (keine Kollision, unsichtbar, ~6 g).
+    _spec = mujoco.MjSpec.from_file(config.ROBOT_SCENE)
+    _on = bool(getattr(config, "GRASP_TEST", False))
+    _added = 0
+    for _b in list(_spec.bodies):
+        if _b.name in ("left_base_link", "right_base_link"):
+            _side = _b.name.split("_")[0]
+            _obj = _b.add_body(name=_side + "_grasp_test",
+                               pos=list(config.GRASP_TEST_POS))
+            _g = _obj.add_geom()
+            _g.name = _side + "_grasp_box"     # fuer den Laufzeit-Toggle auffindbar
+            _g.type = mujoco.mjtGeom.mjGEOM_SPHERE
+            _g.size = [config.GRASP_TEST_RADIUS, 0.0, 0.0]
+            # WICHTIG: contype/conaffinity beim COMPILE = 2 (Bit 2 = greifbar), sonst
+            # schliesst MuJoCo das Geom komplett aus dem Kollisions-Baum aus und ein
+            # Laufzeit-Toggle wuerde nicht mehr greifen. Der Listener setzt den
+            # tatsaechlichen Start-Zustand (AUS -> contype zur Laufzeit auf 0).
+            _g.contype = 2
+            _g.conaffinity = 2
+            _g.rgba = [0.1, 0.8, 0.2, 1.0 if _on else 0.0]   # aus = unsichtbar
+            _g.density = 50.0    # ~6 g -> vernachlaessigbare Zusatzlast am Arm
+            _added += 1
+    print(f"[SIM] Greif-Box: {_added} Kugel(n) eingefuegt (Start {'AN' if _on else 'AUS'}; "
+          f"Streamdeck-Button 'GRASP BOX' schaltet live).", flush=True)
+    mj_model = _spec.compile()
+else:
+    mj_model = mujoco.MjModel.from_xml_path(config.ROBOT_SCENE)
 mj_data = mujoco.MjData(mj_model)
 
 # HOLD_BASE: Oberkoerper fuer Arm-Tests ruhig halten (bis ein Loco-Controller
@@ -25,6 +58,10 @@ hold_base = HoldBase(mj_model, config, mj_data)
 # PUSH: Stoer-Impuls fuer den Balancer-Test. Hoert auf UDP (vom Streamdeck-Button
 # ueber loco_sim) und bringt eine kurze Kraft in zufaelliger Richtung auf.
 push = PushListener(mj_model, config)
+
+# GRASP BOX: Live-Toggle der greifbaren Test-Kugel(n). Hoert auf UDP (Streamdeck-Button
+# 'GRASP BOX' ueber loco_sim) und schaltet Kollision+Sichtbarkeit der Kugel(n) um.
+grasp_box = GraspBox(mj_model, config)
 
 if config.ENABLE_ELASTIC_BAND:
     elastic_band = ElasticBand()
@@ -64,6 +101,8 @@ def SimulationThread():
         step_start = time.perf_counter()
 
         locker.acquire()
+
+        grasp_box.apply()   # ausstehenden Box-Toggle anwenden (aendert mj_model)
 
         if config.ENABLE_ELASTIC_BAND:
             if elastic_band.enable:
@@ -136,6 +175,7 @@ def SimulationLockstep(unitree):
         last_cmd_seq = unitree.cmd_seq
 
         locker.acquire()
+        grasp_box.apply()   # ausstehenden Box-Toggle anwenden (aendert mj_model)
         if config.ENABLE_ELASTIC_BAND and elastic_band.enable:
             mj_data.xfrc_applied[band_attached_link, :3] = elastic_band.Advance(
                 mj_data.qpos[:3], mj_data.qvel[:3]

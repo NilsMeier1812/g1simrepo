@@ -102,6 +102,7 @@ class StreamDeck(Node):
         self.pub_right_hand = self.create_publisher(String, '/g1pilot/hand_action/right', 10)
         self.pub_emergency_stop = self.create_publisher(Bool, '/g1pilot/emergency_stop', 10)
         self.pub_push = self.create_publisher(Bool, '/g1pilot/push', 10)
+        self.pub_grasp_box = self.create_publisher(Bool, '/g1pilot/grasp_box', 10)
         self.pub_catch_falls = self.create_publisher(Bool, '/g1pilot/catch_falls', 10)
 
     def publish_bool(self, pub, value: bool):
@@ -206,6 +207,12 @@ class ButtonGUI(QWidget):
             button_actions[(1, 4)] = (
                 "PUSH\nROBOT",
                 lambda: self.flash_button((1, 4), self.node.pub_push, duration=400))
+
+            # Greifbare Test-Kugel in der Sim an/aus (Toggle). Nur Sim: die echte Hand
+            # hat kein solches Objekt -> auf Real waere der Button eine Falle.
+            button_actions[(1, 3)] = (
+                "GRASP\nBOX",
+                lambda: self.toggle_button((1, 3), self.node.pub_grasp_box))
 
         for r in range(rows):
             for c in range(cols):

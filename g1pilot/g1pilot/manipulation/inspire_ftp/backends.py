@@ -109,33 +109,68 @@ class SimJointStateBackend(HandBackend):
 
 
 class MujocoContactBackend(HandBackend):
-    """Stufe 2: echte MuJoCo-Finger-Physik + Touch-Kraefte ueber den DDS-Hand-Kanal.
+    """Stufe 2: echte MuJoCo-Finger-Physik + Taktil-Kraefte ueber den DDS-Hand-Kanal.
 
     Spricht mit der unitree_mujoco-Bridge (Modell g1_29dof_inspire_ftp):
       * Soll: 6 DOF/Hand (0..1000) -> 24 Finger-Gelenk-Radiant (joint_map) ->
         ``rt/inspire/cmd`` (LowCmd_, motor_cmd[k].q) -> Finger-Position-Servos.
       * Ist:  ``rt/inspire/state`` (LowState_): motor_state[0..23].q = ECHTE Winkel,
-        motor_state[24..33].q = Fingerspitzen-Kraefte [N] (10 Touch-Sensoren).
+        motor_state[k].dq = Taktil-Kraefte [N] der 17 Zonen JE HAND (links k=0..16,
+        rechts k=17..33), in KANONISCHER Reihenfolge.
 
-    Fuellt /joint_states (echte Winkel) sowie model.angle_act / force_act / zones
-    (echte Kraefte) -> die HTML-GUIs zeigen reale Werte statt 0.
+    Die echte RH56DFTP-2 hat ZWEI Kraft-Ausgaben, beide hier abgebildet:
+      1. ``force_act`` (Register 1582, 6/Hand, Gramm) = die ECHTE Kontaktkraft je
+         Finger. In der Sim = Summe der Taktil-Zonen-Kraefte des Fingers [N] -> Gramm.
+         UNGEDECKELT: zeigt die tatsaechliche Kraft, auch wenn sie das Limit (force_set)
+         beim Aufprall kurz uebersteigt — der Wert wird NICHT beschoenigt. Fuellt
+         model.force_act -> Kraftbalken der Controller-GUI.
+      2. 17 Taktil-Zonen je Hand (Register 3000+) = die Kontakt-HAUT. Das MJCF-Modell
+         traegt genau diese 17 <touch>-Sensoren pro Hand (palm + je Finger tip/nail/
+         pad, Daumen auch mid). MuJoCo liefert je Zone EINEN Kraft-Skalar (Summe der
+         Normal-Kontaktkraefte); die per-Taxel-Matrix des Viewers wird daraus verteilt
+         (Feindruck INNERHALB einer Zone synthetisch, Zonen-Gesamtkraft echt).
 
-    Slot-/Reihenfolgen sind kanonisch identisch zu MJCF-Generator, unitree-Bridge
-    und joint_map (links dann rechts; je Hand thumb1-4, index1-2, middle1-2,
-    ring1-2, little1-2; Tip-Kraefte je Hand thumb,index,middle,ring,little).
+    Das Kraft-LIMIT (force_set, Gramm) wird als echte KRAFTREGELUNG umgesetzt (wie die
+    force-limitierte Griffregelung der echten Hand): die gemessene Kontaktkraft
+    (force_act, Gramm) wird laufend gegen force_set (Gramm, gleiche Einheit) verglichen.
+    Uebersteigt sie das Limit, faehrt der Finger seinen Winkel-Sollwert aktiv WIEDER AUF
+    (oeffnet) und LATCHT die erreichte Halteposition -> er haelt dort und faehrt NICHT
+    dauernd wieder ans Ziel (bricht den Grenz-Zyklus). Der Latch loest nur, wenn der
+    Nutzer aktiv enger kommandiert oder aufmacht. Der Servo hat dabei die volle Modell-
+    Antriebskraft (kein zusaetzlicher Nm-Deckel mehr) -> kurze Aufprall-Spitze in
+    force_act wird EHRLICH angezeigt und dann weggeregelt (nicht beschoenigt).
+
+    Fuellt /joint_states (echte Winkel) sowie model.angle_act / force_act / zones.
     """
 
+    _G_PER_N = 101.97   # Newton -> Gramm-Kraft (1 N = 101.97 gf), wie Register 1582
     # 12 Gelenk-Suffixe je Hand in joint_map-Reihenfolge.
     _SUFFIX12 = [f"{f}_{i}" for f, n in joint_map.HAND_FINGERS for i in range(1, n + 1)]
-    _TIP_ORDER = ("thumb", "index", "middle", "ring", "little")   # MJCF-Touch je Hand
     # DOF -> repraesentatives (proximales) Gelenk fuer die Winkel-Rueckrechnung.
     _DOF_REP = ["little_1", "ring_1", "middle_1", "index_1", "thumb_2", "thumb_1"]
-    _DOF_TIPFINGER = ["little", "ring", "middle", "index", "thumb", "thumb"]
-    _TIPZONE = {"little": "kleiner_tip", "ring": "ring_tip", "middle": "mittel_tip",
-                "index": "zeige_tip", "thumb": "daumen_tip"}
+    _DOF_FINGER = ["little", "ring", "middle", "index", "thumb", "thumb"]
+    # 17 Zonen JE HAND, KANONISCH (== unitree_sdk2py_bridge.ZONE_SUFFIX). Jede Zone:
+    # (mjcf_suffix, tactile.py-Zonen-Id). Die tactile-Id adressiert die GUI-Zone.
+    _ZONES = [
+        ("little_tip", "kleiner_tip"), ("little_nail", "kleiner_nail"), ("little_pad", "kleiner_pad"),
+        ("ring_tip", "ring_tip"), ("ring_nail", "ring_nail"), ("ring_pad", "ring_pad"),
+        ("middle_tip", "mittel_tip"), ("middle_nail", "mittel_nail"), ("middle_pad", "mittel_pad"),
+        ("index_tip", "zeige_tip"), ("index_nail", "zeige_nail"), ("index_pad", "zeige_pad"),
+        ("thumb_tip", "daumen_tip"), ("thumb_nail", "daumen_nail"), ("thumb_mid", "daumen_mid"),
+        ("thumb_pad", "daumen_pad"), ("palm", "palme"),
+    ]
+    # Finger -> seine tactile-Zonen-Ids (Summe = Kontaktkraft des Fingers = force_act).
+    _FINGER_ZONE_IDS = {
+        "little": ["kleiner_tip", "kleiner_nail", "kleiner_pad"],
+        "ring": ["ring_tip", "ring_nail", "ring_pad"],
+        "middle": ["mittel_tip", "mittel_nail", "mittel_pad"],
+        "index": ["zeige_tip", "zeige_nail", "zeige_pad"],
+        "thumb": ["daumen_tip", "daumen_nail", "daumen_mid", "daumen_pad"],
+    }
 
     def __init__(self, publish_fn, interface: str = "lo",
-                 closed_rad: Dict[str, float] | None = None, force_scale: float = 100.0):
+                 closed_rad: Dict[str, float] | None = None, force_scale: float = 100.0,
+                 zone_scale: float = 150.0, drive_scale: float = 2000.0):
         from g1pilot.utils.common import init_dds
         from unitree_sdk2py.core.channel import ChannelPublisher, ChannelSubscriber
         from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_, LowState_
@@ -143,9 +178,40 @@ class MujocoContactBackend(HandBackend):
 
         self.publish_fn = publish_fn
         self.closed = dict(closed_rad) if closed_rad else dict(joint_map.CLOSED_RAD)
-        self.force_scale = float(force_scale)   # N -> Anzeige-Skala der GUIs
+        self.force_scale = float(force_scale)   # (frei/kompat) N-Skala
+        self.zone_scale = float(zone_scale)     # N -> 0..4095 Taktil-Heatmap der GUI
+        self.drive_scale = float(drive_scale)   # (kompat/ungenutzt; force_act via _G_PER_N)
+        self._zone_shape = {z[0]: (z[4], z[5]) for z in tactile.TACTILE_ZONES}  # id->(rows,cols)
         self.joint_names = joint_map.hand_joint_names()   # 24, kanonisch
         self._state = None
+
+        # Kraft-Limit (force_set der GUI, Register 1498 der echten Hand, Gramm): wird
+        # als echte KRAFTREGELUNG umgesetzt. Der Servo bekommt die volle Modell-
+        # Antriebskraft (max_force_nm = FFRC); das Limit greift NICHT als Nm-Deckel,
+        # sondern ueber die Winkel-Rueckfuehrung in _regulate() (Gramm gegen Gramm).
+        self.max_force_nm = 2.0     # = FFRC des Modells (volle Aktuator-Auslegung)
+
+        # Kraftgeregelte Rueckwaertsbewegung ("force protection" wie die echte Hand):
+        # gemessene Kontaktkraft je DOF gegen force_set. Ueber Limit -> Winkel-Sollwert
+        # aufmachen (oeffnen); klar drunter -> sanft Richtung Wunsch nachschliessen; im
+        # Band dazwischen halten (verhindert Grenz-Zyklen/Zittern). Raten in Winkel-
+        # Einheiten (0..1000) pro Sekunde -> unabhaengig von der Update-Rate.
+        self._eff = {"left": [1000.0] * 6, "right": [1000.0] * 6}  # effektiver Soll-Winkel
+        # GRIFF-LATCH je DOF: sobald das Kraft-Limit beim Schliessen erreicht wurde,
+        # wird die (zurueckgefahrene) Halteposition GELATCHT -> der Finger haelt dort und
+        # versucht NICHT dauernd wieder ans Ziel zu schliessen (kein Grenz-Zyklus). Erst
+        # geloest, wenn der Nutzer aktiv ENGER kommandiert oder aufmacht.
+        self._hold = {"left": [None] * 6, "right": [None] * 6}      # gelatchte Halteposition
+        self._committed = {"left": [None] * 6, "right": [None] * 6}  # Wunsch beim Latchen
+        # Bewegungsrate = vom GESCHWINDIGKEITS-Slider (speed_set 0..1000) gesteuert, GLEICH
+        # fuer Oeffnen UND Schliessen (sonst wirkt Oeffnen "sofort", Schliessen langsam).
+        # rate[Winkel/s] = clamp(speed_set * speed_scale, min, max).
+        self.speed_scale = 1.5            # speed_set -> Winkel/s (500 -> 750/s, 1000 -> 1500/s)
+        self.move_min_rate = 60.0         # nie ganz eingefroren (auch bei speed 0)
+        self.move_max_rate = 2000.0
+        # Sicherheits-Rueckzug bei Ueberlast: bewusst schnell und UNABHAENGIG vom Speed
+        # (Kraftschutz soll immer zuegig greifen).
+        self.retract_open_rate = 600.0    # Winkel/s: zurueckfahren ueber dem Limit
 
         init_dds(interface)
         self.cmd_pub = ChannelPublisher("rt/inspire/cmd", LowCmd_)
@@ -170,7 +236,24 @@ class MujocoContactBackend(HandBackend):
             out.append(_clamp(float(a), 0.0, 1000.0))
         return out
 
-    def _fill_model(self, model: HandModel, q12: List[float], f5: List[float]) -> None:
+    def _zone_cells(self, newton: float, rows: int, cols: int) -> List[int]:
+        """Zonen-Kraft [N] -> per-Taxel-Matrix (rows*cols, 0..4095). MuJoCo liefert nur
+        EINEN Skalar je Zone -> zentriert verteilt (Bump), damit die Heatmap natuerlich
+        aussieht; der Peak kodiert die Kraft. Kein physisch aufgeloester Feindruck."""
+        peak = _clamp(newton * self.zone_scale, 0.0, 4095.0)
+        if peak <= 0.0 or rows * cols == 0:
+            return [0] * (rows * cols)
+        cr, cc = (rows - 1) / 2.0, (cols - 1) / 2.0
+        rad = max(1.0, (cr * cr + cc * cc) ** 0.5)
+        out = []
+        for r in range(rows):
+            for c in range(cols):
+                dist = ((r - cr) ** 2 + (c - cc) ** 2) ** 0.5 / rad
+                out.append(int(peak * (0.55 + 0.45 * (1.0 - dist))))
+        return out
+
+    def _fill_model(self, model: HandModel, q12: List[float], zf17: List[float]) -> None:
+        # Winkel-Rueckrechnung (6 DOF, 0..1000) aus den 12 Gelenk-Radiant.
         radmap = {self._SUFFIX12[i]: q12[i] for i in range(len(self._SUFFIX12))}
         angle_act = []
         for d in range(6):
@@ -179,38 +262,115 @@ class MujocoContactBackend(HandBackend):
             rad = radmap.get(suf, 0.0)
             a = 1000.0 * (1.0 - rad / closed) if closed > 1e-6 else 1000.0
             angle_act.append(int(round(_clamp(a, 0.0, 1000.0))))
-        fmap = {self._TIP_ORDER[i]: max(0.0, float(f5[i])) for i in range(len(self._TIP_ORDER))}
-        force_act = [_clamp(fmap[self._DOF_TIPFINGER[d]] * self.force_scale, 0.0, 1000.0)
-                     for d in range(6)]
+        # 17 Zonen-Kraefte [N] -> tactile-Id -> N (kanonische _ZONES-Reihenfolge).
+        zone_n = {self._ZONES[i][1]: max(0.0, float(zf17[i])) for i in range(len(self._ZONES))}
+        # force_act (6 DOF): ECHTE Kontaktkraft je Finger = Summe seiner Zonen [N] -> Gramm.
+        # UNGEDECKELT (zeigt Aufprall-Spitzen ueber dem Limit ehrlich), ganzzahlig wie das
+        # echte Register (sonst 15+ Nachkommastellen in der GUI).
+        force_act = []
+        for d in range(6):
+            fsum = sum(zone_n.get(z, 0.0) for z in self._FINGER_ZONE_IDS[self._DOF_FINGER[d]])
+            force_act.append(float(round(_clamp(fsum * self._G_PER_N, 0.0, 9999.0))))
+        # Taktil-Heatmap: JEDE der 17 Zonen aus ihrer echten Kontaktkraft fuellen.
         zones = tactile.zero_zones()
-        for finger, newton in fmap.items():
-            zid = self._TIPZONE[finger]
-            ncells = len(zones.get(zid, []))
-            if ncells:
-                zones[zid] = [int(min(newton * self.force_scale, 4095))] * ncells
+        for zid, newton in zone_n.items():
+            rows, cols = self._zone_shape.get(zid, (0, 0))
+            if rows * cols:
+                zones[zid] = self._zone_cells(newton, rows, cols)
         with model.lock:
             model.angle_act = angle_act
             model.force_act = force_act
             model.zones = zones
             model.connected = True
 
+    _LATCH_EPS = 2.0   # Winkel-Toleranz fuer "Nutzer kommandiert enger / oeffnet"
+
+    def _regulate(self, side: str, desired: List[float], dt: float,
+                  force_act: List[float], force_set: List[float],
+                  move_rate: float) -> List[float]:
+        """Kraftgeregelter effektiver Soll-Winkel je DOF (0..1000). Vergleicht die
+        GEMESSENE Kontaktkraft (force_act, Gramm) mit dem Limit (force_set, Gramm):
+          * Nutzer OEFFNET (Wunsch > Position) -> Latch loesen, mit move_rate oeffnen;
+          * ueber Limit -> zurueckfahren (Kraftschutz, retract_open_rate) UND die
+            erreichte Halteposition LATCHEN;
+          * gelatcht    -> genau dort halten, NICHT wieder ans Ziel schliessen (bricht
+            den Grenz-Zyklus "anfahren -> zu stark -> zurueck -> anfahren ...");
+          * sonst SCHLIESSEN Richtung Wunsch mit move_rate.
+        move_rate (Winkel/s) kommt vom Geschwindigkeits-Slider und gilt symmetrisch fuer
+        Oeffnen und Schliessen. Der Latch loest, wenn der Nutzer aktiv ENGER kommandiert
+        (Wunsch deutlich kleiner als beim Latchen) oder AUFMACHT. Winkel: 1000=offen, 0=zu."""
+        eff = self._eff[side]
+        hold = self._hold[side]
+        comm = self._committed[side]
+        d_move = max(0.0, move_rate) * max(dt, 0.0)
+        d_retract = self.retract_open_rate * max(dt, 0.0)
+        eps = self._LATCH_EPS
+        for i in range(6):
+            des = _clamp(float(desired[i]), 0.0, 1000.0)
+            e = eff[i]
+            lim = float(force_set[i])
+            f = float(force_act[i])
+            if des > e + eps:
+                # Nutzer oeffnet ueber die aktuelle Position -> Latch loesen, geschwindig-
+                # keitsbegrenzt oeffnen (nicht mehr "sofort").
+                hold[i] = None
+                comm[i] = None
+                e = min(des, e + d_move)
+            else:
+                # Nutzer will ENGER als beim Latchen -> Latch loesen (neuer Griff-Versuch).
+                if hold[i] is not None and comm[i] is not None and des < comm[i] - eps:
+                    hold[i] = None
+                    comm[i] = None
+                if lim > 0.0 and f > lim:
+                    # Ueber Limit: PROPORTIONAL zurueckfahren (Kraftschutz) und latchen.
+                    # Sobald gelatcht, wird NICHT mehr Richtung Ziel geschlossen -> der
+                    # Finger setzt sich einmal am Limit ab und bleibt (kein Retry).
+                    over = _clamp((f - lim) / lim, 0.08, 1.0)
+                    e = min(1000.0, e + d_retract * over)
+                    hold[i] = e        # ratscht nur auf (nie zu) -> bis Kraft stabil drunter
+                    comm[i] = des
+                elif hold[i] is not None:
+                    # GELATCHT: Halteposition halten, NICHT wieder ans Ziel schliessen.
+                    e = hold[i]
+                elif des < e - eps:
+                    # Kein Latch -> geschwindigkeitsbegrenzt Richtung Wunsch schliessen
+                    # (bis Kontakt das Limit ausloest und latcht).
+                    e = max(des, e - d_move)
+                # else: des ~= e -> halten
+            eff[i] = _clamp(e, 0.0, 1000.0)
+        return list(eff)
+
     def update(self, models: Dict[str, HandModel], dt: float) -> None:
-        # 1) Soll-Winkel beider Haende -> 24 Gelenk-Radiant -> rt/inspire/cmd.
-        left = self._resolve_targets(models["left"])
-        right = self._resolve_targets(models["right"])
-        names, positions = joint_map.build_joint_state(left, right, self.closed)
+        # 1) Wunsch-Winkel + Kraft-Limit + zuletzt gemessene Kraft je Hand lesen und
+        #    daraus den kraftgeregelten EFFEKTIVEN Soll-Winkel bilden (Rueckwaerts-
+        #    bewegung bei Ueberlast). force_act stammt aus dem letzten _fill_model.
+        eff_sides = {}
+        for side in ("left", "right"):
+            desired = self._resolve_targets(models[side])
+            with models[side].lock:
+                force_set = list(models[side].force_set)
+                force_act = list(models[side].force_act)
+                speed = models[side].speed_set[0] if models[side].speed_set else 500
+            move_rate = _clamp(float(speed) * self.speed_scale,
+                               self.move_min_rate, self.move_max_rate)
+            eff_sides[side] = self._regulate(side, desired, dt, force_act, force_set, move_rate)
+        names, positions = joint_map.build_joint_state(
+            eff_sides["left"], eff_sides["right"], self.closed)
+        # Servo mit voller Modell-Antriebskraft ansteuern (Limit wirkt ueber die
+        # Winkel-Rueckfuehrung, nicht als Nm-Deckel).
         for k in range(min(24, len(positions))):
             self.cmd_msg.motor_cmd[k].q = float(positions[k])
+            self.cmd_msg.motor_cmd[k].kp = self.max_force_nm
         self.cmd_pub.Write(self.cmd_msg)
 
-        # 2) Ist-Zustand aus der Sim -> /joint_states + Models (echte Winkel + Kraefte).
+        # 2) Ist-Zustand aus der Sim -> /joint_states + Models (echte Winkel + Taktil).
         st = self._state
         if st is not None:
-            q = [float(st.motor_state[k].q) for k in range(24)]
-            f = [float(st.motor_state[24 + i].q) for i in range(10)]
+            q = [float(st.motor_state[k].q) for k in range(24)]      # 24 Finger-Winkel
+            zf = [float(st.motor_state[k].dq) for k in range(34)]    # 34 Zonen-Kraefte [N]
             self.publish_fn(self.joint_names, q)
-            self._fill_model(models["left"], q[0:12], f[0:5])
-            self._fill_model(models["right"], q[12:24], f[5:10])
+            self._fill_model(models["left"], q[0:12], zf[0:17])
+            self._fill_model(models["right"], q[12:24], zf[17:34])
         else:
             # Noch kein State (Sim faehrt hoch) -> Soll publizieren, RViz bleibt nicht leer.
             self.publish_fn(names, positions)

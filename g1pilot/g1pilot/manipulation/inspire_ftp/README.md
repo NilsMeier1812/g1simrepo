@@ -17,7 +17,7 @@ bleiben in allen Modi identisch.
 | Stufe | Backend | Was passiert | Status |
 |-------|---------|--------------|--------|
 | **1** | `SimJointStateBackend` | Finger-Gelenke folgen der Steuerung in **RViz** (`/joint_states`). Kraft/Taktil = **0**. | ✅ |
-| **2** | `MujocoContactBackend` | Finger als echte **MuJoCo-Aktuatoren** (Greifen/Kollision) via DDS `rt/inspire/cmd\|state`; Fingerspitzen-Kraefte aus MuJoCo-**Touch-Sensoren**. | ✅ Sim-Default |
+| **2** | `MujocoContactBackend` | Finger als echte **MuJoCo-Aktuatoren** (Greifen/Kollision) via DDS `rt/inspire/cmd\|state`; **alle 17 Taktil-Zonen je Hand** aus MuJoCo-**Touch-Sensoren** (dieselben Zonen wie real). | ✅ Sim-Default |
 | **3** | `InspireModbusBackend` | **ECHTE Haende** via Modbus TCP (eine IP je Hand im Roboter-LAN; Register-Map aus `reference/ftp_hand_controller/`). Liest Ist-Winkel, Kraefte (Gramm) und **alle 17 Taktil-Zonen**. | ✅ Real-Default |
 
 Backend-Wahl: Parameter `backend` = `sim` / `mujoco` / `modbus`. Fuer
@@ -87,10 +87,51 @@ Die WebSockets bleiben unveraendert: `ws://localhost:8766` (Controller) bzw.
 `ws://localhost:8765` (Viewer). Der Container nutzt `network_mode: host`,
 daher ist `localhost` korrekt.
 
-## Hinweise zur Sim (Stufe 1)
+## Hinweise zur Sim
 
-- **Kraft/Taktil sind 0** — es gibt keine Sensorik in der Sim. Der Viewer laeuft
-  trotzdem (zeigt Nullen). Echte Werte kommen erst mit Stufe 2.
-- Die Ist-Winkel werden geschwindigkeitsbegrenzt nachgefuehrt
-  (`speed`-Slider wirkt), damit die GUI eine plausible Bewegung zeigt.
+**Stufe 2 (`mujoco`, Default)** — echte Kontaktsensorik:
+- Die echte Hand hat ZWEI unabhaengige Kraft-Ausgaben, beide in der Sim abgebildet:
+  - **`force_act`** (Register 1582, 6/Hand, Gramm) = die **echte Kontaktkraft je
+    Finger** (Summe seiner Taktil-Zonen), die die **Controller-GUI** als Kraftbalken
+    zeigt. **UNGEDECKELT**: zeigt die tatsaechliche Kraft — auch wenn sie das Limit
+    (`force_set`) beim Aufprall kurz uebersteigt (der Wert wird NICHT beschoenigt).
+    Ohne Kontakt = 0 (ein Kraftsensor misst nur, was der Finger tatsaechlich drueckt).
+  - **17 Taktil-Zonen je Hand** (Register 3000+) = die Kontakt-**Haut** (Viewer-
+    Heatmap). Platziert an den `*_force_sensor_*`-Frames des URDF, palm + je Finger
+    tip/nail/pad, Daumen auch mid. Echte, physikbasierte Kontaktkraefte — greift die
+    Hand etwas Greifbares, leuchten die Zonen auf.
+- **Greifbar = Kollisions-Bit 2**: Finger-Zonen kollidieren nur mit Objekten, die
+  `contype`/`conaffinity` Bit 2 setzen (und untereinander), NICHT mit Boden/Koerper.
+  Ohne so ein Objekt in Handnaehe bleiben die Kraefte 0 (nichts wird beruehrt).
+- **Test-Objekt zum Ausprobieren** (Streamdeck-Button **"GRASP BOX"**, Toggle): legt
+  eine kleine, fest mit jeder Handflaeche verbundene greifbare Kugel in die Griffzone.
+  Beim Schliessen der Hand (~70 %) greifen alle Finger + Handflaeche zu -> man sieht
+  sofort echte Griffkraefte in der GUI. Offen = kein Kontakt. Faellt nicht weg (starr
+  an der Palme). Live schaltbar (kein Neustart): der Box-Koerper wird bei Inspire-
+  Haenden immer eingefuegt, ist aber AUS unsichtbar+inert (~6 g, keine Kollision) und
+  stoert Loco/Nav nicht. `G1_GRASP_TEST=1` startet ihn direkt AN, `G1_GRASP_BOX=0`
+  laesst ihn ganz weg. Ohne ROS toggeln: `echo -n on|nc -u -w0 127.0.0.1 47901`.
+- MuJoCo liefert je Zone EINEN Kraft-Skalar (Summe der Normal-Kontaktkraefte); die
+  per-Taxel-Matrix des Viewers wird daraus verteilt. Der raeumliche Feindruck
+  INNERHALB einer Zone ist also synthetisch, die Zonen-Gesamtkraft ist echt.
+- **Kraft-Limit `force_set`** (GUI-Slider, Register 1498, Gramm) = echte
+  **Kraftregelung** wie an der Hardware: die GEMESSENE Kontaktkraft (`force_act`,
+  Gramm) wird laufend gegen `force_set` (gleiche Einheit) verglichen. Uebersteigt
+  sie das Limit, **faehrt der Finger seinen Winkel aktiv wieder auf** (oeffnet,
+  proportional zur Ueberschreitung), bis die Kraft drunter ist — man sieht den Winkel
+  in der GUI zurueckgehen. Die dabei erreichte Halteposition wird **gelatcht**: der
+  Finger bleibt dort und faehrt NICHT dauernd wieder ans Ziel (sonst Grenz-Zyklus
+  "anfahren -> zu stark -> zurueck -> anfahren ..."). Der Latch loest erst, wenn man
+  aktiv **enger** kommandiert (neuer Griff-Versuch) oder **aufmacht**. Der Servo hat
+  die volle Modell-Antriebskraft; das Limit wirkt ueber die Winkel-Rueckfuehrung,
+  NICHT als kuenstlicher Nm-Deckel. Die kurze Aufprall-Spitze in `force_act`
+  (Stoss-Impuls) wird darum ehrlich angezeigt und dann weggeregelt — nicht auf das
+  Limit geschoenigt. Regel-Parameter (`retract_open_rate`/`retract_close_rate`) im
+  `MujocoContactBackend` tunebar.
+- Griffkraft ueber `FKP`/`FFRC` im MJCF-Generator (`gen_inspire_ftp_hand.py`)
+  tunebar; nach Aenderung das Modell neu generieren.
+
+**Stufe 1 (`sim`, nur RViz)** — keine Kontaktphysik:
+- Kraft/Taktil bleiben **0** (Platzhalter), nur die Ist-Winkel werden
+  geschwindigkeitsbegrenzt nachgefuehrt (`speed`-Slider wirkt).
 - `enabled` (Hauptschalter) gilt wie beim Original: ohne ihn bewegt sich nichts.

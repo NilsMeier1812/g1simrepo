@@ -23,13 +23,13 @@ class HandModel:
 
         # ── Soll-Werte (vom Controller-GUI gesetzt) ──────────────────────────
         self.angle_set: List[int] = [-1] * 6     # -1 = keine Aktion (halten)
-        self.force_set: List[int] = [500] * 6    # in der Sim nur Anzeige
+        self.force_set: List[int] = [500] * 6    # Kraft-Limit (g): regelt in Stufe 2 aktiv
         self.speed_set: List[int] = [500] * 6
         self.enabled: bool = False               # Hauptschalter
 
         # ── Ist-Werte (vom Backend gefuellt) ─────────────────────────────────
         self.angle_act: List[int] = [1000] * 6   # 0..1000, Start = offen
-        self.force_act: List[float] = [0.0] * 6  # g (Sim: 0)
+        self.force_act: List[float] = [0.0] * 6  # g (echte Kontaktkraft je Finger, ungedeckelt)
         self.zones: Dict[str, List[int]] = tactile.zero_zones()
         self.connected: bool = False
 
