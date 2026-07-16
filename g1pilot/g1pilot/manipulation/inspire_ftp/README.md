@@ -114,15 +114,17 @@ daher ist `localhost` korrekt.
 - **Kraft-Limit `force_set`** (GUI-Slider, Register 1498, Gramm) = echte
   **Kraftregelung** wie an der Hardware: die GEMESSENE Kontaktkraft (`force_act`,
   Gramm) wird laufend gegen `force_set` (gleiche Einheit) verglichen. Uebersteigt
-  sie das Limit, **faehrt der Finger seinen Winkel aktiv wieder auf** (oeffnet), bis
-  die Kraft drunter ist — man sieht den Winkel in der GUI zurueckgehen. Faellt die
-  Kraft klar unter das Limit, schliesst er sanft bis zum Wunsch nach. Gleichgewicht:
-  Kraft ~= Limit (Finger stoppt am Objekt, statt bis "zu" durchzuziehen). Der Servo
-  hat dabei die volle Modell-Antriebskraft; das Limit wirkt ueber die Winkel-
-  Rueckfuehrung, NICHT als kuenstlicher Nm-Deckel. Die kurze Aufprall-Spitze in
-  `force_act` (Stoss-Impuls) wird darum ehrlich angezeigt und dann weggeregelt —
-  nicht auf das Limit geschoenigt. Regel-Parameter (`retract_open_rate`/
-  `retract_close_rate`/`retract_resume`) im `MujocoContactBackend` tunebar.
+  sie das Limit, **faehrt der Finger seinen Winkel aktiv wieder auf** (oeffnet,
+  proportional zur Ueberschreitung), bis die Kraft drunter ist — man sieht den Winkel
+  in der GUI zurueckgehen. Die dabei erreichte Halteposition wird **gelatcht**: der
+  Finger bleibt dort und faehrt NICHT dauernd wieder ans Ziel (sonst Grenz-Zyklus
+  "anfahren -> zu stark -> zurueck -> anfahren ..."). Der Latch loest erst, wenn man
+  aktiv **enger** kommandiert (neuer Griff-Versuch) oder **aufmacht**. Der Servo hat
+  die volle Modell-Antriebskraft; das Limit wirkt ueber die Winkel-Rueckfuehrung,
+  NICHT als kuenstlicher Nm-Deckel. Die kurze Aufprall-Spitze in `force_act`
+  (Stoss-Impuls) wird darum ehrlich angezeigt und dann weggeregelt — nicht auf das
+  Limit geschoenigt. Regel-Parameter (`retract_open_rate`/`retract_close_rate`) im
+  `MujocoContactBackend` tunebar.
 - Griffkraft ueber `FKP`/`FFRC` im MJCF-Generator (`gen_inspire_ftp_hand.py`)
   tunebar; nach Aenderung das Modell neu generieren.
 
