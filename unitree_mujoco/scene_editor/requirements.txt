@@ -1,0 +1,7 @@
+# mujoco-scene-editor: browserbasierter Editor zum Bauen von MuJoCo-Szenen
+# (Shapes platzieren, STL/OBJ-Meshes importieren, Roboter einfuegen, exportieren)
+mujoco-scene-editor==0.1.3
+
+# yourdfpy fehlt in den Abhaengigkeiten des Editors, wird aber beim Start
+# gebraucht (Laden von robot_descriptions). Ohne das crasht mjcreate/mjedit.
+yourdfpy

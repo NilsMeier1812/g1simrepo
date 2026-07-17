@@ -1,0 +1,3 @@
+# Auto-generierte kombinierte Szenen (G1 + Umgebung), erzeugt von
+# scene_editor/build_env_scene.py bzw. g1pilot/start.sh. Nicht einchecken.
+scene_env_*.xml

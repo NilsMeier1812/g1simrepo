@@ -203,6 +203,34 @@ else
     export OPEN_GUIS=false
   fi
 
+  # ── 2d) Umgebung waehlen (G1 bleibt gleich, nur die Welt drumherum) ────
+  #   Umgebungen werden im scene_editor gebaut (scene_editor/scenes/*.xml).
+  #   "Standard" = bisheriges Terrain (scene.xml). Bei einer Auswahl erzeugt
+  #   build_env_scene.py auf dem HOST eine kombinierte Szene (G1 + Umgebung) im
+  #   g1-Ordner; der Container mountet das Repo nur read-only, kann also selbst
+  #   nichts schreiben.
+  _scenes_dir="../unitree_mujoco/scene_editor/scenes"
+  _env_menu=("Standard — aktuelles Terrain (scene.xml)|__default__")
+  if [ -d "$_scenes_dir" ]; then
+    for _f in "$_scenes_dir"/*.xml; do
+      [ -e "$_f" ] || continue
+      _b=$(basename "$_f" .xml)
+      _env_menu+=("$_b|$_b")
+    done
+  fi
+  ask_menu "2d) Welche Umgebung laden? (G1 wird unveraendert hineingeladen)" 1 "${G1_ENV:-}" "${_env_menu[@]}"
+  if [ "$REPLY_VALUE" = "__default__" ] || [ -z "$REPLY_VALUE" ]; then
+    G1_ENV=""
+  else
+    G1_ENV="$REPLY_VALUE"
+    if ! python3 ../unitree_mujoco/scene_editor/build_env_scene.py \
+           --env "$_scenes_dir/${G1_ENV}.xml" --inspire "${G1_INSPIRE_HANDS:-0}" >/dev/null; then
+      echo -e "${Y}[start] Umgebung '${G1_ENV}' konnte nicht erzeugt werden -> Standard.${R}"
+      G1_ENV=""
+    fi
+  fi
+  export G1_ENV
+
   # ── 2c) Navigation (g1pilot-Ansatz) mitstarten ───────────────────────
   ask_menu "2c) Navigation mitstarten? (dijkstra_planner + nav2point + Sim-Glue)" 2 "${G1_ENABLE_NAV:-}" \
     "Ja  — Nav-Stack an (Ziel per RViz/CLI; siehe NAVIGATION.md)|1" \
@@ -227,6 +255,8 @@ else
 
   # ── Zusammenfassung ───────────────────────────────────────────────────
   echo -e "${B}Starte mit:${R}"
+  _env_lbl=$( [ -n "${G1_ENV}" ] && echo "${G1_ENV} (scene_env_${G1_ENV}.xml)" || echo "Standard (scene.xml)" )
+  echo -e "   Umgebung       : ${G}G1_ENV=${G1_ENV:-<default>}${R} ${DIM}(${_env_lbl})${R}"
   echo -e "   RViz           : ${G}USE_RVIZ=${USE_RVIZ}${R}"
   _hands_lbl=$( [ "${G1_INSPIRE_HANDS}" = "1" ] && echo "Inspire-FTP (Finger + GUIs)" || echo "Rubber-Hand" )
   echo -e "   Haende         : ${G}G1_INSPIRE_HANDS=${G1_INSPIRE_HANDS}${R} ${DIM}(${_hands_lbl})${R}"
