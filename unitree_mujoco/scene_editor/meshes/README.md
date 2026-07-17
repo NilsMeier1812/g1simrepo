@@ -6,9 +6,12 @@ Hier liegen eigene 3D-Objekte (STL/OBJ) fuer die Szenen.
 - `sample_ramp.stl`  – kleine Rampe/Keil (Beispiel-Import)
 
 ## Import im Editor
-Dieser Ordner ist im Editor als Mesh-Quelle fest vorbelegt. STL hier ablegen,
-im Editor den Ordner **„Add Assets from File"** aufklappen, **„Scan assets"**
-klicken, das Mesh auswaehlen und **„Add asset"** druecken.
+Zwei Wege:
+- **„Eigene Datei hochladen" -> „STL/OBJ waehlen ..."** (oben im Editor):
+  Datei-Dialog, beliebiger Ordner; die Datei wird hierher kopiert und direkt in
+  die Szene eingefuegt.
+- **„Add Assets from File" -> „Scan assets" -> „Add asset"**: durchsucht diesen
+  `meshes/`-Ordner (STL hier ablegen).
 
 ## Eigene Meshes per XML einbinden
 Alternativ direkt in einer Szene referenzieren:

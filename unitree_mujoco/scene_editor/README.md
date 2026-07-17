@@ -141,25 +141,34 @@ Der Editor startet einen lokalen Webserver und oeffnet den Browser
 
 ### Eigene STLs in den Editor importieren
 
-Der Editor hat **keinen** Datei-Dialog zum Hochladen – er **scannt einen
-Ordner** nach Mesh-Dateien (STL, OBJ, PLY, GLB/GLTF, USD). Damit das sofort
-klappt, ist dieser Ordner fest auf `scene_editor/meshes/` vorbelegt.
+Es gibt zwei Wege – nimm den, der dir lieber ist:
 
-So importierst du ein STL:
+**A) Datei-Dialog (beliebiger Ordner) – am einfachsten**
 
-1. **STL nach `scene_editor/meshes/` kopieren** (dorthin, wo auch
-   `sample_crate.stl` liegt).
-2. Im Editor rechts den Ordner **„Add Assets from File"** aufklappen.
-   (Er ist standardmaessig zugeklappt – daher leicht zu uebersehen.)
-3. Auf **„Scan assets"** klicken. Deine STLs erscheinen im Dropdown
-   (die Beispiele `sample_crate`/`sample_ramp` sind schon da).
-4. Im Dropdown auswaehlen, dann **„Add asset"** – das Mesh landet in der Szene
-   und laesst sich wie jedes Objekt per Maus platzieren.
+Ganz oben im Editor gibt es den Ordner **„Eigene Datei hochladen"** mit dem
+Knopf **„STL/OBJ waehlen ..."**:
 
-> Der Ordner `meshes/` ist in `run_editor.py` fest verdrahtet. Neue STLs dort
-> ablegen und im Editor **„Scan assets"** druecken – dann sind sie sofort da.
-> (Der eingebaute Editor-Default `~/temp/ArmarXObjects` existiert nicht, darum
-> war die Liste vorher leer und der Import schien zu fehlen.)
+1. Knopf klicken -> es oeffnet sich der **Datei-Dialog deines Systems**.
+2. Beliebige STL/OBJ/... aus **irgendeinem Ordner** auswaehlen.
+3. Fertig: die Datei wird nach `scene_editor/meshes/` kopiert und **sofort in
+   die Szene eingefuegt** (danach wie jedes Objekt per Maus platzierbar).
+
+> Dieser Knopf wird von `run_editor.py` ergaenzt (der eingebaute Editor hat
+> nur den Ordner-Scan unten). `launch.sh` startet den Editor immer darueber.
+
+**B) Ordner-Scan (der eingebaute Weg)**
+
+Der Editor kann auch einen Ordner nach Mesh-Dateien (STL, OBJ, PLY, GLB/GLTF,
+USD) durchsuchen. Dieser Ordner ist fest auf `scene_editor/meshes/` vorbelegt:
+
+1. STL nach `scene_editor/meshes/` kopieren.
+2. Ordner **„Add Assets from File"** aufklappen (standardmaessig zugeklappt).
+3. **„Scan assets"** klicken -> STLs erscheinen im Dropdown
+   (`sample_crate`/`sample_ramp` sind schon da).
+4. Auswaehlen -> **„Add asset"**.
+
+> Der eingebaute Editor-Default `~/temp/ArmarXObjects` existiert nicht – darum
+> war die Liste vorher leer und der Import schien zu fehlen.
 
 ---
 

@@ -50,5 +50,63 @@ import mujoco_scene_editor.cli.editor_cli as _editor_cli
 _editor_cli.DEFAULT_EXPORT_TARGET = DEFAULT_TARGET
 
 
+# ---------------------------------------------------------------------------
+# Zusaetzlicher Upload-Button: echter Datei-Dialog des Browsers.
+# Der eingebaute Import ("Add Assets from File") scannt nur einen Ordner. Fuer
+# "Datei aus beliebigem Ordner auswaehlen" haengen wir per viser-Upload-Button
+# einen zweiten Weg an: ausgewaehlte Datei wird nach meshes/ gespeichert und
+# direkt in die Szene eingefuegt. Umgesetzt ohne Aenderung am Fremdpaket, indem
+# wir die Editor-Fabrik umschliessen.
+# ---------------------------------------------------------------------------
+_UPLOAD_EXTS = ".stl,.obj,.ply,.glb,.gltf,.STL,.OBJ,.PLY,.GLB,.GLTF"
+
+
+def _install_upload_button(editor) -> None:
+    server = editor.layout.server
+    try:
+        with server.gui.add_folder("Eigene Datei hochladen", expand_by_default=True):
+            up = server.gui.add_upload_button(
+                "STL/OBJ waehlen ...", mime_type=_UPLOAD_EXTS,
+                hint="Datei aus beliebigem Ordner waehlen; wird nach meshes/ "
+                     "kopiert und in die Szene eingefuegt.",
+            )
+    except Exception as exc:  # pragma: no cover - GUI-Aufbau
+        print(f"[run_editor] Upload-Button nicht verfuegbar: {exc}", file=sys.stderr)
+        return
+
+    @up.on_upload
+    def _on_upload(event) -> None:
+        f = up.value
+        if not f or not f.name:
+            return
+        dest = MESHES_DIR / Path(f.name).name
+        try:
+            dest.write_bytes(f.content)
+            editor.controller.create_mesh(editor.get_selected_parent(), dest.resolve())
+        except Exception as exc:  # pragma: no cover - Laufzeit
+            print(f"[run_editor] Upload fehlgeschlagen: {exc}", file=sys.stderr)
+            return
+        try:
+            event.client.add_notification(
+                title="Mesh eingefuegt",
+                body=f"{dest.name} nach meshes/ gespeichert und in die Szene gelegt.",
+                loading=False,
+            )
+        except Exception:
+            pass
+
+
+_orig_get_scene_editor = _editor_cli.get_scene_editor
+
+
+def _get_scene_editor_with_upload(blueprints=None):
+    editor = _orig_get_scene_editor(blueprints)
+    _install_upload_button(editor)
+    return editor
+
+
+_editor_cli.get_scene_editor = _get_scene_editor_with_upload
+
+
 if __name__ == "__main__":
     _editor_cli.cli()
