@@ -16,6 +16,20 @@ Helfer-Skripte.
 > Umgebung im Editor unter `scenes/` speichern reicht, damit sie an beiden
 > Stellen auftaucht.
 
+## Konzept: Basis + Umgebung
+
+Das System trennt **Basis** (immer gleich) von **Umgebung** (wechselt):
+
+| | kommt aus | Inhalt |
+|---|---|---|
+| **Basis** (immer automatisch) | `build_env_scene.py` | G1-Roboter, **Lichtquelle**, Boden, **Weld** (haelt den G1 anfangs fest), visual/statistic – die technischen Grunddinge |
+| **Umgebung** (waehlbar) | `scenes/<name>.xml` | **nur Hindernisse / Objekte zum Interagieren/Greifen** |
+
+Du baust in einer Umgebung also **nur die Objekte**. G1, Licht, Boden und Weld
+werden beim Laden immer automatisch dazugefuegt – nie in die Umgebung schreiben.
+(Legt der Editor doch mal einen eigenen Boden/eine Lichtquelle an, wirft der
+Generator sie beim Kombinieren automatisch raus.)
+
 ---
 
 ## Was ist drin?
@@ -111,6 +125,8 @@ Neue Umgebungen aus `scenes/` tauchen automatisch in der Liste auf – hier
 Der Editor startet einen lokalen Webserver und oeffnet den Browser
 (**http://127.0.0.1:8080**). Dort kannst du:
 
+- **Nur Objekte bauen** – Hindernisse / Greifobjekte. Boden, Licht, G1 und
+  Weld kommen automatisch aus der Basis (nicht selbst anlegen).
 - **Shapes platzieren** – Box, Kugel, Zylinder ... per Maus setzen/verschieben
 - **Meshes importieren** – `Add Asset` -> eigenes STL/OBJ vom Dateisystem
   (z.B. `meshes/sample_crate.stl`)
@@ -167,21 +183,24 @@ python3 build_env_scene.py --env scenes/kueche.xml --inspire 0
 
 ## Wie haengt das zusammen?
 
-| Datei | Zweck | Roboter? |
+| Datei | Zweck | Inhalt |
 |-------|-------|----------|
-| `scenes/*.xml` | **Umgebungen – die baust du im Editor** | nein |
-| `build_env_scene.py` | kombiniert G1 + Umgebung (macht `start.sh` automatisch) | – |
-| `scene_env_<name>.xml` (im g1-Ordner, auto-generiert) | **das laedt der Sim** | ja (G1) |
+| `scenes/*.xml` | **Umgebungen – die baust du im Editor** | nur Objekte |
+| `build_env_scene.py` | baut **Basis** (G1+Licht+Boden+Weld) und mischt die Objekte ein | – |
+| `scene_env_<name>.xml` (im g1-Ordner, auto-generiert) | **das laedt der Sim** | Basis + Objekte |
 
-Warum der Generator und kein simples `<include>`? Das G1-Modell setzt
-`<compiler meshdir="meshes">`, und dieses `meshdir` gilt in MuJoCo **global**
-– auch fuer deine eigenen Meshes. Eine Szene, die den Roboter einbindet, muss
-im g1-Ordner liegen (sonst fehlen die Roboter-Meshes), und eigene Mesh-Pfade
-muessen dazu passen. `build_env_scene.py` erledigt genau das: es legt die
-kombinierte Szene in den g1-Ordner und rechnet die Mesh-Pfade der Umgebung
-passend um (relativ, damit sie auch im read-only gemounteten Docker-Container
-stimmen). Der Editor selbst exportiert bewusst **roboterfreie** Szenen – so
-schneidet er nie am Robotermodell herum.
+Der Generator schreibt die feste Basis (G1, Lichtquelle, Boden, Skybox und den
+Weld `hold_base_weld`, der den G1 anfangs an `torso_link` festhaelt) selbst und
+haengt nur die Objekte der Umgebung an. Eigene Boeden/Lichter/doppelte
+Asset-Namen aus der Umgebung werden dabei automatisch aussortiert.
+
+Warum ueberhaupt ein Generator und kein simples `<include>`? Das G1-Modell setzt
+`<compiler meshdir="meshes">`, und dieses `meshdir` gilt in MuJoCo **global** –
+auch fuer deine eigenen Meshes. Die kombinierte Szene muss im g1-Ordner liegen
+(sonst fehlen die Roboter-Meshes), und eigene Mesh-Pfade muessen dazu passen.
+`build_env_scene.py` erledigt das: kombinierte Szene in den g1-Ordner, Mesh-Pfade
+der Umgebung relativ umgerechnet (gilt auch im read-only gemounteten
+Docker-Container).
 
 > `scene_g1_playground.xml` (im g1-Ordner) ist ein **statisches Beispiel** von
 > Hand. Der eigentliche Weg fuer eigene Umgebungen ist der Generator oben.

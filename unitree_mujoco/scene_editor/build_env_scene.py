@@ -1,23 +1,26 @@
 #!/usr/bin/env python3
 """
-Kombiniert das FESTE G1-Modell mit einer im Editor gebauten UMGEBUNG.
+Kombiniert die feste G1-BASIS mit einer UMGEBUNG zu einer lauffaehigen Szene.
 
-Liest eine roboterfreie Umgebungsszene (z.B. scene_editor/scenes/<name>.xml)
-und schreibt eine lauffaehige Szene in den g1-Ordner, die
-  * den G1 unveraendert per <include> einbindet und
-  * die Umgebung (Boden, Objekte, eigene STLs) uebernimmt.
+Idee des Systems:
+  * BASIS (kommt IMMER automatisch dazu, hier fest verdrahtet):
+      - der G1 (per <include>, Hand-Variante je nach --inspire)
+      - Lichtquelle
+      - Boden + Skybox/Groundplane
+      - der Weld "hold_base_weld" (haelt den G1 am Anfang an torso_link fest;
+        wird vom Sim per Name gesteuert, siehe hold_base.py)
+      - visual/statistic-Grundeinstellungen
+  * UMGEBUNG (scene_editor/scenes/<name>.xml): enthaelt NUR Hindernisse bzw.
+    Objekte zum Interagieren/Greifen - also nur <asset> (eigene Meshes) und
+    die Objekte im <worldbody>. KEIN Roboter, KEIN Boden, KEIN Licht, KEIN Weld.
 
-Der G1 bleibt also immer gleich - nur die Welt drumherum wechselt.
-
-Warum ein Generator und kein simples <include>? MuJoCos <compiler meshdir>
-gilt global fuer die ganze Szene. Das Robotermodell setzt meshdir="meshes";
-damit die Roboter-Meshes gefunden werden, muss die Szene im g1-Ordner liegen.
-Dieses Skript schreibt deshalb die kombinierte Szene dorthin und rechnet die
-Mesh-Pfade der Umgebung passend um - als RELATIVE Pfade, damit sie sowohl auf
-dem Host als auch im (read-only gemounteten) Docker-Container stimmen.
+Dieses Skript erzeugt die kombinierte Szene  unitree_robots/g1/scene_env_<name>.xml
+= BASIS + Objekte der Umgebung. Mesh-Pfade der Umgebung werden relativ
+umgerechnet, damit sie auf dem Host UND im read-only gemounteten Docker-Container
+stimmen.
 
 Aufruf:
-    python3 build_env_scene.py --env scenes/environment_starter.xml
+    python3 build_env_scene.py --env scenes/warehouse.xml
     python3 build_env_scene.py --env scenes/warehouse.xml --inspire 1
 """
 import argparse
@@ -44,10 +47,107 @@ def rel_to_meshdir(mesh_abs: Path) -> str:
     return os.path.relpath(mesh_abs, G1_MESHDIR).replace(os.sep, "/")
 
 
+def build_base(robot_file: str, model_name: str):
+    """Baut die feste Basis (G1 + Licht + Boden + Weld + Technik).
+
+    Gibt (mujoco_root, asset_element, worldbody_element) zurueck, damit die
+    Objekte der Umgebung anschliessend in asset/worldbody eingemischt werden.
+    """
+    mj = ET.Element("mujoco", {"model": model_name})
+    ET.SubElement(mj, "include", {"file": robot_file})
+    ET.SubElement(mj, "statistic", {"center": "0 0 0.5", "extent": "2.0"})
+
+    vis = ET.SubElement(mj, "visual")
+    ET.SubElement(vis, "headlight",
+                  {"diffuse": "0.6 0.6 0.6", "ambient": "0.3 0.3 0.3", "specular": "0 0 0"})
+    ET.SubElement(vis, "rgba", {"haze": "0.15 0.25 0.35 1"})
+    ET.SubElement(vis, "global", {"azimuth": "-130", "elevation": "-20"})
+
+    asset = ET.SubElement(mj, "asset")
+    ET.SubElement(asset, "texture",
+                  {"type": "skybox", "builtin": "gradient",
+                   "rgb1": "0.3 0.5 0.7", "rgb2": "0 0 0", "width": "512", "height": "3072"})
+    ET.SubElement(asset, "texture",
+                  {"type": "2d", "name": "groundplane", "builtin": "checker", "mark": "edge",
+                   "rgb1": "0.2 0.3 0.4", "rgb2": "0.1 0.2 0.3", "markrgb": "0.8 0.8 0.8",
+                   "width": "300", "height": "300"})
+    ET.SubElement(asset, "material",
+                  {"name": "groundplane", "texture": "groundplane", "texuniform": "true",
+                   "texrepeat": "5 5", "reflectance": "0.2"})
+
+    wb = ET.SubElement(mj, "worldbody")
+    # Lichtquelle (Basis)
+    ET.SubElement(wb, "light", {"pos": "0 0 1.5", "dir": "0 0 -1", "directional": "true"})
+    # Boden (Basis)
+    ET.SubElement(wb, "geom",
+                  {"name": "floor", "size": "0 0 0.05", "type": "plane", "material": "groundplane"})
+
+    # Weld, der den G1 am Anfang festhaelt (per Name vom Sim gesteuert).
+    eq = ET.SubElement(mj, "equality")
+    ET.SubElement(eq, "weld",
+                  {"name": "hold_base_weld", "body1": "torso_link",
+                   "solref": "0.01 1", "solimp": "0.99 0.999 0.001 0.5 2"})
+
+    return mj, asset, wb
+
+
+def merge_environment(env_root, asset, wb, env_dir, warnings):
+    """Mischt NUR die Objekte der Umgebung in die Basis ein.
+
+    - <asset>: eigene Meshes/Texturen/Materialien der Objekte (Mesh-Pfade
+      werden umgeschrieben). Doppelte Namen und ein zweiter Skybox werden
+      uebersprungen.
+    - <worldbody>: alle Objekte (geoms/bodies). Ein evtl. mitgespeicherter
+      Boden (<geom type="plane">) und Lichtquellen werden weggelassen - die
+      kommen aus der Basis.
+    """
+    used_asset_names = {el.get("name") for el in asset if el.get("name")}
+
+    for env_asset in env_root.findall("asset"):
+        for el in list(env_asset):
+            if el.tag == "texture" and el.get("type") == "skybox":
+                continue  # nur ein Skybox erlaubt (Basis hat schon einen)
+            nm = el.get("name")
+            if nm and nm in used_asset_names:
+                warnings.append(f"  ! Asset-Name '{nm}' schon in der Basis -> uebersprungen")
+                continue
+            if el.tag == "mesh" and el.get("file"):
+                p = Path(el.get("file"))
+                mesh_abs = p if p.is_absolute() else (env_dir / p).resolve()
+                if not mesh_abs.is_file():
+                    warnings.append(f"  ! Mesh nicht gefunden: {el.get('file')}  ({mesh_abs})")
+                else:
+                    try:
+                        mesh_abs.relative_to(MJ_ROOT)
+                    except ValueError:
+                        warnings.append(
+                            "  ! Mesh liegt ausserhalb von unitree_mujoco/ (im Docker-"
+                            f"Container evtl. nicht sichtbar): {mesh_abs}")
+                el.set("file", rel_to_meshdir(mesh_abs))
+            asset.append(el)
+            if nm:
+                used_asset_names.add(nm)
+
+    for env_wb in env_root.findall("worldbody"):
+        for el in list(env_wb):
+            if el.tag == "light":
+                continue  # Licht kommt aus der Basis
+            if el.tag == "geom" and el.get("type") == "plane":
+                continue  # Boden kommt aus der Basis
+            wb.append(el)
+
+    # Auf Abschnitte hinweisen, die eine reine Objekt-Umgebung normalerweise
+    # nicht enthalten sollte (werden bewusst NICHT uebernommen).
+    for tag in ("equality", "actuator", "default", "contact", "tendon", "sensor"):
+        if env_root.find(tag) is not None:
+            warnings.append(f"  ! <{tag}> in der Umgebung wird ignoriert "
+                            "(Umgebungen sollen nur Objekte enthalten).")
+
+
 def main() -> None:
-    ap = argparse.ArgumentParser(description="G1 + Umgebung zu lauffaehiger Szene kombinieren")
+    ap = argparse.ArgumentParser(description="G1-Basis + Umgebung zu lauffaehiger Szene kombinieren")
     ap.add_argument("--env", required=True,
-                    help="Umgebungs-XML (roboterfrei), z.B. scenes/warehouse.xml")
+                    help="Umgebungs-XML (nur Objekte), z.B. scenes/warehouse.xml")
     ap.add_argument("--inspire", default="0", choices=["0", "1"],
                     help="0 = Rubber-Hand-G1, 1 = Inspire-FTP-G1 (Default 0)")
     ap.add_argument("--out",
@@ -68,45 +168,24 @@ def main() -> None:
     name = env_path.stem
     out_path = Path(args.out).resolve() if args.out else (G1_DIR / f"scene_env_{name}.xml")
 
-    # Kommentare vor dem Parsen entfernen. MuJoCos Parser ist tolerant, Pythons
-    # ElementTree aber strikt (z.B. sind '--'-Folgen in XML-Kommentaren ungueltig).
-    # Kommentare brauchen wir in der generierten Datei ohnehin nicht.
+    # Umgebung einlesen (Kommentare vorher strippen: MuJoCos Parser ist tolerant,
+    # ElementTree strikt - z.B. sind '--'-Folgen in XML-Kommentaren ungueltig).
     raw = env_path.read_text(encoding="utf-8")
     cleaned = re.sub(r"<!--.*?-->", "", raw, flags=re.DOTALL)
-    root = ET.fromstring(cleaned)  # <mujoco>
+    env_root = ET.fromstring(cleaned)
 
-    # Mesh-Pfade der Umgebung auf g1/meshes-relativ umschreiben.
     warnings = []
-    for mesh in root.findall(".//asset/mesh"):
-        f = mesh.get("file")
-        if not f:
-            continue
-        p = Path(f)
-        mesh_abs = p if p.is_absolute() else (env_dir / p).resolve()
-        if not mesh_abs.is_file():
-            warnings.append(f"  ! Mesh nicht gefunden: {f}  ({mesh_abs})")
-        try:
-            mesh_abs.relative_to(MJ_ROOT)
-        except ValueError:
-            warnings.append(f"  ! Mesh liegt ausserhalb von unitree_mujoco/ "
-                            f"(im Docker-Container evtl. nicht sichtbar): {mesh_abs}")
-        mesh.set("file", rel_to_meshdir(mesh_abs))
+    mj, asset, wb = build_base(robot_file, f"g1_env_{name}")
+    merge_environment(env_root, asset, wb, env_dir, warnings)
 
-    # Kombinierte Szene aufbauen: Roboter zuerst, dann Umgebung.
-    out = ET.Element("mujoco", {"model": f"g1_env_{name}"})
-    ET.SubElement(out, "include", {"file": robot_file})
-    for tag in ("statistic", "visual", "asset", "worldbody"):
-        for el in root.findall(tag):
-            out.append(el)
-
-    ET.indent(out, space="  ")
+    ET.indent(mj, space="  ")
     header = (
         "<!-- AUTO-GENERIERT von scene_editor/build_env_scene.py.\n"
-        f"     Umgebung: {env_path.name}    Roboter: {robot_file}\n"
-        "     NICHT von Hand editieren - wird bei jeder Umgebungs-Auswahl neu erzeugt.\n"
-        "     Umgebung bearbeiten: scene_editor -> Editor -> neu generieren. -->\n"
+        f"     Basis (G1 + Licht + Boden + Weld) + Umgebung: {env_path.name}\n"
+        f"     Roboter: {robot_file}\n"
+        "     NICHT von Hand editieren - wird bei jeder Umgebungs-Auswahl neu erzeugt. -->\n"
     )
-    out_path.write_text(header + ET.tostring(out, encoding="unicode") + "\n", encoding="utf-8")
+    out_path.write_text(header + ET.tostring(mj, encoding="unicode") + "\n", encoding="utf-8")
 
     for w in warnings:
         print(w, file=sys.stderr)
