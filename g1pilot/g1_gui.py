@@ -11,8 +11,13 @@
 #  Skripte env-getrieben auf:
 #     Sim / Real  ->  start.sh --yes           (alle Optionen als Env-Vars)
 #     Szenen      ->  scene_editor/launch.sh <cmd> [datei]
-#  Die Ausgabe der Skripte (Docker/Compose/Viewer) landet live in einem
-#  In-App-Log-Fenster mit Stop-Button — kein Terminal noetig.
+#  Die Ausgabe der Skripte (Docker/Compose/Viewer) landet live in einer
+#  In-App-Log-View mit Stop-Button — kein Terminal noetig.
+#
+#  EIN Fenster: Menue, Options-Views und Log-Views werden im selben Fenster
+#  ausgetauscht (Router). Laufende Prozesse bleiben in der Registry — man geht
+#  per '‹ Menue' zurueck (Prozess laeuft weiter) und ueber 'Laufende Prozesse'
+#  wieder hin. Schliessen = ein einziges Fenster schliessen.
 #
 #  Start:  python3 g1_gui.py        (start.sh startet das automatisch)
 #
@@ -26,6 +31,10 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
+import urllib.error
+import urllib.request
+import webbrowser
 from pathlib import Path
 
 try:
@@ -155,172 +164,39 @@ def open_path(path: Path) -> None:
         messagebox.showerror("Oeffnen fehlgeschlagen", f"{path}\n\n{exc}")
 
 
-# ════════════════════════════════════════════════════════════════════════
-#  Log-Konsole: startet ein Kommando und streamt die Ausgabe live ins Fenster
-# ════════════════════════════════════════════════════════════════════════
-class ProcessConsole(tk.Toplevel):
-    """Ein Fenster, das einen Subprozess ausfuehrt und dessen Ausgabe zeigt.
+def open_url(url: str) -> bool:
+    """Eine URL im System-Browser oeffnen. True bei Erfolg.
 
-    - Stdout/Stderr werden zusammengefuehrt und live angezeigt.
-    - 'Stoppen' beendet den Prozess (SIGTERM) und ruft optional ein
-      Aufraeum-Kommando auf (z.B. 'docker compose down').
-    - Thread-sicher via Queue + after()-Polling (Tkinter ist nicht threadsafe).
+    Der Scene-Editor oeffnet den Browser nur bei einem TTY selbst — unter der
+    GUI laeuft er als Subprozess (Pipe, kein TTY), daher uebernimmt das die GUI.
+    Deckt Linux/Mac/Windows und WSL2 ab.
     """
-
-    def __init__(self, master, title: str, argv: list[str], *,
-                 cwd: Path, env: dict | None = None,
-                 stop_cmd: list[str] | None = None,
-                 stop_note: str = ""):
-        super().__init__(master)
-        self.title(title)
-        self.configure(bg=BG)
-        self.geometry("880x560")
-        self.minsize(560, 340)
-
-        self._argv = argv
-        self._cwd = cwd
-        self._env = env
-        self._stop_cmd = stop_cmd
-        self._stop_note = stop_note
-        self._proc: subprocess.Popen | None = None
-        self._queue: queue.Queue[str | None] = queue.Queue()
-        self._stopping = False
-
-        # Kopfzeile mit dem konkreten Kommando (Transparenz).
-        head = tk.Frame(self, bg=CARD)
-        head.pack(fill="x")
-        tk.Label(head, text=title, bg=CARD, fg=FG,
-                 font=("TkDefaultFont", 11, "bold")).pack(side="left", padx=12, pady=8)
-        self._status = tk.Label(head, text="laeuft…", bg=CARD, fg=AMBER,
-                                font=("TkDefaultFont", 10, "bold"))
-        self._status.pack(side="right", padx=12)
-
-        # Log-Textfeld.
-        wrap = tk.Frame(self, bg=BG)
-        wrap.pack(fill="both", expand=True, padx=10, pady=(8, 4))
-        self._text = tk.Text(wrap, bg="#12151b", fg="#d7dbe0", insertbackground=FG,
-                             wrap="none", relief="flat", font=("TkFixedFont", 9),
-                             state="disabled")
-        yscroll = ttk.Scrollbar(wrap, orient="vertical", command=self._text.yview)
-        xscroll = ttk.Scrollbar(self, orient="horizontal", command=self._text.xview)
-        self._text.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
-        self._text.grid(row=0, column=0, sticky="nsew")
-        yscroll.grid(row=0, column=1, sticky="ns")
-        wrap.rowconfigure(0, weight=1)
-        wrap.columnconfigure(0, weight=1)
-        xscroll.pack(fill="x", padx=10)
-
-        # Fussleiste mit Buttons.
-        foot = tk.Frame(self, bg=BG)
-        foot.pack(fill="x", padx=10, pady=8)
-        self._stop_btn = tk.Button(foot, text="■  Stoppen", command=self.stop,
-                                   bg=RED, fg="white", activebackground="#c93b3f",
-                                   relief="flat", font=("TkDefaultFont", 10, "bold"),
-                                   padx=14, pady=6)
-        self._stop_btn.pack(side="left")
-        self._close_btn = tk.Button(foot, text="Fenster schliessen",
-                                    command=self._on_close, bg=CARD, fg=FG,
-                                    relief="flat", padx=12, pady=6)
-        self._close_btn.pack(side="right")
-
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
-        self._append(f"$ {' '.join(argv)}\n\n")
-        self._start()
-        self.after(80, self._drain)
-
-    # ── intern ──────────────────────────────────────────────────────────
-    def _start(self) -> None:
+    try:
+        if webbrowser.open(url):
+            return True
+    except Exception:
+        pass
+    # WSL2/Windows/Linux-Fallbacks (analog start.sh)
+    for exe in ("wslview", "xdg-open", "sensible-browser", "x-www-browser",
+                "google-chrome", "chromium", "firefox"):
+        if have(exe):
+            try:
+                subprocess.Popen([exe, url],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return True
+            except Exception:
+                pass
+    if os.name == "nt":
         try:
-            self._proc = subprocess.Popen(
-                self._argv, cwd=str(self._cwd), env=self._env,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                bufsize=1, text=True,
-            )
-        except Exception as exc:
-            self._append(f"[Fehler beim Start] {exc}\n")
-            self._set_done(-1)
-            return
-        threading.Thread(target=self._reader, daemon=True).start()
-
-    def _reader(self) -> None:
-        assert self._proc and self._proc.stdout
-        for line in self._proc.stdout:
-            self._queue.put(line)
-        self._proc.wait()
-        self._queue.put(None)  # Sentinel: Prozess fertig
-
-    def _drain(self) -> None:
-        try:
-            while True:
-                item = self._queue.get_nowait()
-                if item is None:
-                    rc = self._proc.returncode if self._proc else -1
-                    self._set_done(rc)
-                    return
-                self._append(item)
-        except queue.Empty:
+            os.startfile(url)  # type: ignore[attr-defined]
+            return True
+        except Exception:
             pass
-        self.after(80, self._drain)
-
-    def _append(self, text: str) -> None:
-        self._text.configure(state="normal")
-        self._text.insert("end", text)
-        self._text.see("end")
-        self._text.configure(state="disabled")
-
-    def _set_done(self, rc: int) -> None:
-        if self._stopping:
-            self._status.configure(text="gestoppt", fg=MUTED)
-        elif rc == 0:
-            self._status.configure(text="beendet (ok)", fg=GREEN)
-        else:
-            self._status.configure(text=f"beendet (Code {rc})", fg=RED)
-        self._stop_btn.configure(state="disabled")
-
-    def stop(self) -> None:
-        if self._stopping:
-            return
-        self._stopping = True
-        self._status.configure(text="stoppe…", fg=AMBER)
-        self._append("\n[Stoppen angefordert]\n")
-
-        def worker():
-            if self._proc and self._proc.poll() is None:
-                try:
-                    self._proc.terminate()
-                    self._proc.wait(timeout=12)
-                except Exception:
-                    try:
-                        self._proc.kill()
-                    except Exception:
-                        pass
-            if self._stop_cmd:
-                self._queue.put(f"\n$ {' '.join(self._stop_cmd)}\n")
-                try:
-                    r = subprocess.run(self._stop_cmd, cwd=str(self._cwd),
-                                       capture_output=True, text=True, timeout=90)
-                    self._queue.put(r.stdout + r.stderr)
-                except Exception as exc:
-                    self._queue.put(f"[down-Fehler] {exc}\n")
-            self._queue.put(None)
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _on_close(self) -> None:
-        if self._proc and self._proc.poll() is None:
-            if not messagebox.askyesno(
-                "Laeuft noch",
-                "Der Prozess laeuft noch. Erst stoppen und dann schliessen?"
-                + (f"\n\n{self._stop_note}" if self._stop_note else ""),
-                parent=self,
-            ):
-                return
-            self.stop()
-        self.destroy()
+    return False
 
 
 # ════════════════════════════════════════════════════════════════════════
-#  Wiederverwendbare Widgets fuer die Options-Dialoge
+#  Wiederverwendbare Widgets
 # ════════════════════════════════════════════════════════════════════════
 def section(parent, text: str) -> tk.Frame:
     """Ein abgesetzter 'Card'-Rahmen mit Ueberschrift."""
@@ -363,22 +239,340 @@ def primary_button(parent, text: str, cmd, color: str = ACCENT) -> tk.Button:
                      font=("TkDefaultFont", 11, "bold"), padx=18, pady=8)
 
 
-# ════════════════════════════════════════════════════════════════════════
-#  Dialog: Simulation starten
-# ════════════════════════════════════════════════════════════════════════
-class SimDialog(tk.Toplevel):
-    def __init__(self, app: "App"):
-        super().__init__(app)
-        self.app = app
-        self.title("Simulation starten")
-        self.configure(bg=BG)
-        self.geometry("560x640")
-        self.minsize(520, 560)
+def big_button(parent, icon, title, subtitle, color, cmd):
+    """Grosse anklickbare Karte fuers Hauptmenue."""
+    card = tk.Frame(parent, bg=CARD, cursor="hand2")
+    card.pack(fill="x", pady=7)
+    bar = tk.Frame(card, bg=color, width=6)
+    bar.pack(side="left", fill="y")
+    inner = tk.Frame(card, bg=CARD)
+    inner.pack(side="left", fill="both", expand=True, padx=14, pady=12)
+    tk.Label(inner, text=f"{icon}  {title}", bg=CARD, fg=FG,
+             font=("TkDefaultFont", 14, "bold")).pack(anchor="w")
+    tk.Label(inner, text=subtitle, bg=CARD, fg=MUTED,
+             font=("TkDefaultFont", 10)).pack(anchor="w")
+    for w in (card, inner, bar, *inner.winfo_children()):
+        w.bind("<Button-1>", lambda _e, c=cmd: c())
+    return card
 
-        tk.Label(self, text="Simulation starten", bg=BG, fg=FG,
-                 font=("TkDefaultFont", 15, "bold")).pack(anchor="w", padx=16, pady=(14, 2))
-        tk.Label(self, text="MuJoCo + Whole-Body-Policy. Alle Optionen in einem Fenster.",
-                 bg=BG, fg=MUTED).pack(anchor="w", padx=16, pady=(0, 8))
+
+def nav_header(frame, app, title, subtitle, color=FG):
+    """Kopfzeile einer Unteransicht mit '‹ Menue'-Zurueck-Button."""
+    head = tk.Frame(frame, bg=BG)
+    head.pack(fill="x", padx=16, pady=(12, 2))
+    top = tk.Frame(head, bg=BG)
+    top.pack(fill="x")
+    tk.Button(top, text="‹  Menue", command=app.show_menu, bg=CARD, fg=FG,
+              relief="flat", padx=10, pady=4).pack(side="left")
+    tk.Label(top, text=title, bg=BG, fg=color,
+             font=("TkDefaultFont", 15, "bold")).pack(side="left", padx=10)
+    tk.Label(head, text=subtitle, bg=BG, fg=MUTED).pack(anchor="w", pady=(2, 6))
+
+
+class ScrollableFrame(tk.Frame):
+    """Ein vertikal scrollbarer Bereich. Inhalt kommt in '.body'."""
+
+    def __init__(self, parent):
+        super().__init__(parent, bg=BG)
+        self._canvas = tk.Canvas(self, bg=BG, highlightthickness=0)
+        vsb = ttk.Scrollbar(self, orient="vertical", command=self._canvas.yview)
+        self._canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        self._canvas.pack(side="left", fill="both", expand=True)
+        self.body = tk.Frame(self._canvas, bg=BG)
+        self._win = self._canvas.create_window((0, 0), window=self.body, anchor="nw")
+        self.body.bind(
+            "<Configure>",
+            lambda _e: self._canvas.configure(scrollregion=self._canvas.bbox("all")))
+        self._canvas.bind(
+            "<Configure>",
+            lambda e: self._canvas.itemconfigure(self._win, width=e.width))
+        # Mausrad nur aktiv, solange der Zeiger ueber diesem Bereich ist.
+        self.bind("<Enter>", self._bind_wheel)
+        self.bind("<Leave>", self._unbind_wheel)
+        self.bind("<Destroy>", self._unbind_wheel)
+
+    def _bind_wheel(self, _e=None):
+        self._canvas.bind_all("<MouseWheel>", self._on_wheel)
+        self._canvas.bind_all("<Button-4>", self._on_wheel)
+        self._canvas.bind_all("<Button-5>", self._on_wheel)
+
+    def _unbind_wheel(self, _e=None):
+        try:
+            self._canvas.unbind_all("<MouseWheel>")
+            self._canvas.unbind_all("<Button-4>")
+            self._canvas.unbind_all("<Button-5>")
+        except tk.TclError:
+            pass
+
+    def _on_wheel(self, e):
+        if e.num == 4 or getattr(e, "delta", 0) > 0:
+            self._canvas.yview_scroll(-1, "units")
+        elif e.num == 5 or getattr(e, "delta", 0) < 0:
+            self._canvas.yview_scroll(1, "units")
+
+
+# Queue-Sentinels (Kontrollmarker, unterscheidbar von Log-Zeilen/Strings):
+_EOF = object()   # Reader: Prozess-Ausgabe zu Ende (Prozess beendet)
+_DONE = object()  # Stop-Worker: Aufraeumen (docker down) abgeschlossen -> finalisieren
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  Konsole-View: startet einen Subprozess und zeigt dessen Ausgabe live
+# ════════════════════════════════════════════════════════════════════════
+class ConsoleFrame(tk.Frame):
+    """View, die einen Subprozess ausfuehrt und dessen Ausgabe streamt.
+
+    - Bleibt in der App-Registry, auch wenn man zurueck ins Menue navigiert:
+      der Prozess laeuft weiter, das Log wird weiter mitgeschrieben, und man
+      kann jederzeit ueber 'Laufende Prozesse' im Menue zurueckkehren.
+    - 'Stoppen' beendet den Prozess (SIGTERM) + optionales Aufraeum-Kommando.
+    - Thread-sicher via Queue + after()-Polling (Tkinter ist nicht threadsafe).
+    """
+
+    ephemeral = False  # nicht zerstoeren, wenn eine andere View gezeigt wird
+
+    def __init__(self, parent, app, title: str, argv: list[str], *,
+                 cwd: Path, env: dict | None = None,
+                 stop_cmd: list[str] | None = None,
+                 stop_note: str = "",
+                 browser_url: str | None = None):
+        super().__init__(parent, bg=BG)
+        self.app = app
+        self.view_title = title
+        self._title = title
+        self._argv = argv
+        self._cwd = cwd
+        self._env = env
+        self._stop_cmd = stop_cmd
+        self._stop_note = stop_note
+        self._browser_url = browser_url
+        self._proc: subprocess.Popen | None = None
+        self._queue: queue.Queue = queue.Queue()  # Log-Strings + _EOF/_DONE-Marker
+        self._stopping = False
+        self._finished = False
+        self._alive = True
+        self._after_id = None
+
+        # Kopfzeile: Zurueck + Titel + Status.
+        head = tk.Frame(self, bg=CARD)
+        head.pack(fill="x")
+        tk.Button(head, text="‹  Menue", command=app.show_menu, bg=CARD, fg=FG,
+                  relief="flat", padx=10, pady=6).pack(side="left", padx=6, pady=6)
+        tk.Label(head, text=title, bg=CARD, fg=FG,
+                 font=("TkDefaultFont", 11, "bold")).pack(side="left", padx=6)
+        self._status = tk.Label(head, text="laeuft…", bg=CARD, fg=AMBER,
+                                font=("TkDefaultFont", 10, "bold"))
+        self._status.pack(side="right", padx=12)
+
+        # Log-Textfeld.
+        wrap = tk.Frame(self, bg=BG)
+        wrap.pack(fill="both", expand=True, padx=10, pady=(8, 4))
+        self._text = tk.Text(wrap, bg="#12151b", fg="#d7dbe0", insertbackground=FG,
+                             wrap="none", relief="flat", font=("TkFixedFont", 9),
+                             state="disabled")
+        yscroll = ttk.Scrollbar(wrap, orient="vertical", command=self._text.yview)
+        xscroll = ttk.Scrollbar(self, orient="horizontal", command=self._text.xview)
+        self._text.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        self._text.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        wrap.rowconfigure(0, weight=1)
+        wrap.columnconfigure(0, weight=1)
+        xscroll.pack(fill="x", padx=10)
+
+        # Fussleiste.
+        foot = tk.Frame(self, bg=BG)
+        foot.pack(fill="x", padx=10, pady=8)
+        self._stop_btn = tk.Button(foot, text="■  Stoppen", command=self.stop,
+                                   bg=RED, fg="white", activebackground="#c93b3f",
+                                   relief="flat", font=("TkDefaultFont", 10, "bold"),
+                                   padx=14, pady=6)
+        self._stop_btn.pack(side="left")
+        tk.Label(foot, text="'Menue' laesst den Prozess im Hintergrund weiterlaufen.",
+                 bg=BG, fg=MUTED, font=("TkDefaultFont", 9)).pack(side="left", padx=12)
+
+        self._append(f"$ {' '.join(argv)}\n\n")
+        self._start()
+        self._after_id = self.after(80, self._drain)
+        if self._browser_url and self._proc is not None:
+            threading.Thread(target=self._browser_waiter, daemon=True).start()
+
+    # ── Status fuer die Menue-Liste ───────────────────────────────────────
+    def is_running(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    def state(self) -> str:
+        if self.is_running():
+            return "stoppe…" if self._stopping else "laeuft"
+        return "gestoppt" if self._stopping else "beendet"
+
+    # ── intern ────────────────────────────────────────────────────────────
+    def _start(self) -> None:
+        try:
+            self._proc = subprocess.Popen(
+                self._argv, cwd=str(self._cwd), env=self._env,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                bufsize=1, text=True,
+            )
+        except Exception as exc:
+            self._append(f"[Fehler beim Start] {exc}\n")
+            self._finalize(-1)
+            return
+        threading.Thread(target=self._reader, daemon=True).start()
+
+    def _reader(self) -> None:
+        assert self._proc and self._proc.stdout
+        for line in self._proc.stdout:
+            self._queue.put(line)
+        self._proc.wait()
+        self._queue.put(_EOF)  # Prozess-Ausgabe zu Ende
+
+    def _browser_waiter(self) -> None:
+        """Wartet, bis der Editor-Webserver lauscht, und oeffnet dann den Browser.
+
+        Bewusst eine echte HTTP-Anfrage (wie ein Browser) statt eines rohen
+        TCP-Connects: der Editor-Server (viser) bedient HTTP UND WebSocket auf
+        demselben Port; ein sofort geschlossener TCP-Connect saehe fuer ihn wie
+        ein abgebrochener WebSocket-Handshake aus und wuerde einen (harmlosen)
+        Fehler-Traceback loggen.
+        """
+        url = "http://127.0.0.1:8080"
+        deadline = time.monotonic() + 180  # max ~3 min (deckt ersten Start ab)
+        while self._alive and not self._stopping and time.monotonic() < deadline:
+            if self._server_responds(url):
+                if self._alive:
+                    self._queue.put(f"\n[GUI] Oeffne Editor im Browser: {url}\n")
+                    open_url(url)
+                return
+            if self._proc is not None and self._proc.poll() is not None:
+                return  # Prozess beendet, ohne je zu lauschen
+            time.sleep(0.5)
+
+    @staticmethod
+    def _server_responds(url: str) -> bool:
+        """True, sobald der HTTP-Server irgendeine Antwort liefert."""
+        try:
+            urllib.request.urlopen(url, timeout=1).close()
+            return True
+        except urllib.error.HTTPError:
+            return True  # Server antwortet (nur mit Fehlerstatus) -> laeuft
+        except (urllib.error.URLError, OSError):
+            return False  # noch nicht erreichbar
+
+    def _drain(self) -> None:
+        if not self._alive:
+            return
+        try:
+            while True:
+                item = self._queue.get_nowait()
+                if item is _EOF:
+                    # Prozess-Ausgabe endet. Bei benutzerinitiiertem Stop NICHT
+                    # sofort finalisieren — erst wartet noch das Aufraeum-Kommando
+                    # (docker down); der Stop-Worker meldet danach _DONE. So gilt
+                    # "beendet" wirklich erst, wenn MuJoCo/Container zu sind.
+                    if not self._stopping:
+                        self._finalize()
+                        return
+                elif item is _DONE:
+                    self._finalize()
+                    return
+                else:
+                    self._append(item)
+        except queue.Empty:
+            pass
+        except tk.TclError:
+            return  # View wurde zwischenzeitlich zerstoert
+        self._after_id = self.after(80, self._drain)
+
+    def _append(self, text: str) -> None:
+        self._text.configure(state="normal")
+        self._text.insert("end", text)
+        # Speicher begrenzen: hoechstens ~4000 Zeilen behalten.
+        last = int(self._text.index("end-1c").split(".")[0])
+        if last > 4000:
+            self._text.delete("1.0", f"{last - 4000}.0")
+        self._text.see("end")
+        self._text.configure(state="disabled")
+
+    def _finalize(self, rc: int | None = None) -> None:
+        self._finished = True
+        if rc is None:
+            rc = self._proc.returncode if self._proc else -1
+        user_stopped = self._stopping
+        if user_stopped:
+            self._status.configure(text="gestoppt", fg=MUTED)
+        elif rc == 0:
+            self._status.configure(text="beendet (ok)", fg=GREEN)
+        else:
+            self._status.configure(text=f"beendet (Code {rc})", fg=RED)
+        self._stop_btn.configure(state="disabled")
+        # Sauber (ab)geschlossen -> App entscheidet ueber Auto-Rueckkehr/Refresh.
+        self.app.notify_finished(self, user_stopped=user_stopped)
+
+    def stop(self) -> None:
+        if self._stopping or not self.is_running():
+            return
+        self._stopping = True
+        self._status.configure(text="stoppe…", fg=AMBER)
+        self._stop_btn.configure(state="disabled")
+        self._append("\n[Stoppen angefordert]\n")
+
+        def worker():
+            if self._proc and self._proc.poll() is None:
+                try:
+                    self._proc.terminate()
+                    self._proc.wait(timeout=12)
+                except Exception:
+                    try:
+                        self._proc.kill()
+                    except Exception:
+                        pass
+            if self._stop_cmd:
+                self._queue.put(f"\n$ {' '.join(self._stop_cmd)}\n")
+                try:
+                    r = subprocess.run(self._stop_cmd, cwd=str(self._cwd),
+                                       capture_output=True, text=True, timeout=90)
+                    self._queue.put(r.stdout + r.stderr)
+                except Exception as exc:
+                    self._queue.put(f"[down-Fehler] {exc}\n")
+            self._queue.put(_DONE)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def destroy(self) -> None:
+        self._alive = False
+        if self._after_id is not None:
+            try:
+                self.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
+        super().destroy()
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  View: Simulation starten
+# ════════════════════════════════════════════════════════════════════════
+class SimFrame(tk.Frame):
+    ephemeral = True
+    view_title = "Simulation starten"
+
+    def __init__(self, parent, app):
+        super().__init__(parent, bg=BG)
+        self.app = app
+        nav_header(self, app, "Simulation starten",
+                   "MuJoCo + Whole-Body-Policy. Alle Optionen in einem Fenster.")
+
+        # Aktionsleiste unten (ausserhalb des Scrollbereichs).
+        foot = tk.Frame(self, bg=BG)
+        foot.pack(fill="x", side="bottom", padx=16, pady=12)
+        primary_button(foot, "▶  Simulation starten", self._start, GREEN).pack(side="left")
+        tk.Button(foot, text="Abbrechen (Menue)", command=app.show_menu, bg=CARD, fg=FG,
+                  relief="flat", padx=12, pady=8).pack(side="right")
+
+        body = ScrollableFrame(self)
+        body.pack(fill="both", expand=True)
+        b = body.body
 
         # Defaults spiegeln start.sh (Sim-Zweig).
         self.v_rviz = tk.BooleanVar(value=False)
@@ -389,28 +583,24 @@ class SimDialog(tk.Toplevel):
         self.v_env = tk.StringVar(value="Standard — aktuelles Terrain (scene.xml)")
         self.v_rt = tk.StringVar(value="1.0")
 
-        # ── Umgebung ──
-        s = section(self, "Umgebung (G1 bleibt gleich, nur die Welt wechselt)")
+        s = section(b, "Umgebung (G1 bleibt gleich, nur die Welt wechselt)")
         self._scene_paths: dict[str, str] = {"Standard — aktuelles Terrain (scene.xml)": ""}
         names = ["Standard — aktuelles Terrain (scene.xml)"]
         for p in list_scenes():
             names.append(p.stem)
             self._scene_paths[p.stem] = p.stem
-        self.cb_env = ttk.Combobox(s, textvariable=self.v_env, values=names,
-                                   state="readonly", width=44)
-        self.cb_env.pack(anchor="w", pady=2)
-        tk.Label(s, text="Umgebungen anlegen/bearbeiten: Hauptmenue -> 'Umgebungen bearbeiten'.",
+        ttk.Combobox(s, textvariable=self.v_env, values=names,
+                     state="readonly", width=44).pack(anchor="w", pady=2)
+        tk.Label(s, text="Umgebungen anlegen/bearbeiten: Menue -> 'Umgebungen bearbeiten'.",
                  bg=CARD, fg=MUTED, font=("TkDefaultFont", 9)).pack(anchor="w", pady=(2, 0))
 
-        # ── Visualisierung / Features ──
-        s = section(self, "Visualisierung & Features")
+        s = section(b, "Visualisierung & Features")
         toggle_row(s, "RViz mitstarten", self.v_rviz,
                    "CoM-/TF-Visualisierung (MuJoCo-Fenster kommt immer)")
         toggle_row(s, "Navigation mitstarten", self.v_nav,
                    "dijkstra_planner + nav2point + Sim-Glue")
 
-        # ── Haende ──
-        s = section(self, "Inspire-FTP-Haende")
+        s = section(b, "Inspire-FTP-Haende")
         toggle_row(s, "Inspire-Haende (Finger steuerbar + GUIs)", self.v_hands,
                    "sonst Rubber-Hand")
         self._open_row = toggle_row(s, "Hand-GUIs automatisch im Browser oeffnen",
@@ -418,18 +608,10 @@ class SimDialog(tk.Toplevel):
         self.v_hands.trace_add("write", lambda *_: self._sync_hands())
         self._sync_hands()
 
-        # ── Erweitert ──
-        s = section(self, "Erweitert")
+        s = section(b, "Erweitert")
         field_row(s, "Realtime-Faktor (1.0=Echtzeit)", self.v_rt, width=8)
         toggle_row(s, "Docker-Images vor dem Start neu bauen (--build)", self.v_rebuild,
                    "nach Code-/Dockerfile-Aenderungen")
-
-        # ── Aktion ──
-        foot = tk.Frame(self, bg=BG)
-        foot.pack(fill="x", side="bottom", padx=16, pady=12)
-        primary_button(foot, "▶  Simulation starten", self._start, GREEN).pack(side="left")
-        tk.Button(foot, text="Abbrechen", command=self.destroy, bg=CARD, fg=FG,
-                  relief="flat", padx=12, pady=8).pack(side="right")
 
     def _sync_hands(self) -> None:
         state = "normal" if self.v_hands.get() else "disabled"
@@ -459,30 +641,24 @@ class SimDialog(tk.Toplevel):
         argv = ["bash", str(START_SH), "--yes"]
         if self.v_rebuild.get():
             argv.append("--build")
-
         stop_cmd = ["docker", "compose", "--profile", "sim", "down", "--remove-orphans"]
-        self.destroy()
-        ProcessConsole(self.app, "Simulation", argv, cwd=HERE, env=env,
-                       stop_cmd=stop_cmd,
-                       stop_note="Stoppt den Sim-Stack (docker compose down).")
+        self.app.start_process("Simulation", argv, cwd=HERE, env=env,
+                               stop_cmd=stop_cmd,
+                               stop_note="Stoppt den Sim-Stack (docker compose down).")
 
 
 # ════════════════════════════════════════════════════════════════════════
-#  Dialog: Echten Roboter starten
+#  View: Echten Roboter starten
 # ════════════════════════════════════════════════════════════════════════
-class RealDialog(tk.Toplevel):
-    def __init__(self, app: "App"):
-        super().__init__(app)
+class RealFrame(tk.Frame):
+    ephemeral = True
+    view_title = "Echten Roboter starten"
+
+    def __init__(self, parent, app):
+        super().__init__(parent, bg=BG)
         self.app = app
-        self.title("Echten Roboter starten")
-        self.configure(bg=BG)
-        self.geometry("580x760")
-        self.minsize(540, 640)
-
-        tk.Label(self, text="Echten Roboter starten", bg=BG, fg=RED,
-                 font=("TkDefaultFont", 15, "bold")).pack(anchor="w", padx=16, pady=(14, 2))
-        tk.Label(self, text="Unitree-Loco + Arme + Haende ueber LAN. Der Roboter bewegt sich!",
-                 bg=BG, fg=MUTED).pack(anchor="w", padx=16, pady=(0, 8))
+        nav_header(self, app, "Echten Roboter starten",
+                   "Unitree-Loco + Arme + Haende ueber LAN. Der Roboter bewegt sich!", RED)
 
         # Defaults spiegeln start.sh (Real-Zweig).
         self.v_hands = tk.BooleanVar(value=True)
@@ -499,8 +675,20 @@ class RealDialog(tk.Toplevel):
         self.v_joy = tk.StringVar(value="Wireless Controller")
         self.v_confirm = tk.BooleanVar(value=False)
 
-        # ── Netzwerk-Interface ──
-        s = section(self, "Netzwerk-Interface zum G1 (Roboter-LAN = 192.168.123.x)")
+        # Aktionsleiste unten.
+        foot = tk.Frame(self, bg=BG)
+        foot.pack(fill="x", side="bottom", padx=16, pady=12)
+        self.start_btn = primary_button(foot, "🤖  Echten Roboter starten", self._start, RED)
+        self.start_btn.configure(state="disabled")
+        self.start_btn.pack(side="left")
+        tk.Button(foot, text="Abbrechen (Menue)", command=app.show_menu, bg=CARD, fg=FG,
+                  relief="flat", padx=12, pady=8).pack(side="right")
+
+        body = ScrollableFrame(self)
+        body.pack(fill="both", expand=True)
+        b = body.body
+
+        s = section(b, "Netzwerk-Interface zum G1 (Roboter-LAN = 192.168.123.x)")
         nics = detect_nics()
         values = []
         default = ""
@@ -514,13 +702,11 @@ class RealDialog(tk.Toplevel):
         if not values:
             values = [""]
         self.v_iface = tk.StringVar(value=default or values[0])
-        self.cb_iface = ttk.Combobox(s, textvariable=self.v_iface, values=values, width=42)
-        self.cb_iface.pack(anchor="w", pady=2)
+        ttk.Combobox(s, textvariable=self.v_iface, values=values, width=42).pack(anchor="w", pady=2)
         tk.Label(s, text="Kein passendes Interface? Namen direkt eintippen (z.B. enp3s0).",
                  bg=CARD, fg=MUTED, font=("TkDefaultFont", 9)).pack(anchor="w")
 
-        # ── Haende ──
-        s = section(self, "Inspire-FTP-Haende (Modbus TCP im Roboter-LAN)")
+        s = section(b, "Inspire-FTP-Haende (Modbus TCP im Roboter-LAN)")
         toggle_row(s, "Haende ansteuern (Hand-Bridge + GUIs)", self.v_hands)
         self._hand_box = tk.Frame(s, bg=CARD)
         self._hand_box.pack(fill="x")
@@ -531,15 +717,13 @@ class RealDialog(tk.Toplevel):
         self.v_hands.trace_add("write", lambda *_: self._sync_hands())
         self._sync_hands()
 
-        # ── Steuerung / Visualisierung ──
-        s = section(self, "Steuerung & Visualisierung")
+        s = section(b, "Steuerung & Visualisierung")
         toggle_row(s, "RViz mitstarten (IK-Marker der Arm-Manipulation)", self.v_rviz)
         field_row(s, "Joystick-Name (evdev)", self.v_joy, width=24)
         toggle_row(s, "LiDAR aktivieren (G1_ENABLE_LIDAR)", self.v_lidar,
                    "nur mit Livox-Setup")
 
-        # ── Walk-Limits ──
-        s = section(self, "Walk-Limits (konservativ fuer erste Tests)")
+        s = section(b, "Walk-Limits (konservativ fuer erste Tests)")
         row = tk.Frame(s, bg=CARD)
         row.pack(fill="x", pady=2)
         for lbl, var in (("vx", self.v_vx), ("vy", self.v_vy), ("vyaw", self.v_vyaw)):
@@ -547,11 +731,10 @@ class RealDialog(tk.Toplevel):
             tk.Entry(row, textvariable=var, width=6, bg=BG, fg=FG,
                      insertbackground=FG, relief="flat").pack(side="left", padx=(0, 12), ipady=2)
 
-        s = section(self, "Erweitert")
+        s = section(b, "Erweitert")
         toggle_row(s, "Docker-Images vor dem Start neu bauen (--build)", self.v_rebuild)
 
-        # ── SICHERHEITS-GATE ──
-        gate = tk.Frame(self, bg="#3a2326", bd=0)
+        gate = tk.Frame(b, bg="#3a2326", bd=0)
         gate.pack(fill="x", padx=14, pady=8)
         tk.Label(gate, text="⚠  ACHTUNG: ECHTER ROBOTER", bg="#3a2326", fg=RED,
                  font=("TkDefaultFont", 11, "bold")).pack(anchor="w", padx=12, pady=(8, 0))
@@ -566,15 +749,6 @@ class RealDialog(tk.Toplevel):
                        variable=self.v_confirm, bg="#3a2326", fg=FG, selectcolor=BG,
                        activebackground="#3a2326", activeforeground=FG,
                        command=self._sync_confirm).pack(anchor="w", padx=12, pady=(0, 8))
-
-        # ── Aktion ──
-        foot = tk.Frame(self, bg=BG)
-        foot.pack(fill="x", side="bottom", padx=16, pady=12)
-        self.start_btn = primary_button(foot, "🤖  Echten Roboter starten", self._start, RED)
-        self.start_btn.configure(state="disabled")
-        self.start_btn.pack(side="left")
-        tk.Button(foot, text="Abbrechen", command=self.destroy, bg=CARD, fg=FG,
-                  relief="flat", padx=12, pady=8).pack(side="right")
 
     def _sync_hands(self) -> None:
         state = "normal" if self.v_hands.get() else "disabled"
@@ -618,60 +792,51 @@ class RealDialog(tk.Toplevel):
         argv = ["bash", str(START_SH), "--yes"]
         if self.v_rebuild.get():
             argv.append("--build")
-
         stop_cmd = ["docker", "compose", "--profile", "real", "down", "--remove-orphans"]
-        self.destroy()
-        ProcessConsole(self.app, "Echter Roboter", argv, cwd=HERE, env=env,
-                       stop_cmd=stop_cmd,
-                       stop_note="Stoppt den Real-Stack (docker compose down).")
+        self.app.start_process("Echter Roboter", argv, cwd=HERE, env=env,
+                               stop_cmd=stop_cmd,
+                               stop_note="Stoppt den Real-Stack (docker compose down).")
 
 
 # ════════════════════════════════════════════════════════════════════════
-#  Dialog: Umgebungen bearbeiten (scene_editor)
+#  View: Umgebungen bearbeiten (scene_editor)
 # ════════════════════════════════════════════════════════════════════════
-class SceneDialog(tk.Toplevel):
-    def __init__(self, app: "App"):
-        super().__init__(app)
+class SceneFrame(tk.Frame):
+    ephemeral = True
+    view_title = "Umgebungen bearbeiten"
+
+    def __init__(self, parent, app):
+        super().__init__(parent, bg=BG)
         self.app = app
-        self.title("Umgebungen bearbeiten")
-        self.configure(bg=BG)
-        self.geometry("620x560")
-        self.minsize(560, 480)
-
-        tk.Label(self, text="Umgebungen bearbeiten", bg=BG, fg=FG,
-                 font=("TkDefaultFont", 15, "bold")).pack(anchor="w", padx=16, pady=(14, 2))
-        tk.Label(self, text="Szenen aus scene_editor/scenes/ — dieselben, die beim Sim-Start "
-                            "waehlbar sind.", bg=BG, fg=MUTED).pack(anchor="w", padx=16)
-
+        nav_header(self, app, "Umgebungen bearbeiten",
+                   "Szenen aus scene_editor/scenes/ — dieselben, die beim Sim-Start "
+                   "waehlbar sind.")
+        body = ScrollableFrame(self)
+        body.pack(fill="both", expand=True)
+        self._body = body.body
         self.v_hands = tk.BooleanVar(value=False)
-
         if not scene_editor_ready():
             self._show_setup_needed()
             return
         self._build_editor_ui()
 
-    # ── Fall: virtualenv fehlt ────────────────────────────────────────────
     def _show_setup_needed(self) -> None:
-        box = section(self, "Einmaliges Setup noetig")
+        box = section(self._body, "Einmaliges Setup noetig")
         tk.Label(box, text="Der Scene-Editor braucht ein virtualenv (scene_editor/.venv).\n"
                            "Das wird einmalig eingerichtet (Internet noetig, danach gecacht).",
                  bg=CARD, fg=FG, justify="left").pack(anchor="w", pady=(0, 8))
         primary_button(box, "Setup jetzt ausfuehren", self._run_setup, ACCENT).pack(anchor="w")
 
     def _run_setup(self) -> None:
-        ProcessConsole(self.app, "Scene-Editor Setup", ["bash", str(SETUP_SH)],
-                       cwd=SCENE_DIR, env=os.environ.copy(),
-                       stop_note="Bricht das Setup ab.")
-        tk.Label(self, text="Nach erfolgreichem Setup dieses Fenster schliessen und erneut "
-                            "'Umgebungen bearbeiten' oeffnen.", bg=BG, fg=AMBER,
-                 wraplength=560, justify="left").pack(padx=16, pady=10)
+        self.app.start_process("Scene-Editor Setup", ["bash", str(SETUP_SH)],
+                               cwd=SCENE_DIR, env=os.environ.copy(),
+                               stop_note="Bricht das Setup ab.")
 
-    # ── Fall: bereit ─────────────────────────────────────────────────────
     def _build_editor_ui(self) -> None:
-        s = section(self, "Vorhandene Umgebungen")
+        s = section(self._body, "Vorhandene Umgebungen")
         listwrap = tk.Frame(s, bg=CARD)
         listwrap.pack(fill="both", expand=True)
-        self.listbox = tk.Listbox(listwrap, height=9, bg=BG, fg=FG,
+        self.listbox = tk.Listbox(listwrap, height=8, bg=BG, fg=FG,
                                   selectbackground=ACCENT, relief="flat",
                                   activestyle="none", exportselection=False)
         sb = ttk.Scrollbar(listwrap, orient="vertical", command=self.listbox.yview)
@@ -682,8 +847,7 @@ class SceneDialog(tk.Toplevel):
 
         toggle_row(s, "Beim Ansehen 'mit G1' die Inspire-Haende laden", self.v_hands)
 
-        # Aktionen fuer die gewaehlte Szene.
-        act = section(self, "Aktion fuer die gewaehlte Umgebung")
+        act = section(self._body, "Aktion fuer die gewaehlte Umgebung")
         grid = tk.Frame(act, bg=CARD)
         grid.pack(fill="x")
         primary_button(grid, "✎  Im Editor bearbeiten",
@@ -701,17 +865,16 @@ class SceneDialog(tk.Toplevel):
         grid.columnconfigure(0, weight=1)
         grid.columnconfigure(1, weight=1)
 
-        # Neu anlegen.
-        new = section(self, "Neue Umgebung")
+        new = section(self._body, "Neue Umgebung")
         newrow = tk.Frame(new, bg=CARD)
         newrow.pack(fill="x")
         primary_button(newrow, "＋  Leere Umgebung im Editor",
-                       lambda: self._run_cmd(["new"], "Neue Umgebung"), ACCENT).pack(
-            side="left", padx=(0, 6))
+                       lambda: self._run_cmd(["new"], "Neue Umgebung", browser=True),
+                       ACCENT).pack(side="left", padx=(0, 6))
         tk.Button(newrow, text="✨  Aus Text-Prompt generieren", command=self._run_prompt,
                   bg=CARD, fg=FG, relief="flat", padx=12, pady=8).pack(side="left")
-        tk.Label(new, text="Der Editor oeffnet einen lokalen Webserver (http://127.0.0.1:8080). "
-                           "Export landet automatisch in scenes/.",
+        tk.Label(new, text="Der Editor oeffnet einen lokalen Webserver (http://127.0.0.1:8080) "
+                           "im Browser. Export landet automatisch in scenes/.",
                  bg=CARD, fg=MUTED, font=("TkDefaultFont", 9),
                  wraplength=560, justify="left").pack(anchor="w", pady=(6, 0))
 
@@ -727,7 +890,7 @@ class SceneDialog(tk.Toplevel):
             self.listbox.insert("end", p.stem)
         self.listbox.selection_set(0)
 
-    def _selected_scene(self) -> Path | None:
+    def _selected_scene(self):
         if not getattr(self, "_scenes", None):
             return None
         sel = self.listbox.curselection()
@@ -744,7 +907,10 @@ class SceneDialog(tk.Toplevel):
         env = os.environ.copy()
         env["G1_INSPIRE_HANDS"] = "1" if self.v_hands.get() else "0"
         title = {"edit": "Editor", "view": "Viewer", "with-g1": "Viewer + G1"}[cmd]
-        self._run_cmd([cmd, str(scene)], f"{title}: {scene.stem}", env=env)
+        # 'edit' startet den Web-Editor -> Browser oeffnen; view/with-g1 sind
+        # native MuJoCo-Fenster.
+        self._run_cmd([cmd, str(scene)], f"{title}: {scene.stem}", env=env,
+                      browser=(cmd == "edit"))
 
     def _run_prompt(self) -> None:
         text = simpledialog.askstring(
@@ -753,82 +919,180 @@ class SceneDialog(tk.Toplevel):
             parent=self)
         if not text:
             return
-        self._run_cmd(["prompt", text], "Umgebung generieren")
+        self._run_cmd(["prompt", text], "Umgebung generieren", browser=True)
 
-    def _run_cmd(self, args: list[str], title: str, env: dict | None = None) -> None:
-        ProcessConsole(self.app, f"Scene-Editor — {title}",
-                       ["bash", str(LAUNCH_SH), *args],
-                       cwd=SCENE_DIR, env=env or os.environ.copy(),
-                       stop_note="Beendet den Editor/Viewer-Prozess.")
+    def _run_cmd(self, args: list[str], title: str, env: dict | None = None,
+                 browser: bool = False) -> None:
+        self.app.start_process(f"Scene-Editor — {title}",
+                               ["bash", str(LAUNCH_SH), *args],
+                               cwd=SCENE_DIR, env=env or os.environ.copy(),
+                               stop_note="Beendet den Editor/Viewer-Prozess.",
+                               browser_url="http://127.0.0.1:8080" if browser else None)
 
 
 # ════════════════════════════════════════════════════════════════════════
-#  Hauptfenster
+#  View: Hauptmenue
+# ════════════════════════════════════════════════════════════════════════
+class MenuFrame(tk.Frame):
+    ephemeral = True
+    view_title = "Startmenue"
+
+    def __init__(self, parent, app):
+        super().__init__(parent, bg=BG)
+        self.app = app
+
+        head = tk.Frame(self, bg=BG)
+        head.pack(fill="x", padx=24, pady=(20, 4))
+        tk.Label(head, text="G1 Robot Control", bg=BG, fg=FG,
+                 font=("TkDefaultFont", 20, "bold")).pack(anchor="w")
+        tk.Label(head, text="Simulation, echter Roboter und Umgebungen — alles in einem Fenster.",
+                 bg=BG, fg=MUTED, font=("TkDefaultFont", 11)).pack(anchor="w")
+
+        body = ScrollableFrame(self)
+        body.pack(fill="both", expand=True)
+        b = body.body
+
+        wrap = tk.Frame(b, bg=BG)
+        wrap.pack(fill="x", padx=24, pady=8)
+        big_button(wrap, "▶", "Simulation starten",
+                   "MuJoCo + Whole-Body-Policy — gefahrlos testen", GREEN, app.open_sim)
+        big_button(wrap, "🤖", "Echten Roboter starten",
+                   "G1 per LAN — Loco + Arme + Haende (Roboter bewegt sich!)", RED, app.open_real)
+        big_button(wrap, "🏗", "Umgebungen bearbeiten",
+                   "Szenen anlegen, bearbeiten und mit dem G1 ansehen", ACCENT, app.open_scenes)
+
+        # Laufende / letzte Prozesse (damit nichts 'verloren' geht).
+        if app.consoles:
+            s = section(b, "Laufende / letzte Prozesse")
+            for c in app.consoles:
+                row = tk.Frame(s, bg=CARD)
+                row.pack(fill="x", pady=2)
+                dot = GREEN if c.is_running() else MUTED
+                tk.Label(row, text="●", bg=CARD, fg=dot).pack(side="left", padx=(0, 6))
+                tk.Label(row, text=f"{c.view_title}  ({c.state()})", bg=CARD, fg=FG,
+                         anchor="w").pack(side="left")
+                tk.Button(row, text="Ansehen", command=lambda x=c: app.show_console(x),
+                          bg=BG, fg=FG, relief="flat", padx=10, pady=3).pack(side="right", padx=4)
+                if c.is_running():
+                    tk.Button(row, text="Stoppen", command=lambda x=c: self._stop(x),
+                              bg=RED, fg="white", relief="flat", padx=10,
+                              pady=3).pack(side="right", padx=4)
+                else:
+                    tk.Button(row, text="Entfernen", command=lambda x=c: app.remove_console(x),
+                              bg=BG, fg=MUTED, relief="flat", padx=10,
+                              pady=3).pack(side="right", padx=4)
+
+        # Sekundaerzeile.
+        sec = tk.Frame(b, bg=BG)
+        sec.pack(fill="x", padx=24, pady=(6, 12))
+        tk.Button(sec, text="■  Laufende Stacks stoppen", command=app.stop_all,
+                  bg=CARD, fg=FG, relief="flat", padx=12, pady=6).pack(side="left")
+        docs_btn = ttk.Menubutton(sec, text="Dokumentation")
+        docmenu = tk.Menu(docs_btn, tearoff=0)
+        for label, path in DOCS:
+            docmenu.add_command(label=label, command=lambda p=path: open_path(p))
+        docs_btn["menu"] = docmenu
+        docs_btn.pack(side="left", padx=8)
+        tk.Button(sec, text="Beenden", command=app._quit, bg=CARD, fg=FG,
+                  relief="flat", padx=12, pady=6).pack(side="right")
+
+    def _stop(self, console) -> None:
+        console.stop()
+        # Menue neu aufbauen, damit der Status aktualisiert wird.
+        self.app.show_menu()
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  App: ein Fenster, Views werden im Inhalt ausgetauscht (Router)
 # ════════════════════════════════════════════════════════════════════════
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("G1 — Startmenue")
         self.configure(bg=BG)
-        self.geometry("560x580")
-        self.minsize(520, 540)
+        self.geometry("900x760")
+        self.minsize(700, 600)
 
-        # Kopf.
-        head = tk.Frame(self, bg=BG)
-        head.pack(fill="x", padx=24, pady=(22, 6))
-        tk.Label(head, text="G1 Robot Control", bg=BG, fg=FG,
-                 font=("TkDefaultFont", 20, "bold")).pack(anchor="w")
-        tk.Label(head, text="Simulation, echter Roboter und Umgebungen — ohne Terminal.",
-                 bg=BG, fg=MUTED, font=("TkDefaultFont", 11)).pack(anchor="w")
+        self._quitting = False
+        self._current = None
+        self.consoles: list[ConsoleFrame] = []
 
-        # Grosse Buttons.
-        body = tk.Frame(self, bg=BG)
-        body.pack(fill="both", expand=True, padx=24, pady=8)
-        self._big_button(body, "▶", "Simulation starten",
-                         "MuJoCo + Whole-Body-Policy — gefahrlos testen",
-                         GREEN, self.open_sim)
-        self._big_button(body, "🤖", "Echten Roboter starten",
-                         "G1 per LAN — Loco + Arme + Haende (Roboter bewegt sich!)",
-                         RED, self.open_real)
-        self._big_button(body, "🏗", "Umgebungen bearbeiten",
-                         "Szenen anlegen, bearbeiten und mit dem G1 ansehen",
-                         ACCENT, self.open_scenes)
-
-        # Sekundaerzeile.
-        sec = tk.Frame(self, bg=BG)
-        sec.pack(fill="x", padx=24, pady=(4, 8))
-        tk.Button(sec, text="■  Laufende Stacks stoppen", command=self.stop_all,
-                  bg=CARD, fg=FG, relief="flat", padx=12, pady=6).pack(side="left")
-        self.docs_btn = ttk.Menubutton(sec, text="Dokumentation")
-        docmenu = tk.Menu(self.docs_btn, tearoff=0)
-        for label, path in DOCS:
-            docmenu.add_command(label=label, command=lambda p=path: open_path(p))
-        self.docs_btn["menu"] = docmenu
-        self.docs_btn.pack(side="left", padx=8)
-        tk.Button(sec, text="Beenden", command=self.destroy, bg=CARD, fg=FG,
-                  relief="flat", padx=12, pady=6).pack(side="right")
-
-        # Statuszeile (Docker/Editor-Bereitschaft).
+        # Statuszeile unten (bleibt ueber allen Views sichtbar).
         self.status = tk.Label(self, text="", bg="#171a20", fg=MUTED, anchor="w",
                                font=("TkFixedFont", 9))
         self.status.pack(fill="x", side="bottom")
+
+        # Container fuellt den Rest; hier werden die Views ein-/ausgeblendet.
+        self.container = tk.Frame(self, bg=BG)
+        self.container.pack(fill="both", expand=True)
+
+        self.protocol("WM_DELETE_WINDOW", self._quit)
+        self.show_menu()
         self.after(200, self.refresh_status)
 
-    def _big_button(self, parent, icon, title, subtitle, color, cmd):
-        card = tk.Frame(parent, bg=CARD, cursor="hand2")
-        card.pack(fill="x", pady=7)
-        bar = tk.Frame(card, bg=color, width=6)
-        bar.pack(side="left", fill="y")
-        inner = tk.Frame(card, bg=CARD)
-        inner.pack(side="left", fill="both", expand=True, padx=14, pady=12)
-        tk.Label(inner, text=f"{icon}  {title}", bg=CARD, fg=FG,
-                 font=("TkDefaultFont", 14, "bold")).pack(anchor="w")
-        tk.Label(inner, text=subtitle, bg=CARD, fg=MUTED,
-                 font=("TkDefaultFont", 10)).pack(anchor="w")
-        # Klick auf die ganze Karte.
-        for w in (card, inner, bar, *inner.winfo_children()):
-            w.bind("<Button-1>", lambda _e, c=cmd: c())
-        return card
+    # ── Router ────────────────────────────────────────────────────────────
+    def show(self, frame) -> None:
+        if self._current is frame:
+            return
+        if self._current is not None:
+            self._current.pack_forget()
+            if getattr(self._current, "ephemeral", False):
+                self._current.destroy()
+        self._current = frame
+        frame.pack(fill="both", expand=True)
+        self.title(f"G1 — {getattr(frame, 'view_title', 'Startmenue')}")
+
+    def show_menu(self) -> None:
+        self.show(MenuFrame(self.container, self))
+
+    def open_sim(self) -> None:
+        if self._docker_guard():
+            self.show(SimFrame(self.container, self))
+
+    def open_real(self) -> None:
+        if self._docker_guard():
+            self.show(RealFrame(self.container, self))
+
+    def open_scenes(self) -> None:
+        self.show(SceneFrame(self.container, self))
+
+    def show_console(self, console: ConsoleFrame) -> None:
+        if console not in self.consoles:
+            self.consoles.append(console)
+        self.show(console)
+
+    def notify_finished(self, console: ConsoleFrame, *, user_stopped: bool) -> None:
+        """Ein Prozess ist fertig (sauber gestoppt oder von selbst beendet).
+
+        - Wird er gerade angesehen UND wurde vom Nutzer gestoppt (MuJoCo/Container
+          sind dann sauber zu): automatisch zurueck ins Startmenue.
+        - Ist gerade das Menue offen: nur die Prozessliste auffrischen.
+        - Sonst (andere View sichtbar): nichts tun, nicht wegreissen. Von selbst
+          beendete/abgestuerzte Prozesse bleiben in ihrer View, damit Fehler/Log
+          lesbar bleiben.
+        """
+        if self._current is console:
+            if user_stopped:
+                self.show_menu()
+        elif isinstance(self._current, MenuFrame):
+            self.show_menu()
+
+    def start_process(self, title, argv, *, cwd, env=None, stop_cmd=None,
+                      stop_note="", browser_url=None) -> ConsoleFrame:
+        console = ConsoleFrame(self.container, self, title, argv, cwd=cwd, env=env,
+                               stop_cmd=stop_cmd, stop_note=stop_note,
+                               browser_url=browser_url)
+        self.consoles.append(console)
+        self.show(console)
+        return console
+
+    def remove_console(self, console: ConsoleFrame) -> None:
+        if console in self.consoles:
+            self.consoles.remove(console)
+        if self._current is console:
+            self._current = None
+        console.destroy()
+        self.show_menu()
 
     # ── Aktionen ──────────────────────────────────────────────────────────
     def _docker_guard(self) -> bool:
@@ -839,31 +1103,27 @@ class App(tk.Tk):
             "Docker scheint nicht zu laufen oder ist nicht installiert.\n"
             "Trotzdem fortfahren?")
 
-    def open_sim(self):
-        if self._docker_guard():
-            SimDialog(self)
-
-    def open_real(self):
-        if self._docker_guard():
-            RealDialog(self)
-
-    def open_scenes(self):
-        SceneDialog(self)
-
-    def stop_all(self):
+    def stop_all(self) -> None:
         if not messagebox.askyesno("Stoppen",
                                    "Sim- UND Real-Stack stoppen (docker compose down)?"):
             return
-        # Beide Profile herunterfahren; harmlos, wenn nichts laeuft.
         cmd = ["bash", "-c",
                "docker compose --profile sim down --remove-orphans; "
                "docker compose --profile real down --remove-orphans"]
-        ProcessConsole(self, "Stacks stoppen", cmd, cwd=HERE, env=os.environ.copy(),
-                       stop_note="")
+        self.start_process("Stacks stoppen", cmd, cwd=HERE, env=os.environ.copy())
 
-    def refresh_status(self):
-        # Docker-Check kann bis zu einigen Sekunden dauern -> im Thread, damit
-        # das Fenster nicht einfriert. Ergebnis via after() zurueck in den UI-Thread.
+    def _quit(self) -> None:
+        # Ein Fenster, ein Schliessen: beendet den Launcher komplett. Bereits
+        # gestartete Stacks laufen unabhaengig im Docker weiter (bewusst).
+        self._quitting = True
+        try:
+            self.destroy()
+        finally:
+            # Garantiert beenden, auch wenn noch Hintergrund-Threads/Subprozesse
+            # (Log-Reader, docker compose) haengen.
+            os._exit(0)
+
+    def refresh_status(self) -> None:
         editor = "Scene-Editor: bereit" if scene_editor_ready() else "Scene-Editor: Setup noetig"
         scenes = f"Umgebungen: {len(list_scenes())}"
         self.status.configure(text=f"  Docker: pruefe…   |   {editor}   |   {scenes}")
@@ -871,7 +1131,12 @@ class App(tk.Tk):
         def worker():
             docker = "Docker: ok" if docker_ready() else "Docker: nicht erreichbar"
             text = f"  {docker}   |   {editor}   |   {scenes}"
-            self.after(0, lambda: self.status.configure(text=text))
+            if self._quitting:
+                return
+            try:
+                self.after(0, lambda: self.status.configure(text=text))
+            except (tk.TclError, RuntimeError):
+                pass
 
         threading.Thread(target=worker, daemon=True).start()
 
