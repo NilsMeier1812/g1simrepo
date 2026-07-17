@@ -5,8 +5,13 @@ Hier liegen eigene 3D-Objekte (STL/OBJ) fuer die Szenen.
 - `sample_crate.stl` – 30 cm Wuerfel (Beispiel-Import)
 - `sample_ramp.stl`  – kleine Rampe/Keil (Beispiel-Import)
 
-## Eigene Meshes reinlegen
-Datei einfach hier ablegen und in der Szene einbinden:
+## Import im Editor
+Dieser Ordner ist im Editor als Mesh-Quelle fest vorbelegt. STL hier ablegen,
+im Editor den Ordner **„Add Assets from File"** aufklappen, **„Scan assets"**
+klicken, das Mesh auswaehlen und **„Add asset"** druecken.
+
+## Eigene Meshes per XML einbinden
+Alternativ direkt in einer Szene referenzieren:
 
 ```xml
 <asset>

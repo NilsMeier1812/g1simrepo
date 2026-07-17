@@ -128,8 +128,8 @@ Der Editor startet einen lokalen Webserver und oeffnet den Browser
 - **Nur Objekte bauen** – Hindernisse / Greifobjekte. Boden, Licht, G1 und
   Weld kommen automatisch aus der Basis (nicht selbst anlegen).
 - **Shapes platzieren** – Box, Kugel, Zylinder ... per Maus setzen/verschieben
-- **Meshes importieren** – `Add Asset` -> eigenes STL/OBJ vom Dateisystem
-  (z.B. `meshes/sample_crate.stl`)
+- **Eigene STLs importieren** – siehe eigener Abschnitt unten (der Knopf steckt
+  im zugeklappten Ordner **„Add Assets from File"**).
 - **Speichern** – im `Export`-Feld ist der Pfad schon fest auf den
   `scenes/`-Ordner vorbelegt. Du tippst nur noch **den Namen** (z.B.
   `scene.xml` -> `kueche.xml`) und klickst **`Export scene`**. Ergebnis:
@@ -138,6 +138,28 @@ Der Editor startet einen lokalen Webserver und oeffnet den Browser
 
 > Der feste Speicherpfad kommt aus `run_editor.py` (setzt den Export-Default
 > auf `scenes/`). `launch.sh` startet den Editor immer darueber.
+
+### Eigene STLs in den Editor importieren
+
+Der Editor hat **keinen** Datei-Dialog zum Hochladen – er **scannt einen
+Ordner** nach Mesh-Dateien (STL, OBJ, PLY, GLB/GLTF, USD). Damit das sofort
+klappt, ist dieser Ordner fest auf `scene_editor/meshes/` vorbelegt.
+
+So importierst du ein STL:
+
+1. **STL nach `scene_editor/meshes/` kopieren** (dorthin, wo auch
+   `sample_crate.stl` liegt).
+2. Im Editor rechts den Ordner **„Add Assets from File"** aufklappen.
+   (Er ist standardmaessig zugeklappt – daher leicht zu uebersehen.)
+3. Auf **„Scan assets"** klicken. Deine STLs erscheinen im Dropdown
+   (die Beispiele `sample_crate`/`sample_ramp` sind schon da).
+4. Im Dropdown auswaehlen, dann **„Add asset"** – das Mesh landet in der Szene
+   und laesst sich wie jedes Objekt per Maus platzieren.
+
+> Der Ordner `meshes/` ist in `run_editor.py` fest verdrahtet. Neue STLs dort
+> ablegen und im Editor **„Scan assets"** druecken – dann sind sie sofort da.
+> (Der eingebaute Editor-Default `~/temp/ArmarXObjects` existiert nicht, darum
+> war die Liste vorher leer und der Import schien zu fehlen.)
 
 ---
 
