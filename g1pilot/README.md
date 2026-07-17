@@ -132,10 +132,13 @@ The sim/real switch is driven by a single environment variable, `G1_SIM_MODE`
 
 Easiest entry point — `./start.sh`. Without arguments it now opens a **graphical
 start menu** (`g1_gui.py`, Tkinter): three big buttons — *Simulation starten*,
-*Echten Roboter starten*, *Umgebungen bearbeiten* — each leading to one window
-with all options; the live Docker output shows inside the app with a Stop button,
-so no terminal interaction is needed. If Tkinter or a display is missing it falls
-back to the classic text menu (force it with `--menu` or `G1_NO_GUI=1`).
+*Echten Roboter starten*, *Umgebungen bearbeiten*. Everything lives in **one
+window**: the menu, the option screens and the live-log view are swapped in
+place (no extra windows). Starting a stack shows its Docker output inside the
+app with a Stop button; going *‹ Menue* leaves it running in the background and
+lists it under *Laufende Prozesse* to return to, and closing the single window
+quits the whole launcher. If Tkinter or a display is missing it falls back to
+the classic text menu (force it with `--menu` or `G1_NO_GUI=1`).
 
 The GUI is a thin front-end: it collects the options below and calls
 `start.sh --yes` (env-driven) / `scene_editor/launch.sh` — the same engine the
