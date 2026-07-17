@@ -19,6 +19,7 @@ scene_editor/
 ├── setup.sh                    # einmaliges Setup (virtualenv + Installation)
 ├── launch.sh                   # Menue / Editor / Viewer starten
 ├── run_editor.py               # Editor-Start mit festem Export-Pfad (scenes/)
+├── build_env_scene.py          # kombiniert G1 + Umgebung (nutzt start.sh)
 ├── requirements.txt
 ├── meshes/
 │   ├── sample_crate.stl        # Beispiel-STL zum Import-Testen
@@ -27,8 +28,13 @@ scene_editor/
     └── environment_starter.xml # Umgebung OHNE Roboter -> das bearbeitest du
 
 ../unitree_robots/g1/
-    └── scene_g1_playground.xml # lauffaehig: G1 + Objekte + eigene STLs
+    ├── scene_g1_playground.xml # statisches Beispiel: G1 + Objekte + STLs
+    └── scene_env_<name>.xml     # auto-generiert bei Umgebungs-Auswahl (start.sh)
 ```
+
+**Umgebung im G1-Sim laden:** `g1pilot/start.sh` (Sim) fragt jetzt „Welche
+Umgebung laden?" und listet alle `scenes/*.xml` auf – der G1 wird unveraendert
+hineingeladen (siehe Abschnitt 4).
 
 ---
 
@@ -101,53 +107,66 @@ Der Editor startet einen lokalen Webserver und oeffnet den Browser
 
 ---
 
-## 4. Mit dem G1 zusammen ansehen
+## 4. Umgebung im G1-Sim laden (der Hauptweg)
+
+Der G1 bleibt **immer gleich** – du waehlst beim Start nur die Umgebung, und
+der Roboter wird unveraendert hineingeladen. Beim G1-Start (`g1pilot/start.sh`,
+Sim-Modus) kommt jetzt die Frage:
+
+```
+2d) Welche Umgebung laden? (G1 wird unveraendert hineingeladen)
+   * 1) Standard — aktuelles Terrain (scene.xml)
+     2) environment_starter
+     3) kueche
+     ...
+```
+
+Jede `scene_editor/scenes/*.xml` taucht hier automatisch als Auswahl auf.
+Waehlst du eine, passiert Folgendes automatisch:
+
+1. `build_env_scene.py` baut auf dem Host eine kombinierte Szene
+   `unitree_robots/g1/scene_env_<name>.xml` = **G1 + deine Umgebung**
+   (mit passender Hand-Variante, Mesh-Pfade korrekt umgerechnet).
+2. `start.sh` setzt `G1_ENV=<name>`; `config.py` laedt dann diese Szene.
+
+Du musst also **nichts** von Hand zusammenkopieren – Umgebung im Editor bauen,
+speichern, beim Start auswaehlen, fertig.
+
+### Schnell ohne den G1-Stack ansehen
 
 ```bash
-./launch.sh view-g1       # G1 + Objekte (scene_g1_playground.xml)
+./launch.sh view-g1       # statisches Beispiel G1 + Objekte
 ```
 
-Und im Unitree-Simulator nutzen – in `simulate_python/config.py`:
+Oder eine kombinierte Szene manuell erzeugen und im Viewer pruefen:
 
-```python
-ROBOT_SCENE = "../unitree_robots/g1/scene_g1_playground.xml"
+```bash
+python3 build_env_scene.py --env scenes/kueche.xml --inspire 0
+.venv/bin/python -m mujoco.viewer --mjcf=../unitree_robots/g1/scene_env_kueche.xml
 ```
-
-(bzw. `robot_scene` in `simulate/config.yaml` fuer den C++-Sim).
 
 ---
 
-## Wie haengt das zusammen? (wichtig)
-
-Es gibt bewusst **zwei** Szenen-Dateien, weil MuJoCo bei Roboter-Meshes
-zickt (siehe unten):
+## Wie haengt das zusammen?
 
 | Datei | Zweck | Roboter? |
 |-------|-------|----------|
-| `scenes/environment_starter.xml` | **die bearbeitest du im Editor** | nein |
-| `../unitree_robots/g1/scene_g1_playground.xml` | **die startest du im Sim** | ja (G1) |
+| `scenes/*.xml` | **Umgebungen – die baust du im Editor** | nein |
+| `build_env_scene.py` | kombiniert G1 + Umgebung (macht `start.sh` automatisch) | – |
+| `scene_env_<name>.xml` (im g1-Ordner, auto-generiert) | **das laedt der Sim** | ja (G1) |
 
-**Objekte aus dem Editor in die G1-Szene uebernehmen:** die `<geom>`- (und
-bei Meshes die `<mesh>`-) Zeilen aus deiner exportierten Szene nach
-`scene_g1_playground.xml` kopieren. Einziger Unterschied:
+Warum der Generator und kein simples `<include>`? Das G1-Modell setzt
+`<compiler meshdir="meshes">`, und dieses `meshdir` gilt in MuJoCo **global**
+– auch fuer deine eigenen Meshes. Eine Szene, die den Roboter einbindet, muss
+im g1-Ordner liegen (sonst fehlen die Roboter-Meshes), und eigene Mesh-Pfade
+muessen dazu passen. `build_env_scene.py` erledigt genau das: es legt die
+kombinierte Szene in den g1-Ordner und rechnet die Mesh-Pfade der Umgebung
+passend um (relativ, damit sie auch im read-only gemounteten Docker-Container
+stimmen). Der Editor selbst exportiert bewusst **roboterfreie** Szenen – so
+schneidet er nie am Robotermodell herum.
 
-- **Primitive** (box/sphere/cylinder ...) 1:1 kopieren.
-- **Eigene STLs**: das Pfad-Prefix anpassen
-  - in `environment_starter.xml`:  `file="../meshes/xxx.stl"`
-  - in `scene_g1_playground.xml`:  `file="../../../scene_editor/meshes/xxx.stl"`
-
-### Warum zwei Dateien / warum die Pfad-Umstellung?
-
-Das G1-Modell (`g1_29dof.xml`) setzt `<compiler meshdir="meshes">`. Dieses
-`meshdir` gilt in MuJoCo **global fuer die ganze zusammengesetzte Szene** –
-auch fuer deine eigenen Meshes. Eine Szene, die den Roboter per `<include>`
-einbindet, muss deshalb im g1-Ordner liegen (sonst findet MuJoCo die
-Roboter-Meshes nicht), und eigene Mesh-Pfade sind dann relativ zu
-`unitree_robots/g1/meshes/` zu sehen – daher das `../../../`-Prefix.
-
-Der Editor exportiert dagegen **eigenstaendige** Szenen (ohne Roboter). Genau
-deshalb bearbeitest du die roboterfreie `environment_starter.xml` und legst
-den G1 erst in `scene_g1_playground.xml` obendrauf.
+> `scene_g1_playground.xml` (im g1-Ordner) ist ein **statisches Beispiel** von
+> Hand. Der eigentliche Weg fuer eigene Umgebungen ist der Generator oben.
 
 ---
 

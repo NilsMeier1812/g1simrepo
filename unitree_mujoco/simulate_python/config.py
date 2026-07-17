@@ -5,7 +5,17 @@ ROBOT = "g1" # Robot name, "go2", "b2", "b2w", "h1", "go2w", "g1"
 # mit den Inspire-Fingern (passiv, nur Visualisierung; nu bleibt 29 -> Bridge/Loco
 # unveraendert). Default = bisheriges Rubber-Hand-Modell.
 _INSPIRE = str(os.environ.get("G1_INSPIRE_HANDS", "")).strip().lower() in ("1", "true", "yes", "on")
-_SCENE = "scene_inspire_ftp.xml" if _INSPIRE else "scene.xml"
+# Umgebungs-Auswahl (opt-in via Env G1_ENV): der G1 bleibt immer gleich, nur die
+# Welt drumherum wechselt. start.sh erzeugt zur gewaehlten Umgebung eine
+# kombinierte Szene  scene_env_<name>.xml  (G1 + Umgebung) im g1-Ordner und setzt
+# G1_ENV=<name>. Ist G1_ENV leer/"default", bleibt es beim bisherigen Verhalten
+# (scene.xml bzw. scene_inspire_ftp.xml). Die generierte Szene bindet bereits das
+# passende Robotermodell ein -> hier nur noch den Dateinamen waehlen.
+_ENV = os.environ.get("G1_ENV", "").strip()
+if _ENV and _ENV.lower() not in ("default", "standard", "none", "off", "0"):
+    _SCENE = "scene_env_" + _ENV + ".xml"
+else:
+    _SCENE = "scene_inspire_ftp.xml" if _INSPIRE else "scene.xml"
 ROBOT_SCENE = "../unitree_robots/" + ROBOT + "/" + _SCENE # Robot scene
 
 # Greifbares Test-Objekt (opt-in via G1_GRASP_TEST=1): legt beim Laden in JEDE

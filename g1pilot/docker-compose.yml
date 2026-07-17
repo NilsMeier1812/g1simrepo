@@ -45,6 +45,10 @@ services:
       - SIM_LOCKSTEP=${SIM_LOCKSTEP:-1}
       # Inspire-FTP-Haende laden (1) statt Rubber-Hand. config.py waehlt die Scene.
       - G1_INSPIRE_HANDS=${G1_INSPIRE_HANDS:-0}
+      # Umgebung: G1 bleibt gleich, nur die Welt wechselt. Leer/"default" =
+      # bisheriges Terrain (scene.xml). Sonst laedt config.py die von start.sh
+      # erzeugte kombinierte Szene scene_env_<G1_ENV>.xml. Siehe scene_editor/.
+      - G1_ENV=${G1_ENV:-}
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ../unitree_mujoco:/unitree_mujoco:ro   # Mountet dein lokales Repo!
