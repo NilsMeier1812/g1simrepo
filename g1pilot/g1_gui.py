@@ -23,9 +23,12 @@ from __future__ import annotations
 import os
 import queue
 import shutil
+import socket
 import subprocess
 import sys
 import threading
+import time
+import webbrowser
 from pathlib import Path
 
 try:
@@ -155,6 +158,37 @@ def open_path(path: Path) -> None:
         messagebox.showerror("Oeffnen fehlgeschlagen", f"{path}\n\n{exc}")
 
 
+def open_url(url: str) -> bool:
+    """Eine URL im System-Browser oeffnen. True bei Erfolg.
+
+    Der Scene-Editor oeffnet den Browser nur bei einem TTY selbst — unter der
+    GUI laeuft er als Subprozess (Pipe, kein TTY), daher uebernimmt das die GUI.
+    Deckt Linux/Mac/Windows und WSL2 ab.
+    """
+    try:
+        if webbrowser.open(url):
+            return True
+    except Exception:
+        pass
+    # WSL2/Windows/Linux-Fallbacks (analog start.sh)
+    for exe in ("wslview", "xdg-open", "sensible-browser", "x-www-browser",
+                "google-chrome", "chromium", "firefox"):
+        if have(exe):
+            try:
+                subprocess.Popen([exe, url],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return True
+            except Exception:
+                pass
+    if os.name == "nt":
+        try:
+            os.startfile(url)  # type: ignore[attr-defined]
+            return True
+        except Exception:
+            pass
+    return False
+
+
 # ════════════════════════════════════════════════════════════════════════
 #  Log-Konsole: startet ein Kommando und streamt die Ausgabe live ins Fenster
 # ════════════════════════════════════════════════════════════════════════
@@ -170,7 +204,8 @@ class ProcessConsole(tk.Toplevel):
     def __init__(self, master, title: str, argv: list[str], *,
                  cwd: Path, env: dict | None = None,
                  stop_cmd: list[str] | None = None,
-                 stop_note: str = ""):
+                 stop_note: str = "",
+                 browser_url: str | None = None):
         super().__init__(master)
         self.title(title)
         self.configure(bg=BG)
@@ -182,9 +217,13 @@ class ProcessConsole(tk.Toplevel):
         self._env = env
         self._stop_cmd = stop_cmd
         self._stop_note = stop_note
+        self._browser_url = browser_url
         self._proc: subprocess.Popen | None = None
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._stopping = False
+        self._detached = False   # Fenster zu, Prozess laeuft im Hintergrund weiter
+        self._closed = False     # Fenster/Prozess-Lebenszyklus beendet
+        self._after_id = None
 
         # Kopfzeile mit dem konkreten Kommando (Transparenz).
         head = tk.Frame(self, bg=CARD)
@@ -226,7 +265,9 @@ class ProcessConsole(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._append(f"$ {' '.join(argv)}\n\n")
         self._start()
-        self.after(80, self._drain)
+        self._after_id = self.after(80, self._drain)
+        if self._browser_url and self._proc is not None:
+            threading.Thread(target=self._browser_waiter, daemon=True).start()
 
     # ── intern ──────────────────────────────────────────────────────────
     def _start(self) -> None:
@@ -245,11 +286,37 @@ class ProcessConsole(tk.Toplevel):
     def _reader(self) -> None:
         assert self._proc and self._proc.stdout
         for line in self._proc.stdout:
-            self._queue.put(line)
+            # Im Detach-Modus (Fenster zu, Prozess laeuft weiter) trotzdem lesen,
+            # damit die OS-Pipe nicht volllaeuft und den Prozess blockiert — aber
+            # nichts mehr in die Queue legen (kein Speicherwachstum, keine UI).
+            if not self._detached:
+                self._queue.put(line)
         self._proc.wait()
         self._queue.put(None)  # Sentinel: Prozess fertig
 
+    def _browser_waiter(self) -> None:
+        """Wartet, bis der Editor-Webserver lauscht, und oeffnet dann den Browser.
+
+        Endet, sobald der Prozess vorher stirbt oder das Fenster geschlossen wird.
+        """
+        host, port = "127.0.0.1", 8080
+        deadline = time.monotonic() + 180  # max ~3 min (deckt ersten Start ab)
+        while not self._closed and not self._stopping and time.monotonic() < deadline:
+            try:
+                with socket.create_connection((host, port), timeout=0.5):
+                    if not self._closed:
+                        self._queue.put(f"\n[GUI] Oeffne Editor im Browser: http://{host}:{port}\n")
+                        open_url(f"http://{host}:{port}")
+                    return
+            except OSError:
+                # Prozess schon beendet, ohne je zu lauschen -> aufgeben.
+                if self._proc is not None and self._proc.poll() is not None:
+                    return
+                time.sleep(0.5)
+
     def _drain(self) -> None:
+        if self._closed:
+            return
         try:
             while True:
                 item = self._queue.get_nowait()
@@ -260,7 +327,9 @@ class ProcessConsole(tk.Toplevel):
                 self._append(item)
         except queue.Empty:
             pass
-        self.after(80, self._drain)
+        except tk.TclError:
+            return  # Fenster wurde zwischenzeitlich zerstoert
+        self._after_id = self.after(80, self._drain)
 
     def _append(self, text: str) -> None:
         self._text.configure(state="normal")
@@ -306,17 +375,41 @@ class ProcessConsole(tk.Toplevel):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_close(self) -> None:
-        if self._proc and self._proc.poll() is None:
-            if not messagebox.askyesno(
-                "Laeuft noch",
-                "Der Prozess laeuft noch. Erst stoppen und dann schliessen?"
-                + (f"\n\n{self._stop_note}" if self._stop_note else ""),
-                parent=self,
-            ):
-                return
-            self.stop()
+    def _close_window(self) -> None:
+        """Fenster wirklich schliessen (after-Timer abbestellen, Waiter stoppen)."""
+        self._closed = True
+        if self._after_id is not None:
+            try:
+                self.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
         self.destroy()
+
+    def _on_close(self) -> None:
+        # Laeuft nichts mehr -> einfach schliessen.
+        if not (self._proc and self._proc.poll() is None):
+            self._close_window()
+            return
+        # Prozess laeuft noch: drei Optionen. Der wichtige Fall ist "weiterlaufen
+        # lassen" — der Nutzer will den Launcher/das Log schliessen, aber Sim/Real
+        # (laeuft ohnehin im Docker) NICHT stoppen.
+        ans = messagebox.askyesnocancel(
+            "Fenster schliessen",
+            "Der Prozess laeuft noch.\n\n"
+            "  Ja       = im Hintergrund weiterlaufen lassen und Fenster schliessen\n"
+            "  Nein     = stoppen und schliessen"
+            + (f"\n             ({self._stop_note})" if self._stop_note else "")
+            + "\n  Abbrechen = Fenster offen lassen",
+            parent=self,
+        )
+        if ans is None:          # Abbrechen
+            return
+        if ans is False:         # stoppen und schliessen
+            self.stop()
+        else:                    # im Hintergrund weiterlaufen lassen
+            self._detached = True
+        self._close_window()
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -706,8 +799,8 @@ class SceneDialog(tk.Toplevel):
         newrow = tk.Frame(new, bg=CARD)
         newrow.pack(fill="x")
         primary_button(newrow, "＋  Leere Umgebung im Editor",
-                       lambda: self._run_cmd(["new"], "Neue Umgebung"), ACCENT).pack(
-            side="left", padx=(0, 6))
+                       lambda: self._run_cmd(["new"], "Neue Umgebung", browser=True),
+                       ACCENT).pack(side="left", padx=(0, 6))
         tk.Button(newrow, text="✨  Aus Text-Prompt generieren", command=self._run_prompt,
                   bg=CARD, fg=FG, relief="flat", padx=12, pady=8).pack(side="left")
         tk.Label(new, text="Der Editor oeffnet einen lokalen Webserver (http://127.0.0.1:8080). "
@@ -744,7 +837,10 @@ class SceneDialog(tk.Toplevel):
         env = os.environ.copy()
         env["G1_INSPIRE_HANDS"] = "1" if self.v_hands.get() else "0"
         title = {"edit": "Editor", "view": "Viewer", "with-g1": "Viewer + G1"}[cmd]
-        self._run_cmd([cmd, str(scene)], f"{title}: {scene.stem}", env=env)
+        # 'edit' startet den Web-Editor -> Browser oeffnen; view/with-g1 sind
+        # native MuJoCo-Fenster.
+        self._run_cmd([cmd, str(scene)], f"{title}: {scene.stem}", env=env,
+                      browser=(cmd == "edit"))
 
     def _run_prompt(self) -> None:
         text = simpledialog.askstring(
@@ -753,13 +849,15 @@ class SceneDialog(tk.Toplevel):
             parent=self)
         if not text:
             return
-        self._run_cmd(["prompt", text], "Umgebung generieren")
+        self._run_cmd(["prompt", text], "Umgebung generieren", browser=True)
 
-    def _run_cmd(self, args: list[str], title: str, env: dict | None = None) -> None:
+    def _run_cmd(self, args: list[str], title: str, env: dict | None = None,
+                 browser: bool = False) -> None:
         ProcessConsole(self.app, f"Scene-Editor — {title}",
                        ["bash", str(LAUNCH_SH), *args],
                        cwd=SCENE_DIR, env=env or os.environ.copy(),
-                       stop_note="Beendet den Editor/Viewer-Prozess.")
+                       stop_note="Beendet den Editor/Viewer-Prozess.",
+                       browser_url="http://127.0.0.1:8080" if browser else None)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -805,8 +903,12 @@ class App(tk.Tk):
             docmenu.add_command(label=label, command=lambda p=path: open_path(p))
         self.docs_btn["menu"] = docmenu
         self.docs_btn.pack(side="left", padx=8)
-        tk.Button(sec, text="Beenden", command=self.destroy, bg=CARD, fg=FG,
+        tk.Button(sec, text="Beenden", command=self._quit, bg=CARD, fg=FG,
                   relief="flat", padx=12, pady=6).pack(side="right")
+
+        # Fenster-Schliessen (X) beendet den Launcher genauso wie 'Beenden'.
+        self.protocol("WM_DELETE_WINDOW", self._quit)
+        self._quitting = False
 
         # Statuszeile (Docker/Editor-Bereitschaft).
         self.status = tk.Label(self, text="", bg="#171a20", fg=MUTED, anchor="w",
@@ -850,6 +952,17 @@ class App(tk.Tk):
     def open_scenes(self):
         SceneDialog(self)
 
+    def _quit(self):
+        # Launcher schliessen. Bereits gestartete Stacks laufen unabhaengig im
+        # Docker weiter (bewusst) — der Launcher ist nur zum Starten da.
+        self._quitting = True
+        try:
+            self.destroy()
+        finally:
+            # Garantiert beenden, auch wenn noch Hintergrund-Threads/Subprozesse
+            # (Log-Reader, docker compose) haengen — sonst wirkt "Beenden" wirkungslos.
+            os._exit(0)
+
     def stop_all(self):
         if not messagebox.askyesno("Stoppen",
                                    "Sim- UND Real-Stack stoppen (docker compose down)?"):
@@ -871,7 +984,12 @@ class App(tk.Tk):
         def worker():
             docker = "Docker: ok" if docker_ready() else "Docker: nicht erreichbar"
             text = f"  {docker}   |   {editor}   |   {scenes}"
-            self.after(0, lambda: self.status.configure(text=text))
+            if self._quitting:
+                return
+            try:
+                self.after(0, lambda: self.status.configure(text=text))
+            except (tk.TclError, RuntimeError):
+                pass  # Fenster wurde zwischenzeitlich beendet
 
         threading.Thread(target=worker, daemon=True).start()
 
