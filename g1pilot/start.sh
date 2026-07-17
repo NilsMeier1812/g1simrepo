@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 # ════════════════════════════════════════════════════════════════════════
-#  start.sh — Interaktives Start-Menue fuer den G1-Stack (Sim UND Real).
+#  start.sh — Start-Menue fuer den G1-Stack (Sim UND Real).
 #
-#  Allererste Frage: SIMULATION oder ECHTER ROBOTER.
+#  Standard: OHNE Argumente oeffnet sich das grafische Startmenue (g1_gui.py,
+#  Tkinter) — Sim/Real/Umgebungen komplett per Klick, kein Terminal noetig.
+#  Die GUI ruft am Ende genau dieses Skript mit --yes + Env-Vars auf. Fehlt
+#  Tkinter/Display, kommt automatisch das Text-Menue unten. Erzwingen mit
+#  --menu (Text) oder G1_NO_GUI=1.
+#
+#  Text-Menue — allererste Frage: SIMULATION oder ECHTER ROBOTER.
 #
 #  SIM  : MuJoCo + loco_sim (Whole-Body-Policy). Fragen: RViz, Inspire-
 #         Haende, GUI-Auto-Open, Rebuild. Lockstep immer an.
@@ -28,13 +34,29 @@ else
 fi
 
 ASSUME_YES=0
+FORCE_MENU=0
 PASSTHRU=()
 for a in "$@"; do
   case "$a" in
     -y|--yes) ASSUME_YES=1 ;;        # keine Rueckfragen, Defaults/Env nehmen
+    --menu|--no-gui|--tui) FORCE_MENU=1 ;;  # klassisches Text-Menue erzwingen
     *) PASSTHRU+=("$a") ;;           # Rest an `docker compose up` (z.B. --build)
   esac
 done
+
+# ── Grafisches Startmenue (Standard) ────────────────────────────────────
+#  Ohne Argumente und mit erreichbarem Tkinter startet die GUI (g1_gui.py).
+#  Sie sammelt alle Optionen und ruft dann ihrerseits 'start.sh --yes' auf —
+#  daher wird die GUI nur im interaktiven Ur-Aufruf gezoegert. Fehlt Tkinter
+#  oder ein Display, faellt es lautlos auf das Text-Menue unten zurueck.
+#  Erzwingen: --menu (Text) bzw. das Setzen von G1_NO_GUI=1.
+if [ "$ASSUME_YES" != "1" ] && [ "$FORCE_MENU" != "1" ] && \
+   [ "${G1_NO_GUI:-0}" != "1" ] && [ "${#PASSTHRU[@]}" -eq 0 ]; then
+  if command -v python3 >/dev/null 2>&1 && \
+     python3 -c 'import tkinter' >/dev/null 2>&1; then
+    exec python3 "$(dirname "$0")/g1_gui.py"
+  fi
+fi
 
 # ── Helfer: Einzelauswahl-Menue. $1=Frage, $2=Default-Index(1-basiert),
 #    $3=aktueller Env-Wert (hat im --yes-Modus Vorrang; "" = keiner),

@@ -130,13 +130,23 @@ The sim/real switch is driven by a single environment variable, `G1_SIM_MODE`
 > firmware), so the pairing is mirrored: sim = ROS 0 / Unitree 1, real =
 > ROS 1 / Unitree 0.
 
-Easiest entry point — the interactive start menu. Its **first question is
-SIM vs. REAL**; the sim branch asks RViz/hands/rebuild, the real branch asks
-for the network interface (auto-detected), hand IPs and a typed safety
-confirmation:
+Easiest entry point — `./start.sh`. Without arguments it now opens a **graphical
+start menu** (`g1_gui.py`, Tkinter): three big buttons — *Simulation starten*,
+*Echten Roboter starten*, *Umgebungen bearbeiten* — each leading to one window
+with all options; the live Docker output shows inside the app with a Stop button,
+so no terminal interaction is needed. If Tkinter or a display is missing it falls
+back to the classic text menu (force it with `--menu` or `G1_NO_GUI=1`).
+
+The GUI is a thin front-end: it collects the options below and calls
+`start.sh --yes` (env-driven) / `scene_editor/launch.sh` — the same engine the
+text menu and the non-interactive calls use. Its **first choice is SIM vs.
+REAL**; the sim window offers RViz/hands/nav/environment/rebuild, the real
+window offers the network interface (auto-detected), hand IPs, walk limits and a
+required safety confirmation:
 
 ```bash
-./start.sh
+./start.sh            # graphical start menu (default)
+./start.sh --menu     # classic text menu
 # Non-interactive sim (takes defaults / env overrides):
 USE_RVIZ=true ./start.sh --yes
 # Non-interactive real (requires explicit confirmation):
