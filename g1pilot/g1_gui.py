@@ -312,6 +312,11 @@ class ScrollableFrame(tk.Frame):
             self._canvas.yview_scroll(1, "units")
 
 
+# Queue-Sentinels (Kontrollmarker, unterscheidbar von Log-Zeilen/Strings):
+_EOF = object()   # Reader: Prozess-Ausgabe zu Ende (Prozess beendet)
+_DONE = object()  # Stop-Worker: Aufraeumen (docker down) abgeschlossen -> finalisieren
+
+
 # ════════════════════════════════════════════════════════════════════════
 #  Konsole-View: startet einen Subprozess und zeigt dessen Ausgabe live
 # ════════════════════════════════════════════════════════════════════════
@@ -343,7 +348,7 @@ class ConsoleFrame(tk.Frame):
         self._stop_note = stop_note
         self._browser_url = browser_url
         self._proc: subprocess.Popen | None = None
-        self._queue: queue.Queue[str | None] = queue.Queue()
+        self._queue: queue.Queue = queue.Queue()  # Log-Strings + _EOF/_DONE-Marker
         self._stopping = False
         self._finished = False
         self._alive = True
@@ -411,7 +416,7 @@ class ConsoleFrame(tk.Frame):
             )
         except Exception as exc:
             self._append(f"[Fehler beim Start] {exc}\n")
-            self._set_done(-1)
+            self._finalize(-1)
             return
         threading.Thread(target=self._reader, daemon=True).start()
 
@@ -420,7 +425,7 @@ class ConsoleFrame(tk.Frame):
         for line in self._proc.stdout:
             self._queue.put(line)
         self._proc.wait()
-        self._queue.put(None)  # Sentinel: Prozess fertig
+        self._queue.put(_EOF)  # Prozess-Ausgabe zu Ende
 
     def _browser_waiter(self) -> None:
         """Wartet, bis der Editor-Webserver lauscht, und oeffnet dann den Browser.
@@ -460,11 +465,19 @@ class ConsoleFrame(tk.Frame):
         try:
             while True:
                 item = self._queue.get_nowait()
-                if item is None:
-                    rc = self._proc.returncode if self._proc else -1
-                    self._set_done(rc)
+                if item is _EOF:
+                    # Prozess-Ausgabe endet. Bei benutzerinitiiertem Stop NICHT
+                    # sofort finalisieren — erst wartet noch das Aufraeum-Kommando
+                    # (docker down); der Stop-Worker meldet danach _DONE. So gilt
+                    # "beendet" wirklich erst, wenn MuJoCo/Container zu sind.
+                    if not self._stopping:
+                        self._finalize()
+                        return
+                elif item is _DONE:
+                    self._finalize()
                     return
-                self._append(item)
+                else:
+                    self._append(item)
         except queue.Empty:
             pass
         except tk.TclError:
@@ -481,15 +494,20 @@ class ConsoleFrame(tk.Frame):
         self._text.see("end")
         self._text.configure(state="disabled")
 
-    def _set_done(self, rc: int) -> None:
+    def _finalize(self, rc: int | None = None) -> None:
         self._finished = True
-        if self._stopping:
+        if rc is None:
+            rc = self._proc.returncode if self._proc else -1
+        user_stopped = self._stopping
+        if user_stopped:
             self._status.configure(text="gestoppt", fg=MUTED)
         elif rc == 0:
             self._status.configure(text="beendet (ok)", fg=GREEN)
         else:
             self._status.configure(text=f"beendet (Code {rc})", fg=RED)
         self._stop_btn.configure(state="disabled")
+        # Sauber (ab)geschlossen -> App entscheidet ueber Auto-Rueckkehr/Refresh.
+        self.app.notify_finished(self, user_stopped=user_stopped)
 
     def stop(self) -> None:
         if self._stopping or not self.is_running():
@@ -517,7 +535,7 @@ class ConsoleFrame(tk.Frame):
                     self._queue.put(r.stdout + r.stderr)
                 except Exception as exc:
                     self._queue.put(f"[down-Fehler] {exc}\n")
-            self._queue.put(None)
+            self._queue.put(_DONE)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1042,6 +1060,22 @@ class App(tk.Tk):
         if console not in self.consoles:
             self.consoles.append(console)
         self.show(console)
+
+    def notify_finished(self, console: ConsoleFrame, *, user_stopped: bool) -> None:
+        """Ein Prozess ist fertig (sauber gestoppt oder von selbst beendet).
+
+        - Wird er gerade angesehen UND wurde vom Nutzer gestoppt (MuJoCo/Container
+          sind dann sauber zu): automatisch zurueck ins Startmenue.
+        - Ist gerade das Menue offen: nur die Prozessliste auffrischen.
+        - Sonst (andere View sichtbar): nichts tun, nicht wegreissen. Von selbst
+          beendete/abgestuerzte Prozesse bleiben in ihrer View, damit Fehler/Log
+          lesbar bleiben.
+        """
+        if self._current is console:
+            if user_stopped:
+                self.show_menu()
+        elif isinstance(self._current, MenuFrame):
+            self.show_menu()
 
     def start_process(self, title, argv, *, cwd, env=None, stop_cmd=None,
                       stop_note="", browser_url=None) -> ConsoleFrame:

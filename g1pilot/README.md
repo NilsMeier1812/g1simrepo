@@ -136,8 +136,9 @@ start menu** (`g1_gui.py`, Tkinter): three big buttons — *Simulation starten*,
 window**: the menu, the option screens and the live-log view are swapped in
 place (no extra windows). Starting a stack shows its Docker output inside the
 app with a Stop button; going *‹ Menue* leaves it running in the background and
-lists it under *Laufende Prozesse* to return to, and closing the single window
-quits the whole launcher. If Tkinter or a display is missing it falls back to
+lists it under *Laufende Prozesse* to return to. Pressing *Stop* waits for the
+clean shutdown (`docker compose down`) to finish and then returns to the start
+menu automatically. Closing the single window quits the whole launcher. If Tkinter or a display is missing it falls back to
 the classic text menu (force it with `--menu` or `G1_NO_GUI=1`).
 
 The GUI is a thin front-end: it collects the options below and calls
