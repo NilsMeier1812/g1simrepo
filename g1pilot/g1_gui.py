@@ -23,11 +23,12 @@ from __future__ import annotations
 import os
 import queue
 import shutil
-import socket
 import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 import webbrowser
 from pathlib import Path
 
@@ -298,21 +299,36 @@ class ProcessConsole(tk.Toplevel):
         """Wartet, bis der Editor-Webserver lauscht, und oeffnet dann den Browser.
 
         Endet, sobald der Prozess vorher stirbt oder das Fenster geschlossen wird.
+
+        Bewusst eine echte HTTP-Anfrage (wie ein Browser) statt eines rohen
+        TCP-Connects: der Editor-Server (viser) bedient HTTP UND WebSocket auf
+        demselben Port; ein sofort geschlossener TCP-Connect saehe fuer ihn wie
+        ein abgebrochener WebSocket-Handshake aus und wuerde einen (harmlosen)
+        Fehler-Traceback loggen.
         """
-        host, port = "127.0.0.1", 8080
+        url = "http://127.0.0.1:8080"
         deadline = time.monotonic() + 180  # max ~3 min (deckt ersten Start ab)
         while not self._closed and not self._stopping and time.monotonic() < deadline:
-            try:
-                with socket.create_connection((host, port), timeout=0.5):
-                    if not self._closed:
-                        self._queue.put(f"\n[GUI] Oeffne Editor im Browser: http://{host}:{port}\n")
-                        open_url(f"http://{host}:{port}")
-                    return
-            except OSError:
-                # Prozess schon beendet, ohne je zu lauschen -> aufgeben.
-                if self._proc is not None and self._proc.poll() is not None:
-                    return
-                time.sleep(0.5)
+            if self._server_responds(url):
+                if not self._closed:
+                    self._queue.put(f"\n[GUI] Oeffne Editor im Browser: {url}\n")
+                    open_url(url)
+                return
+            # Prozess schon beendet, ohne je zu lauschen -> aufgeben.
+            if self._proc is not None and self._proc.poll() is not None:
+                return
+            time.sleep(0.5)
+
+    @staticmethod
+    def _server_responds(url: str) -> bool:
+        """True, sobald der HTTP-Server irgendeine Antwort liefert."""
+        try:
+            urllib.request.urlopen(url, timeout=1).close()
+            return True
+        except urllib.error.HTTPError:
+            return True  # Server antwortet (nur mit Fehlerstatus) -> laeuft
+        except (urllib.error.URLError, OSError):
+            return False  # noch nicht erreichbar
 
     def _drain(self) -> None:
         if self._closed:
