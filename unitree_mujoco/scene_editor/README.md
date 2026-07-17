@@ -10,6 +10,12 @@ Helfer-Skripte.
 > Ergaenzt das vorhandene `terrain_tool/` (Terrain per Python-Skript). Der
 > Scene Editor ist der **visuelle** Weg: Objekte/Meshes per Maus setzen.
 
+> **Zentraler Umgebungs-Ordner:** `scene_editor/scenes/`. Alles, was hier als
+> `*.xml` liegt, ist die Liste der Umgebungen – waehlbar **im Editor**
+> (`./launch.sh`) UND **beim G1-Start** (`g1pilot/start.sh`, Sim). Eine neue
+> Umgebung im Editor unter `scenes/` speichern reicht, damit sie an beiden
+> Stellen auftaucht.
+
 ---
 
 ## Was ist drin?
@@ -67,26 +73,38 @@ Einfach ohne Argument starten:
 ./launch.sh
 ```
 
-Das listet **alle vorhandenen Szenen nummeriert** auf und du waehlst per
-Zahl, welche gestartet wird:
+Das listet **alle Umgebungen nummeriert** auf (aus dem zentralen Ordner
+`scene_editor/scenes/` – dieselben, die auch beim G1-Start waehlbar sind):
 
 ```
 =================== MuJoCo Scene Editor ===================
-Verfuegbare Szenen:
-    1) Umgebung   scenes/environment_starter.xml
-    2) [G1]       ../unitree_robots/g1/scene_g1_playground.xml
-    n) neue leere Szene im Editor
+Umgebungen in scene_editor/scenes/
+(dieselben, die auch beim G1-Start via g1pilot/start.sh waehlbar sind)
+----------------------------------------------------------
+    1) environment_starter
+    2) kueche
+    n) neue leere Umgebung im Editor
     q) beenden
 ----------------------------------------------------------
 Auswahl (Zahl / n / q): 1
-Aktion [e=Editor bearbeiten / v=Viewer ansehen] (Default e):
+
+Gewaehlt: environment_starter
+Aktion:
+   e) im Editor bearbeiten
+   v) allein im Viewer ansehen (ohne Roboter)
+   g) mit dem G1 im Viewer ansehen
+Auswahl [e/v/g] (Default e):
 ```
 
-- Zahl = die Szene waehlen, dann **e** (im Editor bearbeiten) oder **v**
-  (im MuJoCo-Viewer ansehen). `[G1]`-Szenen sind auf Ansehen (v) vorbelegt.
-- **n** = mit einer leeren Szene neu anfangen.
+- Zahl = Umgebung waehlen, dann:
+  - **e** – im Editor bearbeiten
+  - **v** – allein im Viewer ansehen (ohne Roboter)
+  - **g** – **mit dem G1** im Viewer ansehen (kombiniert automatisch, ohne
+    Docker-Stack)
+- **n** = mit einer leeren Umgebung neu anfangen.
 
-Neue Szenen aus `scenes/` tauchen automatisch in der Liste auf.
+Neue Umgebungen aus `scenes/` tauchen automatisch in der Liste auf – hier
+**und** beim G1-Start.
 
 ## 3. Umgebung im Editor bauen & speichern
 
@@ -192,12 +210,13 @@ Mehr dazu in `meshes/README.md`.
 ## launch.sh – Uebersicht
 
 ```bash
-./launch.sh                 # interaktives Menue (Szenen nummeriert waehlen)
-./launch.sh new             # leere Szene im Editor
-./launch.sh edit [datei]    # Szene im Editor (Default: environment_starter.xml)
-./launch.sh prompt "..."    # Szene per Text-Prompt generieren (braucht LLM-API-Key)
-./launch.sh view [datei]    # Szene im MuJoCo-Viewer ansehen
-./launch.sh view-g1         # G1 + Objekte ansehen
+./launch.sh                 # interaktives Menue (Umgebungen nummeriert waehlen)
+./launch.sh new             # leere Umgebung im Editor
+./launch.sh edit [datei]    # Umgebung im Editor (Default: environment_starter.xml)
+./launch.sh prompt "..."    # Umgebung per Text-Prompt generieren (braucht LLM-API-Key)
+./launch.sh view [datei]    # Umgebung allein im MuJoCo-Viewer ansehen
+./launch.sh with-g1 [datei] # Umgebung + G1 im MuJoCo-Viewer ansehen
+./launch.sh view-g1         # statisches Beispiel scene_g1_playground.xml
 ```
 
 ## Bekannte Stolpersteine
