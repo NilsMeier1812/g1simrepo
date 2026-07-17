@@ -170,6 +170,29 @@ USD) durchsuchen. Dieser Ordner ist fest auf `scene_editor/meshes/` vorbelegt:
 > Der eingebaute Editor-Default `~/temp/ArmarXObjects` existiert nicht – darum
 > war die Liste vorher leer und der Import schien zu fehlen.
 
+### STLs bewegen & skalieren
+
+**Auswaehlen:** oben im Dropdown **„Elements"** das Mesh waehlen (oder im
+3D-Fenster direkt draufklicken – „Allow mouse selection" ist an).
+
+**Bewegen / Drehen:** ist das Mesh gewaehlt, erscheint der Zieh-Gizmo
+(Pfeile/Ringe). Steuert die Checkbox **„Interactive translation"** (standard-
+maessig **an**). Alternativ im **„Transform"**-Feld **Position (m)** / **Angles
+(deg)** eintippen und **„Set Transform"** klicken. Sieht es aus, als bewege sich
+nichts: erst ein Element auswaehlen und ggf. „Interactive translation" pruefen.
+
+**Skalieren:** der eingebaute Editor kann Meshes **nicht** skalieren (nur
+Box/Zylinder/Kugel-Masse). Dafuer gibt es den ergaenzten Ordner
+**„Mesh skalieren"**:
+
+1. Mesh oben unter „Elements" auswaehlen (das Feld zeigt dann seinen aktuellen
+   Faktor).
+2. **Faktor** eingeben (z.B. `2` = doppelt so gross; **CAD-STL in mm -> `0.001`**).
+3. **„Auf gewaehltes Mesh anwenden"**.
+
+> Upload-Button und „Mesh skalieren" ergaenzt `run_editor.py`; `launch.sh`
+> startet den Editor immer darueber.
+
 ---
 
 ## 4. Umgebung im G1-Sim laden (der Hauptweg)
