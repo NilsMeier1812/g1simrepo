@@ -11,6 +11,7 @@ import config
 from hold_base import HoldBase
 from push_listener import PushListener
 from grasp_box import GraspBox
+from scene_state_publisher import SceneStatePublisher
 
 
 locker = threading.Lock()
@@ -62,6 +63,10 @@ push = PushListener(mj_model, config)
 # GRASP BOX: Live-Toggle der greifbaren Test-Kugel(n). Hoert auf UDP (Streamdeck-Button
 # 'GRASP BOX' ueber loco_sim) und schaltet Kollision+Sichtbarkeit der Kugel(n) um.
 grasp_box = GraspBox(mj_model, config)
+
+# SZENEN-BRUECKE: sendet Hindernisse + greifbare Objekte der geladenen Umgebung
+# periodisch per UDP an den ROS-Container (scene_bridge -> RViz/Nav/IK).
+scene_state = SceneStatePublisher(mj_model, config)
 
 if config.ENABLE_ELASTIC_BAND:
     elastic_band = ElasticBand()
@@ -124,6 +129,8 @@ def SimulationThread():
         # der Integration -> sonst publiziert der lowStateThread einen Schritt alte
         # Geschwindigkeiten (dq/gyro), an denen eine RL-Policy kippt. Siehe Lockstep.
         mujoco.mj_forward(mj_model, mj_data)
+
+        scene_state.maybe_publish(mj_data)   # intern ratenbegrenzt (SCENE_PUBLISH_HZ)
 
         locker.release()
 
@@ -196,6 +203,7 @@ def SimulationLockstep(unitree):
         # weitere Integration auf den AKTUELLEN Zustand neu -> sensordata == qpos/qvel
         # (headless verifiziert: Diff 1.44 -> 0.0). Erst danach publizieren.
         mujoco.mj_forward(mj_model, mj_data)
+        scene_state.maybe_publish(mj_data)   # intern ratenbegrenzt (SCENE_PUBLISH_HZ)
         locker.release()
 
         # Frischen State NACH den Schritten publizieren -> der Controller reagiert

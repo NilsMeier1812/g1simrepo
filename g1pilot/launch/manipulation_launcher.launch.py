@@ -29,6 +29,13 @@ def generate_launch_description():
         DeclareLaunchArgument("ee_velocity_limit", default_value="0.25"),
         # Selbstkollisions-Gate (kommandierte Pose wird vor dem Senden geprueft).
         DeclareLaunchArgument("self_collision_gate", default_value="true"),
+        # Umgebungs-Kollisions-Gate (Hindernisse/Greif-Objekte aus /scene_markers,
+        # siehe SCENE_BRIDGE.md Abschnitt 6). Eigener Schalter, unabhaengig vom
+        # Selbstkollisions-Gate oben.
+        DeclareLaunchArgument("environment_collision_gate", default_value="true"),
+        # Toleranz [rad] fuer die geplante Bewegung (Positionsspeicher, siehe
+        # SCENE_BRIDGE.md Abschnitt 9), ab der ein Wegpunkt als erreicht gilt.
+        DeclareLaunchArgument("planned_motion_tolerance", default_value="0.02"),
         # PD-Gains des arm_controller. Defaults = Sim-Tuning (MuJoCo braucht
         # hohe Daempfung); bringup_real ueberschreibt mit den Unitree-
         # Beispielwerten (kp=60, kd=1.5).
@@ -66,6 +73,10 @@ def generate_launch_description():
                     LaunchConfiguration("ee_velocity_limit"), value_type=float),
                 'self_collision_gate': ParameterValue(
                     LaunchConfiguration("self_collision_gate"), value_type=bool),
+                'environment_collision_gate': ParameterValue(
+                    LaunchConfiguration("environment_collision_gate"), value_type=bool),
+                'planned_motion_tolerance': ParameterValue(
+                    LaunchConfiguration("planned_motion_tolerance"), value_type=float),
                 'kp_low': ParameterValue(LaunchConfiguration("kp_low"), value_type=float),
                 'kd_low': ParameterValue(LaunchConfiguration("kd_low"), value_type=float),
                 'kp_wrist': ParameterValue(LaunchConfiguration("kp_wrist"), value_type=float),

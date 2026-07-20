@@ -1,10 +1,12 @@
 # SCENE_BRIDGE.md — MuJoCo-Umgebungen nach RViz/ROS (Nav + IK)
 
-> **Status: Design / Plan.** Diese Datei hält die Architektur-Entscheidung fest,
-> wie Umgebungen (Hindernisse **und** greifbare Objekte) aus MuJoCo in die
-> ROS-Welt kommen, damit **Navigation** (Wege drumherum planen) **und**
-> **IK/Manipulation** (Arm um Hindernisse, Objekte greifen) damit arbeiten.
-> Noch **keine** Implementierung — Grundlage zum Weiterentscheiden.
+> **Status: Implementiert** (Stufen 1–3 der Roadmap in §12; LiDAR/§11 und
+> Basis-Positionsspeicher/§10 bewusst **noch nicht** gebaut — siehe §15 für den
+> genauen Stand, was getestet wurde und was offen bleibt). Diese Datei hält
+> die Architektur-Entscheidung fest, wie Umgebungen (Hindernisse **und**
+> greifbare Objekte) aus MuJoCo in die ROS-Welt kommen, damit **Navigation**
+> (Wege drumherum planen) **und** **IK/Manipulation** (Arm um Hindernisse,
+> Objekte greifen, Positionsspeicher) damit arbeiten.
 
 ---
 
@@ -316,30 +318,108 @@ Modell tut es. Damit ist der LiDAR-Plan voll kompatibel.
 
 ---
 
-## 13 · Betroffene Dateien (Impact-Karte)
+## 13 · Betroffene Dateien (Impact-Karte, tatsächlicher Stand)
 
 | Datei | Änderung |
 |---|---|
-| `g1pilot/g1pilot/navigation/scene_publisher.py` *(neu)* | `scene_bridge`: Szene → Marker/CollisionObject/OccupancyGrid |
-| `g1pilot/g1pilot/navigation/create_map.py` | Dummy → Footprints aus Szene; Frame-Default `odom`→`map` |
-| `g1pilot/g1pilot/utils/ik_solver.py` | Umgebungs-Geoms ins `collision_model`; ACM (Hindernis/Grasp/Attach); Gate binär→abgestuft |
-| `g1pilot/g1pilot/manipulation/…` *(neu/erw.)* | Pose-Speicher, Arm-Planer (steckbar), Mode-Mux |
-| `g1pilot/config/nav.rviz` | `MarkerArray`-Display `/scene_markers` (später MotionPlanning) |
-| `g1pilot/launch/navigation_launcher.launch.py` | `scene_bridge` aufnehmen, `G1_ENV` durchreichen |
-| `unitree_mujoco/scene_editor/run_editor.py` | Klassen-Selektor (Hindernis/Grasp) im Editor |
-| `unitree_mujoco/scene_editor/build_env_scene.py` | Klassen-Tag durchreichen; Grasp-Objekte als freie Körper |
-| `g1pilot/g1_gui.py` | Buttons: Pose speichern / anfahren |
+| `unitree_mujoco/simulate_python/scene_objects.py` *(neu)* | Parst die kompilierte Szenen-XML (worldbody-Kinder) → Objekt-Specs; STL-AABB-Reader (pure Python) |
+| `unitree_mujoco/simulate_python/scene_state_publisher.py` *(neu)* | Sendet Hindernisse (statisch) + Greif-Objekte (live aus `mj_data`) periodisch per UDP an `scene_bridge` |
+| `unitree_mujoco/simulate_python/config.py` | `SCENE_UDP_PORT`/`SCENE_UDP_HOST`/`SCENE_PUBLISH_HZ`/`SCENE_ENABLE` |
+| `unitree_mujoco/simulate_python/unitree_mujoco.py` | `SceneStatePublisher` in beide Sim-Loops (Realtime + Lockstep) eingehängt |
+| `unitree_mujoco/scene_editor/build_env_scene.py` | `grasp_`-Namenskonvention: wrapt passende `<geom>` automatisch in `<body><freejoint/>…</body>` |
+| `unitree_mujoco/scene_editor/README.md` | Hindernis-vs-Greif-Objekt-Konvention dokumentiert |
+| `g1pilot/g1pilot/navigation/scene_markers.py` *(neu)* | Gemeinsames Wire-Format (`/scene_markers`-Kontrakt): ns/id/text-Codec, Marker↔MuJoCo-Skalierung, AABB/Footprint-Helfer |
+| `g1pilot/g1pilot/navigation/scene_bridge.py` *(neu)* | ROS2-Node: UDP-Empfang → `visualization_msgs/MarkerArray` auf `/scene_markers` |
+| `g1pilot/g1pilot/navigation/create_map.py` | Dummy → Footprints aus `/scene_markers`; Frame-Default `odom`→`map` |
+| `g1pilot/g1pilot/utils/ik_solver.py` | `sync_environment()`, `environment_command_in_collision()` (Punkt-zu-OBB, ACM Hindernis/Grasp), `make_scratch_buffers()` (Thread-Sicherheit) |
+| `g1pilot/g1pilot/manipulation/pose_store.py` *(neu)* | JSON-Datei-Ablage gespeicherter Armposen |
+| `g1pilot/g1pilot/manipulation/arm_planner.py` *(neu)* | RRT-Connect (7-DOF, ein Arm) + Shortcut-Glättung gegen dieselben IK-Kollisionschecks |
+| `g1pilot/g1pilot/manipulation/arm_controller.py` | `/scene_markers`-Abo (TF map→pelvis) → `sync_environment`; kombiniertes Kollisions-Gate; Pose-Store-Topics; geplante-Bewegung-Zustandsmaschine |
+| `g1pilot/g1pilot/teleoperation/ui_interface.py` | Streamdeck-Buttons „POSE SPEICHERN/ANFAHREN/ABBRECHEN" |
+| `g1pilot/config/nav.rviz` | `MarkerArray`-Display auf `/scene_markers` |
+| `g1pilot/launch/bringup_sim.launch.py` | `scene_bridge` **unconditional** (IK braucht es auch ohne Nav); `create_map` weiter an `G1_ENABLE_NAV` gekoppelt |
+| `g1pilot/launch/navigation_launcher.launch.py` | `scene_bridge`-Node ergänzt (Real-Full-Profil) |
+| `g1pilot/launch/manipulation_launcher.launch.py` | `environment_collision_gate`/`planned_motion_tolerance` als Launch-Argumente |
+| `g1pilot/setup.py` | `scene_bridge`-Entry-Point |
+| `g1pilot/docker-compose.yml` | `SIM_SCENE_PORT` in beiden Sim-Containern; `scene_editor/meshes` read-only nach `/scene_meshes` in `g1pilot-sim` (RViz-Mesh-Anzeige) |
+| `g1pilot/NAVIGATION.md` | Dummy-Karten-Hinweise auf den echten `/scene_markers`-Stand aktualisiert |
 
 ---
 
-## 14 · Offene Entscheidungen (bewusst aufgeschoben)
+## 14 · Getroffene Entscheidungen (waren offen, jetzt umgesetzt)
 
-- **Arm-Planer:** schlanker eigener C-Space-Planer (Empfehlung Start) vs.
-  MoveIt/OMPL. Steckbar → später entscheidbar.
-- **DOF-Umfang** der gespeicherten Pose: nur Arme (14) vs. inkl. Waist.
-- **Grasp-Freikörper-Erzeugung:** im Editor-Export vs. in `build_env_scene.py`.
-- **Klassen-Tag-Kanal** im XML: konkretes Attribut/Konvention (da Editor
-  umgebaut wird, frei wählbar).
-- **Speicher-Backend:** YAML vs. SQLite lokal; Supabase optional später.
-</content>
-</invoke>
+- **Arm-Planer:** schlanker eigener RRT-Connect (`arm_planner.py`), **nicht**
+  MoveIt/OMPL — konsistent zum eigenen Dijkstra bei der Basis, nutzt exakt die
+  bestehenden IK-Kollisionschecks (kein zweiter Sicherheitsbegriff). Bleibt
+  austauschbar (feste Schnittstelle `(q_start, q_goal, ik_solver) → Wegpunkte`).
+- **Dual-Arm-Planung:** **sequenziell** (erst rechts, dann links) statt
+  gemeinsamem 14-DOF-Planer — der jeweils andere Arm gilt waehrend der Planung
+  als fest; das Selbstkollisions-Gate deckt Arm-zu-Arm trotzdem ab. Ausfuehrung
+  ist ebenfalls sequenziell (Konsistenz mit der Planungs-Annahme).
+- **Umgebungs-Kollisionsgeometrie:** **kein** hppfcl-`GeometryObject` im
+  IK-Solver (unverifizierbare Konstruktor-Signatur je Pinocchio-Version) —
+  stattdessen einfache, per Hand nachgerechnete Punkt-zu-orientierter-Box-
+  Distanz (Ellbogen + Hand-TCP je Arm). Mit dem echten G1-URDF getestet
+  (siehe §15).
+- **Klassen-Tag-Kanal:** **Namenskonvention** (`grasp_`-Präfix), nicht ein
+  neues XML-Attribut oder eine Sidecar-Datei — übersteht den (nicht selbst
+  veränderten) Browser-Editor garantiert, weil er nur den ohnehin editierbaren
+  Namen nutzt.
+- **Grasp-Freikörper-Erzeugung:** in `build_env_scene.py` (nicht im
+  Editor-Export) — der Editor bleibt unangetastet (siehe unten).
+- **Wire-Format `/scene_markers`:** ausschließlich `visualization_msgs/
+  MarkerArray` (kein `moveit_msgs`, keine neue `.msg`-Schnittstelle/kein neues
+  Interface-Package) — RViz UND alle Konsumenten (create_map, ik_solver)
+  lesen denselben Standard-Topic. Klasse via `ns`, stabile Identität via
+  `id` (Hash des Namens), Name (+ Mesh-AABB) via wiederverwendetes `text`-Feld.
+- **Speicher-Backend Positionsspeicher:** lokale JSON-Datei
+  (`~/.g1pilot/arm_poses.json`, `pose_store.py`) — kein Datenbank-Server.
+- **DOF-Umfang der gespeicherten Pose:** 7 DOF je Arm (Schulter…Handgelenk),
+  **ohne** Taille — konsistent mit der bestehenden Home-/Walk-Pose-Konvention
+  in `arm_controller.py`.
+- **Editor-Umbau:** **nicht** angefasst (kein Klassen-Dropdown im Browser-
+  Editor) — die Namenskonvention macht das unnötig; Objekte werden im Editor
+  ganz normal umbenannt (Feld existiert bereits).
+
+---
+
+## 15 · Implementierungsstand
+
+**Gebaut (Stufen 1–3 der Roadmap in §12), inklusive Positionsspeicher:**
+Live-Szenen-Bruecke (MuJoCo → UDP → `scene_bridge` → `/scene_markers`),
+`create_map` aus echten Objekten, Umgebungs-Kollision + Hindernis/Grasp-ACM im
+IK-Solver, Dual-Mode Arm (reaktives Servoing bleibt unveraendert + neuer
+geplanter Positionsspeicher-Modus mit RRT-Connect), Streamdeck-Buttons.
+
+**Bewusst nicht gebaut** (mit „Zukunft" markiert bzw. vom Nutzer
+zurückgestellt): LiDAR-Perzeptionsebene (§11), Basis-Positionsspeicher (§10,
+Nav war explizit nicht Prio), MoveIt/OMPL-Migration.
+
+**Wie geprüft wurde** (dieses Environment hat kein MuJoCo-Display/ROS2-Runtime
+— ehrliche Einordnung, keine Behauptung von End-to-End-Tests im echten Stack):
+- `scene_objects.py` (XML-Parser, STL-AABB, Pose-Komposition inkl. Rotation)
+  und `pose_store.py`: mit synthetischen Fixtures **ausgeführt und verifiziert**
+  (reines Python, keine Fremdabhängigkeit).
+- `build_env_scene.py`: die `grasp_`→Freikörper-Umwandlung **tatsächlich
+  ausgeführt** (echtes Skript, echte G1-Robotermodelle) und die XML-Ausgabe
+  geprüft.
+- `scene_markers.py`: Marker↔MuJoCo-Umrechnung, Rotation, Footprint-AABB
+  **mit gestubbten ROS-Messages ausgeführt und verifiziert** (u.a. 45°-Rotation
+  gegen Handrechnung geprüft).
+- `ik_solver.py`/`arm_planner.py`: **mit dem echten G1-URDF und echtem
+  Pinocchio geladen und ausgeführt** (pip-Pakete `pin`/`coal` lassen sich hier
+  installieren) — Umgebungs-ACM (Hindernis blockt, Grasp an der Hand erlaubt,
+  an Ellbogen weiter blockt), RRT-Connect-Umwegplanung um ein echtes Hindernis
+  (inkl. unabhängiger Nachprüfung jedes Wegpunkt-Segments) und ein gezielter
+  Mehr-Thread-Stresstest (Planungs-Thread gleichzeitig mit simuliertem
+  250-Hz-Regelkreis) liefen **ohne Fehlschlag**.
+- `arm_controller.py`: mit umfangreich gestubbten ROS-/DDS-Abhängigkeiten
+  **instanziiert und durchlaufen** — Pose speichern, Planung anstoßen, die
+  komplette Wegpunkt-Zustandsmaschine bis zum Abschluss (realistische
+  Taktrate simuliert) liefen fehlerfrei.
+- **Nicht geprüft** (dieses Environment kann es nicht): echte MuJoCo-Physik
+  (Greifen/Freikörper-Verhalten), echter UDP-Transport zwischen zwei
+  Containern, RViz-Darstellung, das reale 250-Hz-Timing/DDS, Docker-Compose-
+  Build. Vor dem ersten Einsatz am/mit dem echten Roboter: in der Sim mit
+  E-Stop griffbereit gegenprüfen, insbesondere den Positionsspeicher-Modus.
+

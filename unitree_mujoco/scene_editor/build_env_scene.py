@@ -19,6 +19,16 @@ Dieses Skript erzeugt die kombinierte Szene  unitree_robots/g1/scene_env_<name>.
 umgerechnet, damit sie auf dem Host UND im read-only gemounteten Docker-Container
 stimmen.
 
+Hindernis vs. Greif-Objekt (fuer Nav/IK, siehe g1pilot/SCENE_BRIDGE.md):
+Klassifikation per Namenskonvention -- ein Objekt-Name, der mit "grasp_"
+beginnt, wird HIER automatisch von einem statischen <geom> in einen FREIEN
+Koerper umgewandelt (<body><freejoint/><geom/></body>): nur so kann MuJoCo es
+beim Anfassen/Greifen bewegen (Masse/Traegheit werden von MuJoCo automatisch
+aus Geometrie + Default-Dichte berechnet). Alle anderen Objekte bleiben
+statische Hindernisse. Dieselbe Namenskonvention wird von
+unitree_mujoco/simulate_python/scene_objects.py (Sim-Seite) und
+g1pilot/g1pilot/navigation/scene_bridge.py (ROS-Seite) verwendet.
+
 Aufruf:
     python3 build_env_scene.py --env scenes/warehouse.xml
     python3 build_env_scene.py --env scenes/warehouse.xml --inspire 1
@@ -29,6 +39,8 @@ import re
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
+
+GRASP_PREFIX_RE = re.compile(r"^grasp_", re.IGNORECASE)
 
 HERE = Path(__file__).resolve().parent          # .../unitree_mujoco/scene_editor
 MJ_ROOT = HERE.parent                            # .../unitree_mujoco
@@ -91,6 +103,35 @@ def build_base(robot_file: str, model_name: str):
     return mj, asset, wb
 
 
+def _wrap_grasp_geom(geom_el):
+    """Wandelt ein statisches <geom name="grasp_..."/> in einen freien Koerper
+    um (<body><freejoint/><geom/></body>), damit MuJoCo es beim Greifen/
+    Anfassen bewegen kann. Body UND Geom tragen denselben Namen (in MuJoCo
+    erlaubt -- Bodies und Geoms haben getrennte Namensraeume); das ist wichtig,
+    weil die Sim-Seite (scene_objects.py) die LIVE-Pose ueber den BODY-Namen
+    aufloest. Body erbt Pose (pos/quat) vom Geom, das Geom selbst wird auf
+    Identity relativ zum Body gesetzt (pos/quat entfernt).
+    """
+    name = geom_el.get("name")
+    pos = geom_el.get("pos", "0 0 0")
+    quat = geom_el.get("quat")
+
+    body = ET.Element("body", {"name": name, "pos": pos})
+    if quat:
+        body.set("quat", quat)
+    ET.SubElement(body, "freejoint")
+
+    inner = ET.Element("geom", dict(geom_el.attrib))
+    inner.attrib.pop("pos", None)
+    inner.attrib.pop("quat", None)
+    body.append(inner)
+    return body
+
+
+def _is_grasp_geom(el) -> bool:
+    return el.tag == "geom" and bool(GRASP_PREFIX_RE.match(el.get("name") or ""))
+
+
 def merge_environment(env_root, asset, wb, env_dir, warnings):
     """Mischt NUR die Objekte der Umgebung in die Basis ein.
 
@@ -134,6 +175,9 @@ def merge_environment(env_root, asset, wb, env_dir, warnings):
                 continue  # Licht kommt aus der Basis
             if el.tag == "geom" and el.get("type") == "plane":
                 continue  # Boden kommt aus der Basis
+            if _is_grasp_geom(el):
+                wb.append(_wrap_grasp_geom(el))
+                continue
             wb.append(el)
 
     # Auf Abschnitte hinweisen, die eine reine Objekt-Umgebung normalerweise

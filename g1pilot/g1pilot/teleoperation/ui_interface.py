@@ -9,7 +9,7 @@ import threading
 import time
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QGridLayout, QPushButton, QVBoxLayout,
-    QHBoxLayout, QSlider, QLabel
+    QHBoxLayout, QSlider, QLabel, QInputDialog, QMessageBox
 )
 from PyQt6.QtCore import QTimer, Qt, QPointF
 from PyQt6.QtGui import QPainter, QColor, QPen, QBrush
@@ -104,6 +104,10 @@ class StreamDeck(Node):
         self.pub_push = self.create_publisher(Bool, '/g1pilot/push', 10)
         self.pub_grasp_box = self.create_publisher(Bool, '/g1pilot/grasp_box', 10)
         self.pub_catch_falls = self.create_publisher(Bool, '/g1pilot/catch_falls', 10)
+        # Positionsspeicher (plan-execute), siehe g1pilot/SCENE_BRIDGE.md Abschnitt 9.
+        self.pub_pose_save = self.create_publisher(String, '/g1pilot/pose_store/save', 10)
+        self.pub_pose_goto = self.create_publisher(String, '/g1pilot/pose_store/goto', 10)
+        self.pub_pose_cancel = self.create_publisher(Bool, '/g1pilot/pose_store/cancel', 10)
 
     def publish_bool(self, pub, value: bool):
         msg = Bool()
@@ -184,6 +188,15 @@ class ButtonGUI(QWidget):
             (2, 2): ("OPEN\nRIGHT\nHAND", lambda: self.toggle_hand("right", "open", self.node.pub_right_hand)),
             (2, 3): ("CLOSE\nRIGHT\nHAND", lambda: self.toggle_hand("right", "close", self.node.pub_right_hand)),
             (2, 4): ("INSPIRE\nFTP\nGUIs", self.open_hand_guis),
+
+            # Positionsspeicher (plan-execute): Endpunkt speichern/anfahren,
+            # die Bahn wird bei ANFAHREN jedes Mal neu geplant (arm_planner.py,
+            # kollisionsfrei um Hindernisse). ABBRECHEN bricht eine laufende
+            # geplante Bewegung ab (dasselbe passiert automatisch, sobald ein
+            # Marker angefasst wird -- siehe SCENE_BRIDGE.md Abschnitt 8).
+            (3, 0): ("POSE\nSPEICHERN", self._pose_save),
+            (3, 1): ("POSE\nANFAHREN", self._pose_goto),
+            (3, 2): ("POSE\nABBRECHEN", self._pose_cancel),
 
             (4, 4): ("EMERGENCY\nSTOP", self.emergency_stop),
         }
@@ -445,6 +458,62 @@ class ButtonGUI(QWidget):
         self.set_button_active(this_pos, True)
         self.set_button_active(other_pos, False)
         self.node.publish_str(pub, action)
+
+    def _flash_visual(self, pos, duration=400):
+        """Rein optisches Kurz-Aufleuchten eines Buttons (ohne Bool-Publish --
+        fuer die String-Topics des Positionsspeichers, siehe flash_button()
+        oben fuer das Bool-Pendant)."""
+        self.set_button_active(pos, True)
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(lambda: self.set_button_active(pos, False))
+        timer.start(duration)
+
+    def _list_saved_poses(self):
+        """Liest den Pose-Store DIREKT von der Platte -- dieselbe Datei, die
+        arm_controller.py schreibt/liest (siehe manipulation/pose_store.py).
+        Kein ROS-Service-Umweg noetig, beide Prozesse laufen im selben
+        Container/unter demselben User."""
+        try:
+            from g1pilot.manipulation.pose_store import PoseStore
+            return PoseStore().list_names()
+        except Exception as e:
+            self.node.get_logger().warn(f"Pose-Liste konnte nicht gelesen werden: {e}")
+            return []
+
+    def _pose_save(self):
+        """Aktuelle Arm-Konfiguration unter einem Namen speichern (siehe
+        arm_controller._on_pose_save -- speichert die zuletzt kommandierte
+        Gelenkstellung, NICHT die Marker-Zielpose)."""
+        name, ok = QInputDialog.getText(self, "Pose speichern", "Name der Pose:")
+        name = (name or "").strip()
+        if not ok or not name:
+            return
+        self.node.publish_str(self.node.pub_pose_save, name)
+        self._flash_visual((3, 0))
+
+    def _pose_goto(self):
+        """Gespeicherte Pose auswaehlen und anfahren -- arm_controller plant
+        die Bahn dorthin NEU (kollisionsfrei um die aktuellen Hindernisse/
+        Greif-Objekte), die Startpose ist ja jedes Mal anders."""
+        names = self._list_saved_poses()
+        if not names:
+            QMessageBox.information(self, "Keine Posen",
+                                    "Noch keine Pose gespeichert (POSE SPEICHERN).")
+            return
+        name, ok = QInputDialog.getItem(
+            self, "Pose anfahren", "Gespeicherte Pose:", names, 0, False)
+        if not ok or not name:
+            return
+        self.node.publish_str(self.node.pub_pose_goto, name)
+        self._flash_visual((3, 1))
+
+    def _pose_cancel(self):
+        """Laufende geplante Bewegung abbrechen (passiert auch automatisch,
+        sobald ein Marker angefasst wird -- hier fuer den expliziten Fall ohne
+        Marker-Beruehrung)."""
+        self.node.publish_bool(self.node.pub_pose_cancel, True)
+        self._flash_visual((3, 2))
 
     def emergency_stop(self):
         """Turns all buttons OFF and publishes False to all Bool topics."""
