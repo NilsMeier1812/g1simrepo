@@ -395,31 +395,50 @@ geplanter Positionsspeicher-Modus mit RRT-Connect), Streamdeck-Buttons.
 zurückgestellt): LiDAR-Perzeptionsebene (§11), Basis-Positionsspeicher (§10,
 Nav war explizit nicht Prio), MoveIt/OMPL-Migration.
 
-**Wie geprüft wurde** (dieses Environment hat kein MuJoCo-Display/ROS2-Runtime
-— ehrliche Einordnung, keine Behauptung von End-to-End-Tests im echten Stack):
+**Wie geprüft wurde** (dieses Environment hat kein RViz/ROS2-Runtime, aber
+MuJoCo und Pinocchio ließen sich per pip installieren — daher konnte ein
+Großteil *wirklich ausgeführt* werden, nicht nur gelesen):
 - `scene_objects.py` (XML-Parser, STL-AABB, Pose-Komposition inkl. Rotation)
-  und `pose_store.py`: mit synthetischen Fixtures **ausgeführt und verifiziert**
-  (reines Python, keine Fremdabhängigkeit).
-- `build_env_scene.py`: die `grasp_`→Freikörper-Umwandlung **tatsächlich
-  ausgeführt** (echtes Skript, echte G1-Robotermodelle) und die XML-Ausgabe
-  geprüft.
+  und `pose_store.py`: mit synthetischen Fixtures **ausgeführt und verifiziert**.
+- `build_env_scene.py` + **echte MuJoCo-Physik**: eine `grasp_`-Szene erzeugt,
+  mit `mujoco.MjModel` **kompiliert** und geprüft, dass das Greif-Objekt ein
+  freier (beweglicher) Körper ist (fällt unter Schwerkraft), das Hindernis
+  statisch bleibt, und die Live-Pose-Auslese (`mj_data.xpos/xquat`) korrekt ist.
+- `scene_state_publisher.py` + **echter UDP-Transport**: mit kompiliertem
+  Modell instanziiert, Snapshot über einen echten Loopback-Socket gesendet und
+  empfangen; verifiziert, dass sich die Greif-Objekt-Pose im Payload live
+  bewegt (z 0,9 → 0,71 nach 100 Physikschritten), Hindernis-Pose statisch bleibt.
 - `scene_markers.py`: Marker↔MuJoCo-Umrechnung, Rotation, Footprint-AABB
-  **mit gestubbten ROS-Messages ausgeführt und verifiziert** (u.a. 45°-Rotation
-  gegen Handrechnung geprüft).
-- `ik_solver.py`/`arm_planner.py`: **mit dem echten G1-URDF und echtem
-  Pinocchio geladen und ausgeführt** (pip-Pakete `pin`/`coal` lassen sich hier
-  installieren) — Umgebungs-ACM (Hindernis blockt, Grasp an der Hand erlaubt,
-  an Ellbogen weiter blockt), RRT-Connect-Umwegplanung um ein echtes Hindernis
-  (inkl. unabhängiger Nachprüfung jedes Wegpunkt-Segments) und ein gezielter
-  Mehr-Thread-Stresstest (Planungs-Thread gleichzeitig mit simuliertem
-  250-Hz-Regelkreis) liefen **ohne Fehlschlag**.
-- `arm_controller.py`: mit umfangreich gestubbten ROS-/DDS-Abhängigkeiten
-  **instanziiert und durchlaufen** — Pose speichern, Planung anstoßen, die
-  komplette Wegpunkt-Zustandsmaschine bis zum Abschluss (realistische
-  Taktrate simuliert) liefen fehlerfrei.
-- **Nicht geprüft** (dieses Environment kann es nicht): echte MuJoCo-Physik
-  (Greifen/Freikörper-Verhalten), echter UDP-Transport zwischen zwei
-  Containern, RViz-Darstellung, das reale 250-Hz-Timing/DDS, Docker-Compose-
-  Build. Vor dem ersten Einsatz am/mit dem echten Roboter: in der Sim mit
-  E-Stop griffbereit gegenprüfen, insbesondere den Positionsspeicher-Modus.
+  **ausgeführt** (u.a. 45°-Rotation gegen Handrechnung).
+- **Vollständige Pipeline-Integration ausgeführt**: reale Szene → Payload →
+  Marker → `create_map`-Footprint (Box + Mesh mit korrekten Größen) **und**
+  `arm_controller._on_scene_markers` → `ik_solver.sync_environment` → ein
+  Marker an der Handposition löst die Umgebungs-Kollision korrekt aus.
+- `ik_solver.py`/`arm_planner.py`: **mit echtem G1-URDF und Pinocchio** —
+  Umgebungs-ACM, RRT-Connect-Umwegplanung um ein echtes Hindernis (inkl.
+  unabhängiger Segment-Nachprüfung), Mehr-Thread-Stresstest.
+- `arm_controller.py`: mit gestubbten ROS-/DDS-Abhängigkeiten **instanziiert
+  und durchlaufen** — komplette Wegpunkt-Zustandsmaschine bis zum Abschluss
+  (realistische Taktrate) **plus 8 Sicherheits-Szenarien** für den
+  Positionsspeicher: normale Bewegung, E-Stop während der Planung, Planung
+  fertig während DISABLED + Re-ENABLE, Marker-Griff bricht aktive/laufende
+  Planung ab, zwei schnelle Anfahrten (nur die letzte gewinnt), POSE ABBRECHEN.
+- **Nicht geprüft** (dieses Environment kann es nicht): RViz-Darstellung, das
+  reale 250-Hz-Timing/DDS am Roboter, der Docker-Compose-Build. Vor dem ersten
+  Einsatz am/mit dem echten Roboter: in der Sim mit E-Stop griffbereit
+  gegenprüfen, insbesondere den Positionsspeicher-Modus.
+
+**In diesem Review gefundene und behobene Bugs:**
+1. **Mesh-Pfad-Auflösung** (`scene_objects.py`): Mesh-Dateien wurden relativ
+   zum Szenen-Ordner statt zu `meshdir` (`g1/meshes/`) gesucht → alle Mesh-
+   Objekte bekamen `aabb_half=None` und damit im Nav-Grid/in der IK-Kollision
+   nur eine winzige 0,1³-Default-Box statt ihrer echten Größe (RViz war nicht
+   betroffen). Fix: `meshdir`-bewusste Mehrfach-Basis-Auflösung.
+2. **Überraschungsbewegung nach E-Stop/Disable** (`arm_controller.py`): Wurde
+   eine Planung fertig, während die Arme per E-Stop/DISABLE gesperrt waren,
+   aktivierte sie sich beim nächsten ENABLE unerwartet. Ebenso konnte ein
+   Marker-Griff *während* laufender Planung deren späteres Ergebnis nicht
+   entwerten. Fix: Generations-Zähler (`_plan_gen`) — jeder Abbruch/jede neue
+   Anfahrt invalidiert in-flight-Ergebnisse race-frei; zusätzlich Abbruch bei
+   E-Stop/ENABLE/DISABLE/HOMING/WALK/Marker/ABBRECHEN.
 

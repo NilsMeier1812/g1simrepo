@@ -275,6 +275,13 @@ class ArmController(Node):
         self._planning_thread = None
         self._plan_result = DataBuffer()               # Thread-sicherer Handoff Planer -> main_loop
         self._plan_result_seen = None
+        # Generations-Zaehler: jeder POSE ANFAHREN erhoeht ihn, jeder Abbruch
+        # (E-Stop/DISABLE/Marker/HOMING/WALK/ABBRECHEN) ebenfalls. Ein Planungs-
+        # Ergebnis wird NUR aktiviert, wenn seine Generation noch die aktuelle
+        # ist -- so kann ein Marker-Griff (oder E-Stop) WAEHREND einer noch
+        # laufenden Planung deren spaeteres Ergebnis zuverlaessig entwerten,
+        # ohne dass es schon vorliegen muesste (race-frei).
+        self._plan_gen = 0
 
         self._T_off_right_static = self._mk_static_T(self._ee_off_right_xyz, self._ee_off_right_rpy_deg)
         self._T_off_left_static = self._mk_static_T(self._ee_off_left_xyz, self._ee_off_left_rpy_deg)
@@ -956,6 +963,7 @@ class ArmController(Node):
         self.homing_active = False
         self.homing_reached = False
         self.walk_mode = False
+        self._abort_planned_motion()   # keine Ueberraschungsbewegung nach dem Quittieren
         self._weight_state = "off"
         self._arm_sdk_weight = 1.0     # Autoritaet behalten (kein Onboard-Snap)
         self._publish_arm_slack()
@@ -993,6 +1001,12 @@ class ArmController(Node):
                                    "START quittieren.")
             return
         self.arms_enabled = msg.data
+        # Reste einer geplanten Bewegung IMMER verwerfen (Enable UND Disable):
+        # sonst feuerte ein waehrend disabled fertig gewordener Plan beim
+        # naechsten Enable als Ueberraschung los -- gleiche Vorsicht wie beim
+        # Homing unten. (Auch beim Disable, damit ein noch laufender Planungs-
+        # Thread sein Ergebnis nicht spaeter aktiviert.)
+        self._abort_planned_motion()
         if self.arms_enabled:
             # Slack-Latch aufheben: ENABLE holt die Kontrolle bewusst zurueck.
             self._arm_slack = False
@@ -1054,6 +1068,7 @@ class ArmController(Node):
                 self.get_logger().warn("HOMING ignoriert: Manipulation nicht "
                                        "aktiv (erst ENABLE MANIPULATION).")
                 return
+            self._abort_planned_motion("HOMING gestartet")
             self.get_logger().info("Moving both arms to HOME position.")
             self.homing_active = True
             self.homing_reached = False
@@ -1095,6 +1110,7 @@ class ArmController(Node):
         self.walk_mode = True
         self.homing_active = False
         self.homing_reached = False
+        self._abort_planned_motion("WALK gestartet")
         self._walk_ready_sent = False    # erst melden, wenn die Lauf-Pose erreicht ist
         self.get_logger().info("WALK-Modus: Arme in Lauf-Pose aufraeumen, dann walk_ready.")
 
@@ -1196,10 +1212,7 @@ class ArmController(Node):
     def _on_pose_cancel(self, msg: Bool):
         if not msg.data:
             return
-        if self._planned_motion_active:
-            self._planned_motion_active = False
-            self._planned_order = []
-            self.get_logger().info("Geplante Bewegung abgebrochen (POSE ABBRECHEN).")
+        self._abort_planned_motion("POSE ABBRECHEN")
 
     def _on_pose_goto(self, msg: String):
         name = (msg.data or "").strip()
@@ -1218,20 +1231,24 @@ class ArmController(Node):
             self.get_logger().warn("Es laeuft bereits eine Planung -- bitte warten.")
             return
         q_left_goal, q_right_goal = entry
+        self._plan_gen += 1                    # neue Planungs-Generation
+        gen = self._plan_gen
         self.get_logger().info(f"Plane Weg zu Pose '{name}' ...")
         self._planning_thread = threading.Thread(
             target=self._plan_pose_worker,
-            args=(name, np.asarray(q_left_goal, dtype=float), np.asarray(q_right_goal, dtype=float)),
+            args=(name, gen, np.asarray(q_left_goal, dtype=float),
+                  np.asarray(q_right_goal, dtype=float)),
             daemon=True)
         self._planning_thread.start()
 
-    def _plan_pose_worker(self, name: str, q_left_goal: np.ndarray, q_right_goal: np.ndarray):
+    def _plan_pose_worker(self, name: str, gen: int,
+                          q_left_goal: np.ndarray, q_right_goal: np.ndarray):
         """Laeuft in einem Hintergrund-Thread (RRT-Connect kann Sekunden
         dauern) -- blockt NIE den 250-Hz-Regelkreis. Plant rechts, dann links
         NACHEINANDER (siehe arm_planner.py-Moduldoku): der jeweils andere Arm
         gilt waehrend der Planung als FEST (aktuelle bzw. -- fuer den zweiten
-        Arm -- bereits am Ziel stehend). Ergebnis geht per DataBuffer
-        (thread-sicher) an main_loop."""
+        Arm -- bereits am Ziel stehend). Ergebnis (mit Generation `gen`) geht
+        per DataBuffer (thread-sicher) an main_loop."""
         try:
             base_current_all = (self.get_current_motor_q() if self.use_robot
                                 else self._assemble_full_from_last())
@@ -1246,7 +1263,7 @@ class ArmController(Node):
                 path, reason = plan_arm_joint_path(
                     self.ik_solver, side, base_current_all, q_start, q_goal, limits)
                 if path is None:
-                    self._plan_result.SetData(("failed", name, side, reason))
+                    self._plan_result.SetData(("failed", name, gen, side, reason))
                     self.get_logger().warn(
                         f"Planung zu Pose '{name}' ({side}) fehlgeschlagen: {reason}")
                     return
@@ -1257,24 +1274,38 @@ class ArmController(Node):
                 for i, jidx in enumerate(idx_list):
                     base_current_all[jidx] = q_goal[i]
             total_wp = sum(len(v) for v in results.values())
-            self._plan_result.SetData(("ok", name, results))
+            self._plan_result.SetData(("ok", name, gen, results))
             self.get_logger().info(
                 f"Planung zu Pose '{name}' erfolgreich ({total_wp} Wegpunkte gesamt).")
         except Exception as e:
-            self._plan_result.SetData(("failed", name, "both", str(e)))
+            self._plan_result.SetData(("failed", name, gen, "both", str(e)))
             self.get_logger().error(f"Planung zu Pose '{name}' abgestuerzt: {e}")
 
     def _poll_plan_result(self):
         """Pro Tick billig pruefen, ob eine Hintergrund-Planung fertig wurde
         (neues Objekt im DataBuffer -- Identitaetsvergleich reicht, SetData
-        ersetzt das Objekt bei jedem Aufruf)."""
+        ersetzt das Objekt bei jedem Aufruf). Aktiviert nur Ergebnisse der
+        AKTUELLEN Generation (result[2]); veraltete (durch Abbruch/neue Planung
+        invalidierte) werden verworfen."""
         result = self._plan_result.GetData()
         if result is None or result is self._plan_result_seen:
             return
         self._plan_result_seen = result
+        if result[2] != self._plan_gen:
+            return   # veraltet: abgebrochen oder von einer neueren Planung ueberholt.
         if result[0] != "ok":
             return   # Fehlschlag wurde schon vom Worker geloggt -- Arm haelt einfach.
-        _, name, results = result
+        # Defense-in-depth: sind die Arme seit dem Planungsstart gesperrt worden
+        # (E-Stop, DISABLE, Homing, WALK)? Dann verwerfen. Normalerweise hat ein
+        # solcher Wechsel _plan_gen bereits erhoeht (Abbruch); diese Pruefung
+        # faengt Restfaelle ab.
+        if (self.estop_active or not self.arms_enabled
+                or self.homing_active or self.walk_mode):
+            self.get_logger().info(
+                f"Geplante Bewegung zu Pose '{result[1]}' verworfen "
+                f"(Arme nicht mehr bereit -- erneut POSE ANFAHREN).")
+            return
+        _, name, _gen, results = result
         self._planned_pose_name = name
         self._planned_waypoints = results
         self._planned_wp_idx = {"left": 0, "right": 0}
@@ -1283,6 +1314,19 @@ class ArmController(Node):
         self.homing_active = False
         self.homing_reached = False
         self.get_logger().info(f"Fahre geplante Bewegung zu Pose '{name}' ab.")
+
+    def _abort_planned_motion(self, reason: str = "") -> None:
+        """Laufende geplante Bewegung abbrechen UND jede noch laufende Planung
+        entwerten: durch Erhoehen von _plan_gen wird ein spaeter eintreffendes
+        Ergebnis in _poll_plan_result verworfen (race-frei -- das Ergebnis muss
+        beim Abbruch noch nicht vorliegen). Wird bei E-Stop, DISABLE, ENABLE,
+        HOMING, WALK, Marker-Griff und POSE ABBRECHEN aufgerufen."""
+        was_active = self._planned_motion_active
+        self._planned_motion_active = False
+        self._planned_order = []
+        self._plan_gen += 1     # invalidiert jedes in-flight/pending Planungs-Ergebnis
+        if was_active and reason:
+            self.get_logger().info(f"Geplante Bewegung abgebrochen ({reason}).")
 
     def _right_goal_callback(self, msg: PoseStamped):
         """
@@ -1308,13 +1352,12 @@ class ArmController(Node):
             return
 
         # Mode-Mux (siehe g1pilot/SCENE_BRIDGE.md Abschnitt 8): manueller
-        # Marker hat IMMER Vorrang -- ein laufender Plan (Positionsspeicher)
-        # wird sofort verworfen, kein Kaempfen zweier Geschwindigkeitsquellen.
-        if self._planned_motion_active:
-            self._planned_motion_active = False
-            self._planned_order = []
-            self.get_logger().info(
-                "Marker bewegt -- geplante Bewegung abgebrochen (manueller Vorrang).")
+        # Marker hat IMMER Vorrang -- ein laufender ODER gerade geplanter Plan
+        # (Positionsspeicher) wird sofort verworfen, kein Kaempfen zweier
+        # Geschwindigkeitsquellen.
+        if self._planned_motion_active or (
+                self._planning_thread is not None and self._planning_thread.is_alive()):
+            self._abort_planned_motion("Marker bewegt -- manueller Vorrang")
 
         if self._reset_after_home:
             self._reset_after_home = False
@@ -1370,13 +1413,12 @@ class ArmController(Node):
             return
 
         # Mode-Mux (siehe g1pilot/SCENE_BRIDGE.md Abschnitt 8): manueller
-        # Marker hat IMMER Vorrang -- ein laufender Plan (Positionsspeicher)
-        # wird sofort verworfen, kein Kaempfen zweier Geschwindigkeitsquellen.
-        if self._planned_motion_active:
-            self._planned_motion_active = False
-            self._planned_order = []
-            self.get_logger().info(
-                "Marker bewegt -- geplante Bewegung abgebrochen (manueller Vorrang).")
+        # Marker hat IMMER Vorrang -- ein laufender ODER gerade geplanter Plan
+        # (Positionsspeicher) wird sofort verworfen, kein Kaempfen zweier
+        # Geschwindigkeitsquellen.
+        if self._planned_motion_active or (
+                self._planning_thread is not None and self._planning_thread.is_alive()):
+            self._abort_planned_motion("Marker bewegt -- manueller Vorrang")
 
         if self._reset_after_home:
             self._reset_after_home = False

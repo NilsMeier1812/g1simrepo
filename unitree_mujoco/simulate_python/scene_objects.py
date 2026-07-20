@@ -143,8 +143,43 @@ def _mesh_local_aabb_half(stl_path: Path):
     return ((xs[1] - xs[0]) / 2.0, (ys[1] - ys[0]) / 2.0, (zs[1] - zs[0]) / 2.0)
 
 
+def _resolve_mesh_file(file_: str, scene_dir: Path, meshdir: str):
+    """Mesh-Datei auf der Platte finden. MuJoCos <compiler meshdir="..."> gilt
+    GLOBAL (auch fuer geerbte/inkludierte Modelle) und macht `file`-Attribute
+    relativ zu scene_dir/meshdir -- die kombinierte Szene (scene_env_<name>.xml)
+    erbt meshdir="meshes" vom G1-Modell, obwohl das <compiler>-Tag im
+    inkludierten g1_29dof.xml steht (ElementTree loest Includes NICHT auf, wir
+    sehen es hier also nicht direkt). Deshalb mehrere Basis-Kandidaten
+    durchprobieren und den ersten existierenden Pfad nehmen:
+      1. scene_dir/meshdir/file  (kombinierte Szene: meshdir='meshes')
+      2. scene_dir/file          (Quell-Szene aus scene_editor/scenes/: '../meshes/..')
+      3. absoluter Pfad
+    Existiert keiner, den meshdir-Kandidaten zurueckgeben (basename bleibt
+    korrekt; die AABB entfaellt dann nur -> konservative Default-Box)."""
+    p = Path(file_)
+    candidates = []
+    if p.is_absolute():
+        candidates.append(p)
+    else:
+        candidates.append((scene_dir / meshdir / file_))
+        candidates.append((scene_dir / file_))
+    for c in candidates:
+        rc = c.resolve()
+        if rc.is_file():
+            return rc
+    return candidates[0].resolve()
+
+
 def _collect_mesh_assets(root, scene_dir: Path):
     """<asset><mesh name=".." file=".." scale=".."/></asset> -> dict name -> info."""
+    # meshdir aus <compiler> lesen, falls im Datei selbst vorhanden; sonst der
+    # G1-Default 'meshes' (die kombinierte Szene erbt ihn, siehe
+    # _resolve_mesh_file).
+    meshdir = "meshes"
+    comp = root.find("compiler")
+    if comp is not None and comp.get("meshdir"):
+        meshdir = comp.get("meshdir")
+
     meshes = {}
     for asset_el in root.findall("asset"):
         for m in asset_el.findall("mesh"):
@@ -155,7 +190,7 @@ def _collect_mesh_assets(root, scene_dir: Path):
             scale = _floats(m.get("scale"), (1.0, 1.0, 1.0))
             if len(scale) == 1:
                 scale = [scale[0]] * 3
-            mesh_path = (scene_dir / file_).resolve()
+            mesh_path = _resolve_mesh_file(file_, scene_dir, meshdir)
             meshes[name] = {
                 "file": str(mesh_path),
                 "basename": os.path.basename(file_),
