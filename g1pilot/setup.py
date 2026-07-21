@@ -91,6 +91,9 @@ setup(
             'dijkstra_planner = g1pilot.navigation.dijkstra_planner:main',
             'nav2point = g1pilot.navigation.nav2point:main',
             'create_map = g1pilot.navigation.create_map:main',
+            # Umgebungs-Objekte (Hindernisse + Greif-Objekte) aus der MuJoCo-Sim
+            # -> /scene_markers (RViz + Nav + IK-Kollision). Siehe SCENE_BRIDGE.md.
+            'scene_bridge = g1pilot.navigation.scene_bridge:main',
             'mola_fixed = g1pilot.navigation.fix_mola_odometry:main',
             # Sim-Nav-Glue (nur Sim): Ersatz fuer MOLA (Pose aus rt/sportmodestate)
             # und Joy->cmd_vel-Bruecke, damit der Real-Nav-Stack in MuJoCo laeuft.

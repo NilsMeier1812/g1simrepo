@@ -87,6 +87,17 @@ def generate_launch_description():
             }.items()
         ),
 
+        # ── 2b. scene_bridge: Umgebungs-Objekte (Hindernisse + Greif-Objekte
+        #    der geladenen G1_ENV-Szene, siehe scene_editor/) -> /scene_markers.
+        #    IMMER gestartet (nicht an G1_ENABLE_NAV gekoppelt!): der IK-Solver
+        #    (arm_controller.py, Schritt 2) braucht die Umgebung genauso wie
+        #    die Nav-Karte weiter unten -- Manipulation soll auch OHNE
+        #    aktivierte Navigation um Hindernisse wissen. Siehe SCENE_BRIDGE.md.
+        Node(
+            package='g1pilot', executable='scene_bridge', name='scene_bridge',
+            output='screen'
+        ),
+
         # ── 3. Teleoperation (Joystick): funktioniert unverändert im Sim ─
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
@@ -159,8 +170,9 @@ def generate_launch_description():
             package='g1pilot', executable='sim_localization', name='sim_localization',
             output='screen', parameters=[{'interface': 'lo'}]
         ))
-        # Statische Belegungskarte (Dummy/leer; Hindernisse in create_map.py
-        # eintragbar). Frame 'map', damit Planer + Pose zusammenpassen.
+        # Belegungskarte aus den Umgebungs-Objekten (/scene_markers -> /map,
+        # siehe scene_bridge weiter unten, IMMER gestartet). Frame 'map',
+        # damit Planer + Pose zusammenpassen.
         nodes.append(Node(
             package='g1pilot', executable='create_map', name='create_map',
             output='screen', parameters=[{'frame_id': 'map'}]

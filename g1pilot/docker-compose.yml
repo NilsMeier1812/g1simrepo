@@ -49,6 +49,9 @@ services:
       # bisheriges Terrain (scene.xml). Sonst laedt config.py die von start.sh
       # erzeugte kombinierte Szene scene_env_<G1_ENV>.xml. Siehe scene_editor/.
       - G1_ENV=${G1_ENV:-}
+      # Szenen-Bruecke (Umgebungs-Objekte -> RViz/Nav/IK, siehe SCENE_BRIDGE.md):
+      # UDP-Port MUSS mit g1pilot-sim uebereinstimmen (unten dieselbe Variable).
+      - SIM_SCENE_PORT=${SIM_SCENE_PORT:-47902}
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ../unitree_mujoco:/unitree_mujoco:ro   # Mountet dein lokales Repo!
@@ -95,6 +98,17 @@ services:
       # Navigation (g1pilot-Ansatz) in der Sim mitstarten: dijkstra_planner +
       # nav2point + Sim-Glue (sim_localization, joy_to_cmdvel). Siehe NAVIGATION.md.
       - G1_ENABLE_NAV=${G1_ENABLE_NAV:-0}
+      # Szenen-Bruecke (siehe SCENE_BRIDGE.md): MUSS zum mujoco-sim-Wert oben passen.
+      - SIM_SCENE_PORT=${SIM_SCENE_PORT:-47902}
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - .:/ros2_ws/src/g1pilot:rw
+      # Scene-Editor-Meshes read-only mounten, damit RViz MESH_RESOURCE-Marker
+      # (/scene_markers, siehe scene_bridge.py) tatsaechlich laden kann -- der
+      # g1pilot-Container hat sonst KEINEN Zugriff auf unitree_mujoco/ (das
+      # liegt nur im mujoco-sim-Container). Fixer Pfad, den scene_bridge.py als
+      # mesh_resource_prefix-Default erwartet.
+      - ../unitree_mujoco/scene_editor/meshes:/scene_meshes:ro
     command: >
       bash -c "cd /ros2_ws &&
                source /opt/ros/humble/setup.bash &&

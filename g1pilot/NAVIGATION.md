@@ -23,7 +23,7 @@ sich (weil MuJoCo kein LiDAR hat und `loco_sim` keinen Joystick liest):
 | Follower | `nav2point` | `nav2point` *(gleich)* |
 | Joy-Mux | `joy_mux` | `joy_mux` *(gleich)* |
 | Loco-Anbindung | `joy_to_cmdvel` → `loco_sim` | Joy direkt → `loco_client` (Unitree-Onboard) |
-| Karte | `create_map` (Dummy, leer) | `create_map`/echte Karte *(sonst Geradeaus)* |
+| Karte | `create_map` aus `/scene_markers` (echte Umgebung, siehe `scene_bridge`) | `create_map` (Dummy/leer — kein MuJoCo/G1_ENV auf real, s.u.) |
 
 Alles andere (Ziel-Topic, Pfad, auto_enable, Achsen) ist **identisch** — was du
 in der Sim übst, gilt 1:1 real.
@@ -67,8 +67,9 @@ stehen.
 - **RViz:** oben in der Toolbar **„2D Goal Pose"** anklicken, dann in die Karte
   klicken-ziehen. In `nav.rviz` ist das Werkzeug bereits auf `/g1pilot/goal`
   konfiguriert und der Fixed Frame ist `map` — es funktioniert also direkt, ohne
-  Einstellungen. (Die leere graue Karte ist normal: `create_map` ist ein
-  Dummy — geklickt werden kann trotzdem ueberall.)
+  Einstellungen. In der Sim zeigt die Karte jetzt die Objekte der geladenen
+  Umgebung (siehe `SCENE_BRIDGE.md`); ohne eigene `G1_ENV`-Umgebung (oder auf
+  real) ist sie leer — geklickt werden kann trotzdem ueberall.
   > **Die Zieh-Richtung = die End-Ausrichtung.** Der Roboter faehrt zum Punkt und
   > dreht sich dort **auf der Stelle** auf genau diesen Yaw (kuerzester Weg). Nur
   > klicken (nicht ziehen) = Yaw 0. Tuning in `nav2point` (Live via `--ros-args -p`):
@@ -123,11 +124,13 @@ direkt fährt. **Erst gründlich in der Sim geübt haben** (siehe unten).
 
 ## 5 · Worauf du achten musst ⚠️
 
-- **Keine echte Hindernisvermeidung.** Die Karte (`create_map`) ist ein **leerer
-  Dummy** → der Planer plant faktisch **geradeaus** und der Follower fährt die
-  Wegpunkte **blind** ab. Er weicht spontanen Hindernissen (Menschen!) **nicht**
-  aus. Nur in **freier, kontrollierter** Fläche einsetzen. (Echte
-  Hinderniskarte = späterer Ausbau: MOLA-Occupancy statt Dummy, oder ROS Nav2.)
+- **Hindernisvermeidung nur fuer die geladene Umgebung, nicht spontan.** In der
+  Sim rastert `create_map` jetzt die Objekte der geladenen `G1_ENV`-Umgebung
+  (siehe `SCENE_BRIDGE.md`) in die Karte — der Planer weicht ihnen also aus.
+  **Spontane** Hindernisse (Menschen, verschobene Objekte ohne eigenes
+  `G1_ENV`-Rebuild) sieht er **nicht** — es gibt keine Live-Perzeption (LiDAR/
+  Kamera). Auf **real** ist die Karte weiterhin ein **leerer Dummy** (kein
+  MuJoCo/G1_ENV). Nur in **freier, kontrollierter** Fläche einsetzen.
 - **Roboter muss laufbereit sein.** In der Sim erst `START BALANCING` **und**
   `START WALKING`; real erst `START BALANCING`. Sonst passiert auf ein Ziel hin
   nichts (oder er steht nur).
@@ -188,9 +191,10 @@ tauschen):
    (Frame `map`). Real: **MOLA** (Livox-SLAM) + `mola_fixed` (Orientierungs-Fix).
    Sim: **`sim_localization`** liest die MuJoCo-Ground-Truth (`rt/sportmodestate`
    für x/y + IMU für Yaw) und tritt an dieselbe Stelle.
-2. **`create_map`** — publiziert die Belegungskarte `/map` (aktuell leerer Dummy;
-   Hindernisse lassen sich in `create_map.py` eintragen, später durch eine echte
-   Karte ersetzen).
+2. **`create_map`** — publiziert die Belegungskarte `/map`. In der Sim gerastert
+   aus `/scene_markers` (den Objekten der geladenen `G1_ENV`-Umgebung, siehe
+   `scene_bridge` und `SCENE_BRIDGE.md`); auf real (kein MuJoCo/G1_ENV) bleibt
+   sie ein leerer Dummy.
 3. **`dijkstra_planner`** — nimmt Karte + Pose + Ziel und rechnet einen kürzesten
    Pfad auf dem Raster: Hindernis-**Inflation** (Sicherheitsabstand),
    **Line-of-Sight-Shortcut**, **Catmull-Rom-Glättung**, **Turn-Cost** (bevorzugt
@@ -222,7 +226,7 @@ ungetesteten Steuerweg zum Roboter.
 | Roboter ruckelt / zwei Tempo-Quellen | UI-/PS4-Joystick losgelassen? Bei Auto nicht gleichzeitig manuell fahren. |
 | Fährt am Ziel vorbei / dreht komisch | `nav2point`-Limits/`pos_kp`/`yaw_kp` bzw. `waypoint_tolerance` prüfen. |
 | RViz zeigt Roboter im Ursprung fest | Nur mit Nav bewegt sich das TF-Modell (`sim_localization` liefert die dyn. TF). Fixed Frame in RViz = `map`. |
-| „läuft in Hindernis" | Erwartbar — Dummy-Karte, keine Live-Hindernisvermeidung. Fläche frei halten. |
+| „läuft in Hindernis" | Sim: läuft `scene_bridge`? Objekt in `G1_ENV`? Ohne eigene Umgebung/auf real ist die Karte weiterhin leer (keine Live-Perzeption) — Fläche frei halten. |
 
 Weiterführend: `REAL_TESTING.md` (Hardware-Runbook), `PREFLIGHT.md`
 (Abnahme-Checkliste), `CHEATS.md` (Topic-Referenz).

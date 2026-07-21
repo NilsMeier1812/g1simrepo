@@ -1,46 +1,95 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+create_map — Belegungskarte (/map) aus den echten Umgebungs-Objekten.
+
+Fruehere Version: ein leerer Dummy (Hindernisse fest im Code auskommentiert,
+siehe Git-Historie) -- der Planer plante faktisch geradeaus. Jetzt rastert
+dieser Node die Objekte, die scene_bridge aus der laufenden MuJoCo-Sim als
+/scene_markers veroeffentlicht (siehe g1pilot/SCENE_BRIDGE.md), in eine
+2D-Belegungskarte. Das sind GENAU die Objekte, die im Scene-Editor gebaut und
+beim Sim-Start als G1_ENV geladen wurden.
+
+Sowohl Hindernisse ALS AUCH Greif-Objekte zaehlen hier als belegt: ein
+greifbares Objekt auf dem Boden ist BIS ZUM Greifen trotzdem ein Hindernis
+fuer die laufende Basis. Die Hindernis/Greif-Unterscheidung (Kollision OK vs.
+ausweichen) betrifft nur den ARM -- siehe ik_solver.py.
+"""
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, DurabilityPolicy
 from nav_msgs.msg import OccupancyGrid
 from geometry_msgs.msg import Pose
+from visualization_msgs.msg import MarkerArray
 
-class DummyMapPublisher(Node):
+from g1pilot.navigation import scene_markers as sm
+
+
+class SceneMapPublisher(Node):
     def __init__(self):
-        super().__init__('dummy_map_publisher')
+        super().__init__('scene_map_publisher')
         self.declare_parameter('width', 100)
         self.declare_parameter('height', 100)
         self.declare_parameter('resolution', 0.1)
-        self.declare_parameter('frame_id', 'odom')
-        self.declare_parameter('obstacles', '')
+        self.declare_parameter('frame_id', 'map')
+        self.declare_parameter('markers_topic', '/scene_markers')
+        self.declare_parameter('publish_rate_hz', 1.0)
+
         self.w = int(self.get_parameter('width').value)
         self.h = int(self.get_parameter('height').value)
         self.res = float(self.get_parameter('resolution').value)
         self.frame_id = self.get_parameter('frame_id').value
-        self.pub = self.create_publisher(OccupancyGrid, '/map', 1)
-        self.timer = self.create_timer(1.0, self.publish_map)
-        self.map_data = [0]*(self.w*self.h)
-        self.ox = -(self.w*self.res)/2.0
-        self.oy = -(self.h*self.res)/2.0
+        self.ox = -(self.w * self.res) / 2.0
+        self.oy = -(self.h * self.res) / 2.0
 
-        # self.add_obstacle(2.0, 1.75, 1.2, 0.2)
-        # self.add_obstacle(2.0, 0.25, 1.2, 0.2)
-        # self.add_obstacle(0.8, 1.0, 0.2, 1.5)   
+        qos = QoSProfile(depth=1)
+        qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        self.sub_markers = self.create_subscription(
+            MarkerArray, self.get_parameter('markers_topic').value, self._on_markers, qos)
+        self.pub = self.create_publisher(OccupancyGrid, '/map', 1)
+
+        self._latest_markers = None
+        rate = float(self.get_parameter('publish_rate_hz').value)
+        self.timer = self.create_timer(1.0 / rate if rate > 0 else 1.0, self.publish_map)
+
+        self.get_logger().info(
+            f"create_map aktiv: rastert '{self.get_parameter('markers_topic').value}' "
+            f"({self.w}x{self.h} @ {self.res} m/Zelle, Frame '{self.frame_id}')."
+        )
+
+    def _on_markers(self, msg: MarkerArray):
+        self._latest_markers = msg
 
     def world_to_grid(self, x, y):
-        ix = int((x - self.ox)/self.res)
-        iy = int((y - self.oy)/self.res)
+        ix = int((x - self.ox) / self.res)
+        iy = int((y - self.oy) / self.res)
         return ix, iy
 
-    def add_obstacle(self, x, y, largo, ancho):
-        cx, cy = self.world_to_grid(x, y)
-        hx = max(1, int(round((largo/2.0)/self.res)))
-        hy = max(1, int(round((ancho/2.0)/self.res)))
-        x0 = max(0, cx - hx); x1 = min(self.w-1, cx + hx)
-        y0 = max(0, cy - hy); y1 = min(self.h-1, cy + hy)
-        for yy in range(y0, y1+1):
-            base = yy*self.w
-            for xx in range(x0, x1+1):
-                self.map_data[base+xx] = 100
+    def _stamp_footprint(self, map_data, cx, cy, hx, hy):
+        """Achsenparalleles Rechteck (Welt-Halbextents hx,hy um cx,cy) als
+        belegt (100) in die Rasterkarte stempeln."""
+        ix0, iy0 = self.world_to_grid(cx - hx, cy - hy)
+        ix1, iy1 = self.world_to_grid(cx + hx, cy + hy)
+        x0, x1 = max(0, min(ix0, ix1)), min(self.w - 1, max(ix0, ix1))
+        y0, y1 = max(0, min(iy0, iy1)), min(self.h - 1, max(iy0, iy1))
+        for yy in range(y0, y1 + 1):
+            base = yy * self.w
+            for xx in range(x0, x1 + 1):
+                map_data[base + xx] = 100
+
+    def _build_map_data(self):
+        data = [0] * (self.w * self.h)
+        if self._latest_markers is None:
+            return data
+        for marker in self._latest_markers.markers:
+            if marker.action != 0:   # 0 == Marker.ADD; DELETE/andere ueberspringen
+                continue
+            try:
+                x, y, hx, hy = sm.footprint_xy(marker)
+            except (AttributeError, ZeroDivisionError):
+                continue
+            self._stamp_footprint(data, x, y, hx, hy)
+        return data
 
     def publish_map(self):
         grid = OccupancyGrid()
@@ -54,12 +103,13 @@ class DummyMapPublisher(Node):
         origin.position.y = self.oy
         origin.orientation.w = 1.0
         grid.info.origin = origin
-        grid.data = self.map_data
+        grid.data = self._build_map_data()
         self.pub.publish(grid)
+
 
 def main(args=None):
     rclpy.init(args=args)
-    node = DummyMapPublisher()
+    node = SceneMapPublisher()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
@@ -67,6 +117,7 @@ def main(args=None):
     finally:
         node.destroy_node()
         rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()

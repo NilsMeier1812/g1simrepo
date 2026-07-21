@@ -162,6 +162,20 @@ LOCO_RESET_PELVIS_Z = 0.78   # Pelvis-Hoehe beim Aufstehen in die Stand-Pose (Fu
 # === LOCO MANAGED WELD END ===
 
 
+# === SZENEN-BRUECKE (Objekte -> RViz/Nav/IK) ===
+# Sendet die Umgebungs-Objekte (Hindernisse + greifbare Objekte) periodisch per
+# UDP an den ROS-Container (scene_bridge liest sie und baut daraus /scene_markers
+# fuer RViz, den Nav-Planer und das IK-Kollisions-Gate). Details: siehe
+# scene_state_publisher.py. Port MUSS mit g1pilot/g1pilot/navigation/
+# scene_bridge.py uebereinstimmen -- docker-compose.yml setzt SIM_SCENE_PORT in
+# BEIDEN Containern auf denselben Wert.
+SCENE_ENABLE = _env_truthy("SCENE_ENABLE", True)
+SCENE_UDP_PORT = int(os.environ.get("SIM_SCENE_PORT", "47902"))
+SCENE_UDP_HOST = os.environ.get("SIM_SCENE_HOST", "127.0.0.1")
+SCENE_PUBLISH_HZ = float(os.environ.get("SIM_SCENE_HZ", "10.0"))
+# === SZENEN-BRUECKE END ===
+
+
 # === SIM PUSH (Stoer-Impuls / "Schubs") ===
 # Stoer-Test fuer den Balancer: ein UDP-Trigger (vom Streamdeck-Button ueber
 # loco_sim) bringt fuer kurze Zeit eine externe Kraft in ZUFAELLIGER horizontaler

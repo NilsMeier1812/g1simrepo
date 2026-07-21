@@ -7,10 +7,11 @@ import rclpy
 from rclpy.node import Node
 from rclpy.duration import Duration
 from rclpy.time import Time
+from rclpy.qos import QoSProfile, DurabilityPolicy
 from geometry_msgs.msg import PoseStamped, Point
-from visualization_msgs.msg import Marker
+from visualization_msgs.msg import Marker, MarkerArray
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Bool, ColorRGBA
+from std_msgs.msg import Bool, ColorRGBA, String
 from tf2_ros import Buffer, TransformListener
 from tf2_geometry_msgs import do_transform_pose
 import pinocchio as pin
@@ -26,6 +27,9 @@ from g1pilot.utils.joints_names import (
 )
 
 from g1pilot.utils.ik_solver import G1IKSolver
+from g1pilot.navigation import scene_markers as sm
+from g1pilot.manipulation.pose_store import PoseStore
+from g1pilot.manipulation.arm_planner import plan_arm_joint_path, shortcut_path
 
 from unitree_sdk2py.core.channel import ChannelPublisher, ChannelSubscriber
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_ , LowState_
@@ -152,6 +156,16 @@ class ArmController(Node):
         # gegen Selbstkollision geprueft (Marge s. ik_solver.collision_margin);
         # bei Verletzung haelt der Arm an, statt in den Koerper zu fahren.
         self.declare_parameter("self_collision_gate", True)
+        # Umgebungs-Kollisions-Gate: dieselbe Pruefung, aber gegen die Objekte
+        # aus /scene_markers (Hindernisse -> ausweichen, Greif-Objekte -> Hand
+        # darf ran, siehe ik_solver.environment_command_in_collision). Eigener
+        # Schalter, unabhaengig von self_collision_gate (siehe g1pilot/
+        # SCENE_BRIDGE.md Abschnitt 6).
+        self.declare_parameter("environment_collision_gate", True)
+        # Toleranz [rad], ab der ein Wegpunkt der GEPLANTEN Bewegung
+        # (Positionsspeicher, siehe SCENE_BRIDGE.md Abschnitt 9) als erreicht
+        # gilt und der naechste Wegpunkt drankommt.
+        self.declare_parameter("planned_motion_tolerance", 0.02)
         # Daempfung [kd] der Arm-Gelenke im E-Stop/Slack-Zustand. kp=0/tau=0 ->
         # keine Positionshaltung; kleines kd -> die Arme sacken GEDAEMPFT statt
         # frei zu fallen (an Seilen abgefangen). 0.0 = voellig frei (harter Fall).
@@ -191,6 +205,8 @@ class ArmController(Node):
         self.arm_velocity_limit = float(self.get_parameter("arm_velocity_limit").value)
         self.ee_velocity_limit = float(self.get_parameter("ee_velocity_limit").value)
         self.self_collision_gate = bool(self.get_parameter("self_collision_gate").value)
+        self.environment_collision_gate = bool(self.get_parameter("environment_collision_gate").value)
+        self.planned_motion_tolerance = float(self.get_parameter("planned_motion_tolerance").value)
         self.estop_arm_kd = float(self.get_parameter("estop_arm_kd").value)
         self.rate_hz = float(self.get_parameter("rate_hz").value)
         self.frame = str(self.get_parameter("ik_world_frame").value)
@@ -245,6 +261,27 @@ class ArmController(Node):
         self._goal_right_filt = None
         self._reset_after_home = False
         self._initialized = False
+
+        # Positionsspeicher (plan-execute, siehe g1pilot/SCENE_BRIDGE.md
+        # Abschnitt 9): Endpunkt wird gespeichert, die Bahn dorthin JEDES MAL
+        # neu geplant (arm_planner.plan_arm_joint_path), weil Startpose und
+        # Umgebung sich seit dem Speichern geaendert haben koennen.
+        self._pose_store = PoseStore()
+        self._planned_motion_active = False
+        self._planned_order = []                      # z.B. ["right","left"] -- nacheinander
+        self._planned_waypoints = {"left": None, "right": None}
+        self._planned_wp_idx = {"left": 0, "right": 0}
+        self._planned_pose_name = None
+        self._planning_thread = None
+        self._plan_result = DataBuffer()               # Thread-sicherer Handoff Planer -> main_loop
+        self._plan_result_seen = None
+        # Generations-Zaehler: jeder POSE ANFAHREN erhoeht ihn, jeder Abbruch
+        # (E-Stop/DISABLE/Marker/HOMING/WALK/ABBRECHEN) ebenfalls. Ein Planungs-
+        # Ergebnis wird NUR aktiviert, wenn seine Generation noch die aktuelle
+        # ist -- so kann ein Marker-Griff (oder E-Stop) WAEHREND einer noch
+        # laufenden Planung deren spaeteres Ergebnis zuverlaessig entwerten,
+        # ohne dass es schon vorliegen muesste (race-frei).
+        self._plan_gen = 0
 
         self._T_off_right_static = self._mk_static_T(self._ee_off_right_xyz, self._ee_off_right_rpy_deg)
         self._T_off_left_static = self._mk_static_T(self._ee_off_left_xyz, self._ee_off_left_rpy_deg)
@@ -332,7 +369,19 @@ class ArmController(Node):
         self.create_subscription(Bool, "/g1pilot/emergency_stop", self._on_emergency_stop, 10)
         self.create_subscription(Bool, "/g1pilot/start", self._on_start, 10)
 
-        
+        # Umgebungs-Objekte (Hindernisse + Greif-Objekte), siehe scene_bridge.py.
+        # TRANSIENT_LOCAL, damit ein spaeter gestarteter arm_controller den
+        # zuletzt veroeffentlichten Stand sofort bekommt (statt bis zum
+        # naechsten scene_bridge-Publish-Tick auf leere Umgebung zu laufen).
+        qos_scene = QoSProfile(depth=1)
+        qos_scene.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        self.create_subscription(MarkerArray, "/scene_markers", self._on_scene_markers, qos_scene)
+
+        # Positionsspeicher (Streamdeck-Buttons, siehe teleoperation/ui_interface.py).
+        self.create_subscription(String, "/g1pilot/pose_store/save", self._on_pose_save, 10)
+        self.create_subscription(String, "/g1pilot/pose_store/goto", self._on_pose_goto, 10)
+        self.create_subscription(Bool, "/g1pilot/pose_store/cancel", self._on_pose_cancel, 10)
+
         self._init_robot_interface()
 
         self._last_tick_time = None
@@ -765,26 +814,42 @@ class ArmController(Node):
             return q_new
         return q_prev + dq * (lim / disp)
 
+    def _in_collision(self, full: np.ndarray, hard: bool = False) -> bool:
+        """Kombinierter Kollisions-Check: Selbstkollision (self_collision_gate)
+        UND/ODER Umgebungskollision (environment_collision_gate, Hindernisse +
+        Greif-ACM -- siehe ik_solver.environment_command_in_collision). Zwei
+        getrennte Schalter: ein Operator kann z.B. nur die Umgebungspruefung
+        testweise abschalten, ohne die Selbstkollisionspruefung zu verlieren.
+        (ik_solver.arm_command_in_collision gibt selbst False zurueck, wenn
+        das Gate nicht bereit ist -- kein doppelter Readiness-Check noetig.)"""
+        ik = self.ik_solver
+        if self.self_collision_gate and ik.arm_command_in_collision(full, hard=hard):
+            return True
+        if self.environment_collision_gate and ik.environment_command_in_collision(full, hard=hard):
+            return True
+        return False
+
     def _apply_collision_gate(self, q_prev: np.ndarray, q_new: np.ndarray) -> np.ndarray:
-        """Selbstkollisions-Gate auf dem KOMMANDIERTEN Schritt:
+        """Kollisions-Gate (Selbst + Umgebung) auf dem KOMMANDIERTEN Schritt:
           * Kandidat frei                      -> senden.
           * Kandidat in HARTER Kollision       -> halten (q_prev).
           * Kandidat im Margenband, aktueller Zustand auch -> zulassen
             (Rueckzug aus dem Band muss moeglich sein; Tempo ist ohnehin
             durch das kartesische Limit gedeckelt).
-          * Kandidat faehrt NEU ins Band       -> halten (q_prev)."""
-        if not self.self_collision_gate:
-            return q_new
-        ik = self.ik_solver
-        if not getattr(ik, "_gate_ready", False):
-            return q_new
+          * Kandidat faehrt NEU ins Band       -> halten (q_prev).
+
+        Laeuft unconditional fuer JEDEN q_target (Marker-Servoing UND geplante
+        Bewegung) -- auch eine bereits kollisionsfrei GEPLANTE Bahn bekommt so
+        denselben Laufzeit-Sicherheitsnetz-Check pro Tick (falls sich die
+        Umgebung seit dem Planen bewegt hat)."""
         if float(np.max(np.abs(q_new - q_prev))) < 1e-9:
             return q_new
         try:
-            if not ik.arm_command_in_collision(self._full_config_with_arms(q_new)):
+            full_new = self._full_config_with_arms(q_new)
+            if not self._in_collision(full_new):
                 return q_new
-            if not ik.arm_command_in_collision(self._full_config_with_arms(q_new), hard=True):
-                if ik.arm_command_in_collision(self._full_config_with_arms(q_prev)):
+            if not self._in_collision(full_new, hard=True):
+                if self._in_collision(self._full_config_with_arms(q_prev)):
                     return q_new     # schon im Band -> langsames Herausfahren erlaubt
         except Exception as e:
             self.get_logger().warn(f"Kollisions-Gate-Fehler: {e} -- halte Pose.")
@@ -793,7 +858,7 @@ class ArmController(Node):
         if now - self._gate_last_warn > 1.0:
             self._gate_last_warn = now
             self.get_logger().warn(
-                "Selbstkollisions-Gate: Zielbewegung wuerde in den Koerper "
+                "Kollisions-Gate: Zielbewegung wuerde in Koerper/Hindernis "
                 "fahren -- Arm haelt an (Marker zurueckziehen).")
         return q_prev
 
@@ -898,6 +963,7 @@ class ArmController(Node):
         self.homing_active = False
         self.homing_reached = False
         self.walk_mode = False
+        self._abort_planned_motion()   # keine Ueberraschungsbewegung nach dem Quittieren
         self._weight_state = "off"
         self._arm_sdk_weight = 1.0     # Autoritaet behalten (kein Onboard-Snap)
         self._publish_arm_slack()
@@ -935,6 +1001,12 @@ class ArmController(Node):
                                    "START quittieren.")
             return
         self.arms_enabled = msg.data
+        # Reste einer geplanten Bewegung IMMER verwerfen (Enable UND Disable):
+        # sonst feuerte ein waehrend disabled fertig gewordener Plan beim
+        # naechsten Enable als Ueberraschung los -- gleiche Vorsicht wie beim
+        # Homing unten. (Auch beim Disable, damit ein noch laufender Planungs-
+        # Thread sein Ergebnis nicht spaeter aktiviert.)
+        self._abort_planned_motion()
         if self.arms_enabled:
             # Slack-Latch aufheben: ENABLE holt die Kontrolle bewusst zurueck.
             self._arm_slack = False
@@ -996,6 +1068,7 @@ class ArmController(Node):
                 self.get_logger().warn("HOMING ignoriert: Manipulation nicht "
                                        "aktiv (erst ENABLE MANIPULATION).")
                 return
+            self._abort_planned_motion("HOMING gestartet")
             self.get_logger().info("Moving both arms to HOME position.")
             self.homing_active = True
             self.homing_reached = False
@@ -1037,6 +1110,7 @@ class ArmController(Node):
         self.walk_mode = True
         self.homing_active = False
         self.homing_reached = False
+        self._abort_planned_motion("WALK gestartet")
         self._walk_ready_sent = False    # erst melden, wenn die Lauf-Pose erreicht ist
         self.get_logger().info("WALK-Modus: Arme in Lauf-Pose aufraeumen, dann walk_ready.")
 
@@ -1078,6 +1152,182 @@ class ArmController(Node):
             self.get_logger().warning(f"[IK] TF {ps.header.frame_id}->{self.frame} failed: {e}")
             return ps
 
+    def _on_scene_markers(self, msg: MarkerArray):
+        """Umgebungs-Objekte (/scene_markers, i.d.R. Frame 'map') EINMAL pro
+        Update in den IK-World-Frame (self.frame, Default 'pelvis') transformieren
+        und in den IK-Solver einspeisen (sync_environment). Nur EIN TF-Lookup
+        pro Update (nicht pro Marker) -- alle Marker teilen sich denselben
+        Quell-Frame, do_transform_pose() je Marker ist reine Pose-Arithmetik,
+        keine erneute TF-Baum-Abfrage."""
+        add_markers = [m for m in msg.markers if m.action == Marker.ADD]
+        if not add_markers:
+            self.ik_solver.sync_environment([])
+            return
+        frame_id = add_markers[0].header.frame_id or "map"
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                self.frame, frame_id, Time(), timeout=Duration(seconds=0.2))
+        except Exception as e:
+            self.get_logger().warn(
+                f"[scene] TF {frame_id}->{self.frame} fehlgeschlagen: {e} -- "
+                f"Umgebungs-Objekte fuer dieses Update uebersprungen.")
+            return
+
+        objects = []
+        for marker in add_markers:
+            try:
+                ps = PoseStamped()
+                ps.header = marker.header
+                ps.pose = marker.pose
+                ps_t = do_transform_pose(ps, tf)
+                half = sm.local_half_extents_from_marker(marker)
+                name, _ = sm.decode_text(marker.text)
+                o, p = ps_t.pose.orientation, ps_t.pose.position
+                objects.append({
+                    "name": name or f"marker_{marker.ns}_{marker.id}",
+                    "cls": sm.class_from_ns(marker.ns),
+                    "half_extents": half,
+                    "pos": [p.x, p.y, p.z],
+                    "quat": [o.w, o.x, o.y, o.z],
+                })
+            except Exception as e:
+                self.get_logger().warn(f"[scene] Marker uebersprungen: {e}")
+        self.ik_solver.sync_environment(objects)
+
+    # --------------------------------------------------------
+    # Positionsspeicher (plan-execute), siehe g1pilot/SCENE_BRIDGE.md Abschnitt 9
+    # --------------------------------------------------------
+
+    def _on_pose_save(self, msg: String):
+        name = (msg.data or "").strip()
+        if not name:
+            self.get_logger().warn("Pose speichern ignoriert: kein Name angegeben.")
+            return
+        try:
+            self._pose_store.save(name, self._last_q_target[0:7], self._last_q_target[7:14])
+            self.get_logger().info(f"Pose '{name}' gespeichert (aktuelle Arm-Konfiguration).")
+        except Exception as e:
+            self.get_logger().error(f"Pose '{name}' konnte nicht gespeichert werden: {e}")
+
+    def _on_pose_cancel(self, msg: Bool):
+        if not msg.data:
+            return
+        self._abort_planned_motion("POSE ABBRECHEN")
+
+    def _on_pose_goto(self, msg: String):
+        name = (msg.data or "").strip()
+        if not name:
+            return
+        if self.estop_active or not self.arms_enabled or self.homing_active or self.walk_mode:
+            self.get_logger().warn(
+                f"POSE ANFAHREN '{name}' ignoriert: Arme nicht bereit "
+                f"(E-Stop quittiert? ENABLE MANIPULATION? nicht am Homen/Laufen?).")
+            return
+        entry = self._pose_store.get(name)
+        if entry is None:
+            self.get_logger().warn(f"Pose '{name}' nicht gefunden.")
+            return
+        if self._planning_thread is not None and self._planning_thread.is_alive():
+            self.get_logger().warn("Es laeuft bereits eine Planung -- bitte warten.")
+            return
+        q_left_goal, q_right_goal = entry
+        self._plan_gen += 1                    # neue Planungs-Generation
+        gen = self._plan_gen
+        self.get_logger().info(f"Plane Weg zu Pose '{name}' ...")
+        self._planning_thread = threading.Thread(
+            target=self._plan_pose_worker,
+            args=(name, gen, np.asarray(q_left_goal, dtype=float),
+                  np.asarray(q_right_goal, dtype=float)),
+            daemon=True)
+        self._planning_thread.start()
+
+    def _plan_pose_worker(self, name: str, gen: int,
+                          q_left_goal: np.ndarray, q_right_goal: np.ndarray):
+        """Laeuft in einem Hintergrund-Thread (RRT-Connect kann Sekunden
+        dauern) -- blockt NIE den 250-Hz-Regelkreis. Plant rechts, dann links
+        NACHEINANDER (siehe arm_planner.py-Moduldoku): der jeweils andere Arm
+        gilt waehrend der Planung als FEST (aktuelle bzw. -- fuer den zweiten
+        Arm -- bereits am Ziel stehend). Ergebnis (mit Generation `gen`) geht
+        per DataBuffer (thread-sicher) an main_loop."""
+        try:
+            base_current_all = (self.get_current_motor_q() if self.use_robot
+                                else self._assemble_full_from_last())
+            q_start_left = self._last_q_target[0:7].copy()
+            q_start_right = self._last_q_target[7:14].copy()
+            results = {}
+            for side, q_start, q_goal, idx_list in (
+                ("right", q_start_right, q_right_goal, RIGHT_JOINT_INDICES_LIST),
+                ("left", q_start_left, q_left_goal, LEFT_JOINT_INDICES_LIST),
+            ):
+                limits = [JOINT_LIMITS_RAD[i] for i in idx_list]
+                path, reason = plan_arm_joint_path(
+                    self.ik_solver, side, base_current_all, q_start, q_goal, limits)
+                if path is None:
+                    self._plan_result.SetData(("failed", name, gen, side, reason))
+                    self.get_logger().warn(
+                        f"Planung zu Pose '{name}' ({side}) fehlgeschlagen: {reason}")
+                    return
+                results[side] = shortcut_path(self.ik_solver, side, base_current_all, path)
+                # Fuer die Planung des NAECHSTEN Arms gilt dieser Arm als am
+                # Ziel stehend -- er wird VOR dem naechsten Arm abgefahren
+                # (siehe main_loop: self._planned_order).
+                for i, jidx in enumerate(idx_list):
+                    base_current_all[jidx] = q_goal[i]
+            total_wp = sum(len(v) for v in results.values())
+            self._plan_result.SetData(("ok", name, gen, results))
+            self.get_logger().info(
+                f"Planung zu Pose '{name}' erfolgreich ({total_wp} Wegpunkte gesamt).")
+        except Exception as e:
+            self._plan_result.SetData(("failed", name, gen, "both", str(e)))
+            self.get_logger().error(f"Planung zu Pose '{name}' abgestuerzt: {e}")
+
+    def _poll_plan_result(self):
+        """Pro Tick billig pruefen, ob eine Hintergrund-Planung fertig wurde
+        (neues Objekt im DataBuffer -- Identitaetsvergleich reicht, SetData
+        ersetzt das Objekt bei jedem Aufruf). Aktiviert nur Ergebnisse der
+        AKTUELLEN Generation (result[2]); veraltete (durch Abbruch/neue Planung
+        invalidierte) werden verworfen."""
+        result = self._plan_result.GetData()
+        if result is None or result is self._plan_result_seen:
+            return
+        self._plan_result_seen = result
+        if result[2] != self._plan_gen:
+            return   # veraltet: abgebrochen oder von einer neueren Planung ueberholt.
+        if result[0] != "ok":
+            return   # Fehlschlag wurde schon vom Worker geloggt -- Arm haelt einfach.
+        # Defense-in-depth: sind die Arme seit dem Planungsstart gesperrt worden
+        # (E-Stop, DISABLE, Homing, WALK)? Dann verwerfen. Normalerweise hat ein
+        # solcher Wechsel _plan_gen bereits erhoeht (Abbruch); diese Pruefung
+        # faengt Restfaelle ab.
+        if (self.estop_active or not self.arms_enabled
+                or self.homing_active or self.walk_mode):
+            self.get_logger().info(
+                f"Geplante Bewegung zu Pose '{result[1]}' verworfen "
+                f"(Arme nicht mehr bereit -- erneut POSE ANFAHREN).")
+            return
+        _, name, _gen, results = result
+        self._planned_pose_name = name
+        self._planned_waypoints = results
+        self._planned_wp_idx = {"left": 0, "right": 0}
+        self._planned_order = ["right", "left"]
+        self._planned_motion_active = True
+        self.homing_active = False
+        self.homing_reached = False
+        self.get_logger().info(f"Fahre geplante Bewegung zu Pose '{name}' ab.")
+
+    def _abort_planned_motion(self, reason: str = "") -> None:
+        """Laufende geplante Bewegung abbrechen UND jede noch laufende Planung
+        entwerten: durch Erhoehen von _plan_gen wird ein spaeter eintreffendes
+        Ergebnis in _poll_plan_result verworfen (race-frei -- das Ergebnis muss
+        beim Abbruch noch nicht vorliegen). Wird bei E-Stop, DISABLE, ENABLE,
+        HOMING, WALK, Marker-Griff und POSE ABBRECHEN aufgerufen."""
+        was_active = self._planned_motion_active
+        self._planned_motion_active = False
+        self._planned_order = []
+        self._plan_gen += 1     # invalidiert jedes in-flight/pending Planungs-Ergebnis
+        if was_active and reason:
+            self.get_logger().info(f"Geplante Bewegung abgebrochen ({reason}).")
+
     def _right_goal_callback(self, msg: PoseStamped):
         """
         ROS 2 callback for the right-hand end-effector goal.
@@ -1097,9 +1347,17 @@ class ArmController(Node):
 
         if self.homing_active:
             return
-        
+
         if not self.arms_enabled:
             return
+
+        # Mode-Mux (siehe g1pilot/SCENE_BRIDGE.md Abschnitt 8): manueller
+        # Marker hat IMMER Vorrang -- ein laufender ODER gerade geplanter Plan
+        # (Positionsspeicher) wird sofort verworfen, kein Kaempfen zweier
+        # Geschwindigkeitsquellen.
+        if self._planned_motion_active or (
+                self._planning_thread is not None and self._planning_thread.is_alive()):
+            self._abort_planned_motion("Marker bewegt -- manueller Vorrang")
 
         if self._reset_after_home:
             self._reset_after_home = False
@@ -1150,9 +1408,17 @@ class ArmController(Node):
 
         if self.homing_active:
             return
-        
+
         if not self.arms_enabled:
             return
+
+        # Mode-Mux (siehe g1pilot/SCENE_BRIDGE.md Abschnitt 8): manueller
+        # Marker hat IMMER Vorrang -- ein laufender ODER gerade geplanter Plan
+        # (Positionsspeicher) wird sofort verworfen, kein Kaempfen zweier
+        # Geschwindigkeitsquellen.
+        if self._planned_motion_active or (
+                self._planning_thread is not None and self._planning_thread.is_alive()):
+            self._abort_planned_motion("Marker bewegt -- manueller Vorrang")
 
         if self._reset_after_home:
             self._reset_after_home = False
@@ -1272,6 +1538,9 @@ class ArmController(Node):
         if not getattr(self, "_initialized", False):
             return
 
+        # Hintergrund-Planung (Positionsspeicher) fertig? Billig (Lock+Read).
+        self._poll_plan_result()
+
         # E-STOP / Slack: Arme drehmomentfrei/gedaempft halten und WEITER
         # senden -- ohne die Kontrolle an den Onboard-Regler zurueckzugeben
         # (der wuerde die Arme in seine Default-Pose reissen). Laeuft, bis
@@ -1353,6 +1622,35 @@ class ArmController(Node):
 
         elif self.homing_reached:
             q_target = np.concatenate((self.home_left, self.home_right))
+
+        elif self._planned_motion_active:
+            # Positionsspeicher: geplante Bahn abfahren -- NACHEINANDER rechts,
+            # dann links (siehe _plan_pose_worker: links wurde geplant unter
+            # der Annahme, dass rechts bereits am Ziel steht -- also muss
+            # rechts auch WIRKLICH zuerst ankommen). Marker-Beruehrung bricht
+            # das ueber _planned_motion_active=False in *_goal_callback ab.
+            q_target = self._last_q_target.copy()
+            if not self._planned_order:
+                self._planned_motion_active = False
+                self._align_ik_to_config(self._last_q_target[0:7], self._last_q_target[7:14])
+                self.get_logger().info(
+                    f"Geplante Bewegung zu Pose '{self._planned_pose_name}' abgeschlossen.")
+            else:
+                side = self._planned_order[0]
+                sl = slice(0, 7) if side == "left" else slice(7, 14)
+                wps = self._planned_waypoints[side]
+                idx = self._planned_wp_idx[side]
+                cur = self._last_q_target[sl]
+                wp = wps[idx]
+                reached_wp = bool(np.linalg.norm(wp - cur) < self.planned_motion_tolerance)
+                if reached_wp and idx + 1 < len(wps):
+                    idx += 1
+                    self._planned_wp_idx[side] = idx
+                    wp = wps[idx]
+                    reached_wp = False
+                q_target[sl] = wp
+                if reached_wp and idx == len(wps) - 1:
+                    self._planned_order.pop(0)   # dieser Arm fertig -> naechster (falls noch einer)
 
         else:
             # IK-Seed: Arm-Gelenke aus dem LETZTEN ZIEL (deterministisch), nicht

@@ -30,6 +30,23 @@ werden beim Laden immer automatisch dazugefuegt – nie in die Umgebung schreibe
 (Legt der Editor doch mal einen eigenen Boden/eine Lichtquelle an, wirft der
 Generator sie beim Kombinieren automatisch raus.)
 
+### Hindernis vs. Greif-Objekt (fuer Nav/IK)
+
+Objekte werden nach RViz uebertragen (siehe `g1pilot/SCENE_BRIDGE.md`) und dort
+in zwei Klassen unterschieden — **Hindernis** (der Arm weicht aus) und
+**Greif-Objekt** (die Hand darf ran, das Objekt bewegt sich beim Anfassen mit).
+Klassifikation per **Namenskonvention**: benennst du ein Objekt (im Editor
+oben unter „Elements“ umbenennbar) mit dem Praefix **`grasp_`** (Gross-/
+Kleinschreibung egal, z.B. `grasp_apfel`), macht `build_env_scene.py` beim
+Kombinieren automatisch einen **freien, beweglichen Koerper** daraus
+(`<freejoint/>`) — nur so kann MuJoCo es beim Greifen/Anfassen bewegen. Alle
+anderen Objekte bleiben statische Hindernisse.
+
+```
+box_demo        -> Hindernis (statisch, der Arm weicht aus)
+grasp_apfel      -> Greif-Objekt (beweglich, die Hand darf ran)
+```
+
 ---
 
 ## Was ist drin?
