@@ -30,12 +30,13 @@ Segment-Pruefung (_segment_valid) wie der Fallback nachvalidiert -- schlaegt
 das fehl (etwa durch einen Diskretisierungs-Rest), faellt der Aufruf auf den
 handgeschriebenen Planer zurueck.
 
-Nur EIN Arm pro Aufruf (7 DOF). Sollen beide Arme in eine gespeicherte Pose,
-plant/faehrt arm_controller sie NACHEINANDER (siehe dortige Doku) -- ein
-gemeinsamer 14-DOF-Planer waere robuster bei Arm-zu-Arm-Naehe, aber deutlich
-aufwendiger; das bestehende Selbstkollisions-Gate deckt Arm-zu-Arm trotzdem ab,
-weil der jeweils ANDERE Arm waehrend der Planung als FESTE Konfiguration in
-die Kollisionspruefung eingeht (siehe _make_state_validity_fn).
+EIN ODER BEIDE Arme pro Aufruf (7 bzw. 14 DOF, siehe plan_arms_joint_path):
+Sollen beide Arme GLEICHZEITIG in eine gespeicherte Pose, plant arm_controller
+sie GEMEINSAM als 14-DOF-Problem -- damit deckt der Selbstkollisions-Check
+Arm-gegen-Arm an JEDEM Zwischenzustand ab, und beide Arme koennen synchron
+ueber EINE geteilte Wegpunktliste abgefahren werden. Wird nur ein Arm geplant
+(7 DOF), gilt der andere Arm als feste Konfiguration (statisches Hindernis) --
+er wird nicht mitbewegt.
 """
 import math
 import time
@@ -59,16 +60,37 @@ except Exception:   # ImportError, aber auch evtl. Laufzeit-/ABI-Fehler beim Lad
     OMPL_AVAILABLE = False
 
 
-def _make_state_validity_fn(ik_solver, side, base_current_all):
-    """Baut is_valid(q7)->bool: setzt q7 in die passenden 7 Eintraege von
-    base_current_all (der ANDERE Arm + Beine/Taille bleiben auf dem zuletzt
-    gemessenen/kommandierten Stand -- wirken damit als statisches Hindernis
-    fuer die Selbstkollisionspruefung) und prueft Selbst- + Umgebungskollision
-    MIT Sicherheitsmarge (hard=False) -- dieselbe Schwelle, die der Laufzeit-
-    Regelkreis (arm_controller._apply_collision_gate) durchsetzt. Wuerde man
-    hier nur auf harte Durchdringung pruefen, koennte ein frisch geplanter
-    Schritt vom Laufzeit-Gate sofort wieder verworfen werden (Stillstand genau
-    an der Marge-Grenze).
+def _sides_list(sides):
+    """Normalisiert die Seiten-Angabe: einzelner String -> Liste. Erlaubte
+    Werte 'left'/'right'. Reihenfolge = Spaltenreihenfolge im Gelenkvektor."""
+    if isinstance(sides, str):
+        return [sides]
+    return list(sides)
+
+
+def _joint_indices_for(sides):
+    """Konkateniert die 7 Arm-Gelenkindizes je Seite in der gegebenen
+    Reihenfolge -> Gesamt-Indexliste (7 bzw. 14 Eintraege)."""
+    idx = []
+    for s in _sides_list(sides):
+        idx += list(LEFT_JOINT_INDICES_LIST if s == "left" else RIGHT_JOINT_INDICES_LIST)
+    return idx
+
+
+def _make_state_validity_fn(ik_solver, sides, base_current_all):
+    """Baut is_valid(qN)->bool fuer EINEN oder BEIDE Arme (N = 7*Anzahl Seiten):
+    setzt qN in die passenden Eintraege von base_current_all (die NICHT
+    geplanten Gelenke -- ggf. der andere Arm + Beine/Taille -- bleiben auf dem
+    zuletzt gemessenen/kommandierten Stand, wirken also als statisches
+    Hindernis) und prueft Selbst- + Umgebungskollision MIT Sicherheitsmarge
+    (hard=False) -- dieselbe Schwelle, die der Laufzeit-Regelkreis
+    (arm_controller._apply_collision_gate) durchsetzt.
+
+    Werden BEIDE Arme uebergeben (14 DOF), deckt genau derselbe
+    Selbstkollisions-Check auch Arm-gegen-Arm an JEDEM Zwischenzustand ab --
+    das ist der Grund, warum die gleichzeitige (14-DOF-)Planung sicher ist,
+    waehrend eine getrennte 7+7-Planung mit simultaner Ausfuehrung die
+    Arm-zu-Arm-Naehe waehrend des Transits NICHT pruefen wuerde.
 
     WICHTIG (Nebenlaeufigkeit): plant() laeuft in einem Hintergrund-Thread,
     waehrend der 250-Hz-Regelkreis (arm_controller.main_loop) GLEICHZEITIG auf
@@ -80,12 +102,12 @@ def _make_state_validity_fn(ik_solver, side, base_current_all):
     (und damit dieselben Scratch-Puffer) aus dem Planungs-Thread heraus auf --
     RRTConnect plant single-threaded, daher genuegt EIN Puffersatz pro Aufruf."""
     scratch = ik_solver.make_scratch_buffers()
-    idx_list = LEFT_JOINT_INDICES_LIST if side == "left" else RIGHT_JOINT_INDICES_LIST
+    idx_list = _joint_indices_for(sides)
 
-    def is_valid(q7: np.ndarray) -> bool:
+    def is_valid(qN: np.ndarray) -> bool:
         full = base_current_all.copy()
         for i, jidx in enumerate(idx_list):
-            full[jidx] = q7[i]
+            full[jidx] = qN[i]
         if ik_solver.arm_command_in_collision(
                 full, hard=False, data=scratch["data"], cdata=scratch["cdata_margin"]):
             return False
@@ -298,40 +320,43 @@ def _plan_rrt_connect_builtin(is_valid, q_start7, q_goal7, joint_limits7,
 # ══════════════════════════════════════════════════════════════════════
 # Oeffentliche API (Rueckgabe-Kontrakt unveraendert)
 # ══════════════════════════════════════════════════════════════════════
-def plan_arm_joint_path(ik_solver, side, base_current_all, q_start7, q_goal7,
-                        joint_limits7, max_iters=1500, step_size=0.15,
-                        substep=0.05, goal_bias=0.1, time_budget_s=8.0,
-                        rng=None):
-    """Plant einen kollisionsfreien Gelenkraum-Pfad. Rueckgabe (waypoints, reason):
-      - waypoints: Liste von np.ndarray(7) [q_start7 ... q_goal7] (inklusive
+def plan_arms_joint_path(ik_solver, sides, base_current_all, q_start, q_goal,
+                         joint_limits, max_iters=1500, step_size=0.15,
+                         substep=0.05, goal_bias=0.1, time_budget_s=8.0,
+                         rng=None):
+    """Plant einen kollisionsfreien Gelenkraum-Pfad fuer EINEN oder BEIDE Arme.
+
+    `sides`: 'left'/'right' oder Liste davon (z.B. ['left','right'] fuer eine
+    gemeinsame 14-DOF-Planung -> gleichzeitige, Arm-zu-Arm-sichere Bewegung).
+    q_start/q_goal/joint_limits sind ueber die Seiten in genau dieser
+    Reihenfolge konkateniert (7 Eintraege je Seite).
+
+    Rueckgabe (waypoints, reason):
+      - waypoints: Liste von np.ndarray(7*Seiten) [q_start ... q_goal] (inkl.
         beider Enden), oder None bei Fehlschlag.
-      - reason: "direct" (Strecke war schon frei), "ompl_rrtconnect" (OMPL-Pfad),
-        "rrt_connect" (Fallback-Pfad), "start_in_collision"/"goal_in_collision"/
-        "no_path_found" bei Fehlschlag -- fuer Logging/GUI-Rueckmeldung.
-
-    joint_limits7: Liste von (lo, hi) je Gelenk, gleiche Reihenfolge wie
-    q_start7/q_goal7 (siehe utils/joints_names.JOINT_LIMITS_RAD)."""
+      - reason: "direct" | "ompl_rrtconnect" | "rrt_connect" |
+        "start_in_collision" | "goal_in_collision" | "no_path_found"."""
     rng = rng or np.random.default_rng()
-    is_valid = _make_state_validity_fn(ik_solver, side, base_current_all)
+    is_valid = _make_state_validity_fn(ik_solver, sides, base_current_all)
 
-    q_start7 = np.asarray(q_start7, dtype=float)
-    q_goal7 = np.asarray(q_goal7, dtype=float)
+    q_start = np.asarray(q_start, dtype=float)
+    q_goal = np.asarray(q_goal, dtype=float)
 
     # Schnelle, deterministische Vorpruefungen -- identischer Sicherheitsbegriff
     # fuer BEIDE Backends, mit klaren Reason-Codes.
-    if not is_valid(q_start7):
+    if not is_valid(q_start):
         return None, "start_in_collision"
-    if not is_valid(q_goal7):
+    if not is_valid(q_goal):
         return None, "goal_in_collision"
-    if _segment_valid(is_valid, q_start7, q_goal7, substep):
-        return [q_start7, q_goal7], "direct"
+    if _segment_valid(is_valid, q_start, q_goal, substep):
+        return [q_start, q_goal], "direct"
 
     # Primaer: OMPL. Der gelieferte Pfad wird mit derselben Segment-Pruefung
     # wie der Fallback nachvalidiert; schlaegt das fehl, wird der Fallback
     # verwendet (Sicherheit haengt NICHT an OMPLs interner Diskretisierung).
     if OMPL_AVAILABLE:
         try:
-            wps = _plan_ompl(is_valid, q_start7, q_goal7, joint_limits7,
+            wps = _plan_ompl(is_valid, q_start, q_goal, joint_limits,
                              step_size, substep, time_budget_s)
         except Exception:
             wps = None
@@ -340,25 +365,33 @@ def plan_arm_joint_path(ik_solver, side, base_current_all, q_start7, q_goal7,
         # OMPL fand nichts (Gueltiges) -> Fallback versuchen.
 
     path = _plan_rrt_connect_builtin(
-        is_valid, q_start7, q_goal7, joint_limits7,
+        is_valid, q_start, q_goal, joint_limits,
         max_iters, step_size, substep, goal_bias, time_budget_s, rng)
     if path is None:
         return None, "no_path_found"
     return path, "rrt_connect"
 
 
-def shortcut_path(ik_solver, side, base_current_all, path, iterations=100,
+def plan_arm_joint_path(ik_solver, side, base_current_all, q_start7, q_goal7,
+                        joint_limits7, **kwargs):
+    """Rueckwaerts-kompatibler Einzel-Arm-Wrapper um plan_arms_joint_path
+    (7 DOF, EIN Arm). Neuer Code sollte direkt plan_arms_joint_path nutzen."""
+    return plan_arms_joint_path(ik_solver, [side], base_current_all,
+                                q_start7, q_goal7, joint_limits7, **kwargs)
+
+
+def shortcut_path(ik_solver, sides, base_current_all, path, iterations=100,
                   substep=0.05, rng=None):
     """Zufaellige Shortcut-Glaettung: entfernt unnoetige Zwischenpunkte des
     Pfads, wenn die direkte Strecke zwischen zwei (nicht benachbarten)
     Wegpunkten kollisionsfrei ist. Backend-unabhaengig -- funktioniert auf
-    jeder Wegpunktliste (OMPL wie Fallback) und nutzt exakt dieselbe
-    is_valid-Pruefung wie beim Planen. Rein kosmetisch/Effizienz -- Sicherheit
-    bleibt unveraendert."""
+    jeder Wegpunktliste (OMPL wie Fallback, 7 wie 14 DOF) und nutzt exakt
+    dieselbe is_valid-Pruefung wie beim Planen. `sides` wie bei
+    plan_arms_joint_path. Rein kosmetisch/Effizienz -- Sicherheit unveraendert."""
     if len(path) <= 2:
         return list(path)
     rng = rng or np.random.default_rng()
-    is_valid = _make_state_validity_fn(ik_solver, side, base_current_all)
+    is_valid = _make_state_validity_fn(ik_solver, sides, base_current_all)
     pts = list(path)
     for _ in range(iterations):
         if len(pts) <= 2:

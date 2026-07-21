@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import json
 import math
 import os
 import subprocess
@@ -9,7 +10,8 @@ import threading
 import time
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QGridLayout, QPushButton, QVBoxLayout,
-    QHBoxLayout, QSlider, QLabel, QInputDialog, QMessageBox
+    QHBoxLayout, QSlider, QLabel, QInputDialog, QMessageBox,
+    QDialog, QCheckBox, QDialogButtonBox
 )
 from PyQt6.QtCore import QTimer, Qt, QPointF
 from PyQt6.QtGui import QPainter, QColor, QPen, QBrush
@@ -481,15 +483,48 @@ class ButtonGUI(QWidget):
             self.node.get_logger().warn(f"Pose-Liste konnte nicht gelesen werden: {e}")
             return []
 
+    def _ask_pose_components(self):
+        """Auswahl-Dialog: WAS soll gespeichert werden? Rueckgabe Liste der
+        Komponenten (Teilmenge von 'right_arm','left_arm','hand') oder None bei
+        Abbruch / leerer Auswahl. Die Auswahl wird als JSON an arm_controller
+        geschickt (siehe _on_pose_save dort)."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Was speichern?")
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel("Komponenten dieser Pose:"))
+        cb_right = QCheckBox("Rechter Arm"); cb_right.setChecked(True)
+        cb_left = QCheckBox("Linker Arm"); cb_left.setChecked(True)
+        cb_hand = QCheckBox("Handposition (beide Haende)"); cb_hand.setChecked(True)
+        for cb in (cb_right, cb_left, cb_hand):
+            lay.addWidget(cb)
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        lay.addWidget(btns)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        comps = []
+        if cb_right.isChecked(): comps.append("right_arm")
+        if cb_left.isChecked(): comps.append("left_arm")
+        if cb_hand.isChecked(): comps.append("hand")
+        return comps or None
+
     def _pose_save(self):
-        """Aktuelle Arm-Konfiguration unter einem Namen speichern (siehe
-        arm_controller._on_pose_save -- speichert die zuletzt kommandierte
-        Gelenkstellung, NICHT die Marker-Zielpose)."""
+        """Aktuelle Konfiguration unter einem Namen speichern -- mit AUSWAHL,
+        was mitgenommen wird (rechter/linker Arm, Handposition). arm_controller
+        speichert die zuletzt kommandierte Gelenkstellung bzw. den aktuellen
+        Fingerzustand (siehe _on_pose_save dort), NICHT die Marker-Zielpose."""
         name, ok = QInputDialog.getText(self, "Pose speichern", "Name der Pose:")
         name = (name or "").strip()
         if not ok or not name:
             return
-        self.node.publish_str(self.node.pub_pose_save, name)
+        components = self._ask_pose_components()
+        if not components:
+            return   # abgebrochen oder nichts ausgewaehlt
+        self.node.publish_str(
+            self.node.pub_pose_save,
+            json.dumps({"name": name, "components": components}))
         self._flash_visual((3, 0))
 
     def _pose_goto(self):
