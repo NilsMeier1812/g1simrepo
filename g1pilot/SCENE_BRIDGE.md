@@ -255,22 +255,35 @@ separat — reitet auf dem bestehenden Dijkstra-Plan-Execute, siehe §10.)
   Pose-Recall am echten Roboter. **Nicht** in den Echtzeit-Pfad legen.
 - Optional später geräteübergreifend (z. B. Supabase) für geteilte Bibliotheken.
 
-### Der Arm-Planer ist eine **steckbare Box**
-Feste Schnittstelle: rein `(q_start, q_goal, PlanningScene)`, raus eine
-Joint-Trajektorie. Innenleben austauschbar:
+### Der Arm-Planer ist eine **steckbare Box** → jetzt **OMPL**
+Feste Schnittstelle: rein `(q_start, q_goal, IK-Solver mit synchronisierter
+Umgebung)`, raus eine Wegpunktliste. Innenleben austauschbar — und genau diese
+Steckbarkeit wurde jetzt genutzt, um das Backend auf **OMPL** umzustellen,
+**ohne `arm_controller.py` anzufassen** (Rückgabe-Kontrakt identisch):
 
-- **Schlanker eigener C-Space-Planer** (RRT-Connect + Shortcutting +
-  Zeit-Parametrisierung). Ihr habt **3 der 4 Teile schon**: Pinocchio-Modell,
-  ~0,3 ms Kollisionscheck (als State-Validity-Checker), Joint-Streaming-Executor.
-  Fehlt nur RRT-Connect obendrauf. Konsistent zu eurer Wahl „eigener Dijkstra
-  statt Nav2" bei der Basis. **Leichte Empfehlung für den Start.**
-- **MoveIt/OMPL** — Standard, Ökosystem, RViz-MotionPlanning. Kosten:
-  MoveIt-Config (SRDF/Kinematik — Inputs großteils vorhanden) **plus**
-  Execution-Brücke `FollowJointTrajectory → arm_controller → DDS`.
+- **OMPL (RRTConnect) — jetzt das Standard-Backend.** `arm_planner.py` baut
+  einen `RealVectorStateSpace` (7 DOF), setzt den **bestehenden ~0,3-ms-
+  Pinocchio-Kollisionscheck als `StateValidityChecker`** (Selbstkollision +
+  Umgebungs-ACM, exakt derselbe wie beim reaktiven Servoing) und lässt OMPL
+  planen + vereinfachen (`PathSimplifier`). Reines Python-Wheel `ompl`
+  (manylinux cp310, x86_64 **und** aarch64/Jetson), **keine** ROS-/MoveIt-/
+  ros2_control-Abhängigkeit — passt sauber zur DDS-Steuerung.
+- **Eingebauter RRT-Connect — jetzt Fallback.** Fehlt das `ompl`-Wheel im
+  Container, fällt `plan_arm_joint_path` transparent auf den handgeschriebenen
+  RRT-Connect zurück. Das Feature hängt also nicht an einer optionalen
+  Abhängigkeit.
+- **Voll-MoveIt2** (move_group/SRDF + `FollowJointTrajectory→DDS`-Adapter)
+  wurde **bewusst nicht** gewählt: großer Umbau, der gegen die ros2_control-lose
+  Steuerung arbeitet, und würde ohnehin nur den plan-execute-Pfad betreffen.
 
-Weil die Box steckbar ist, ist die Wahl **aufschiebbar**: mit dem schlanken
-Planer starten, später MoveIt einsetzen — ohne Weltmodell, Speicher oder Mux
-anzufassen.
+**Zwei Sicherheits-Feinheiten** (siehe `arm_planner.py`-Moduldoku):
+1. OMPLs Motion-Validator-Auflösung ist ein **Bruchteil der Raum-Ausdehnung** →
+   an den absoluten `substep` (0,05 rad) gekoppelt (`substep / Ausdehnung`),
+   sonst würden dünne Hindernisse übersprungen.
+2. Jeder OMPL-Pfad wird zusätzlich mit **exakt derselben Segment-Prüfung** wie
+   der Fallback nachvalidiert; schlägt das fehl (Diskretisierungs-Rest), greift
+   der Fallback. Die Sicherheit hängt damit **nicht** an OMPLs interner
+   Diskretisierung.
 
 ---
 
@@ -333,7 +346,8 @@ Modell tut es. Damit ist der LiDAR-Plan voll kompatibel.
 | `g1pilot/g1pilot/navigation/create_map.py` | Dummy → Footprints aus `/scene_markers`; Frame-Default `odom`→`map` |
 | `g1pilot/g1pilot/utils/ik_solver.py` | `sync_environment()`, `environment_command_in_collision()` (Punkt-zu-OBB, ACM Hindernis/Grasp), `make_scratch_buffers()` (Thread-Sicherheit) |
 | `g1pilot/g1pilot/manipulation/pose_store.py` *(neu)* | JSON-Datei-Ablage gespeicherter Armposen |
-| `g1pilot/g1pilot/manipulation/arm_planner.py` *(neu)* | RRT-Connect (7-DOF, ein Arm) + Shortcut-Glättung gegen dieselben IK-Kollisionschecks |
+| `g1pilot/g1pilot/manipulation/arm_planner.py` *(neu, Backend jetzt OMPL)* | OMPL RRTConnect (7-DOF, ein Arm) mit dem bestehenden Pinocchio-Check als `StateValidityChecker`; eingebauter RRT-Connect als Fallback; Shortcut-Glättung — alles gegen dieselben IK-Kollisionschecks |
+| `g1pilot/docker/Dockerfile.sim`, `g1pilot/docker/Dockerfile` | `pip install ompl` (Planer-Backend; reines manylinux-Wheel cp310, x86_64+aarch64, keine ROS-/MoveIt-Abhängigkeit) |
 | `g1pilot/g1pilot/manipulation/arm_controller.py` | `/scene_markers`-Abo (TF map→pelvis) → `sync_environment`; kombiniertes Kollisions-Gate; Pose-Store-Topics; geplante-Bewegung-Zustandsmaschine |
 | `g1pilot/g1pilot/teleoperation/ui_interface.py` | Streamdeck-Buttons „POSE SPEICHERN/ANFAHREN/ABBRECHEN" |
 | `g1pilot/config/nav.rviz` | `MarkerArray`-Display auf `/scene_markers` |
@@ -348,10 +362,16 @@ Modell tut es. Damit ist der LiDAR-Plan voll kompatibel.
 
 ## 14 · Getroffene Entscheidungen (waren offen, jetzt umgesetzt)
 
-- **Arm-Planer:** schlanker eigener RRT-Connect (`arm_planner.py`), **nicht**
-  MoveIt/OMPL — konsistent zum eigenen Dijkstra bei der Basis, nutzt exakt die
-  bestehenden IK-Kollisionschecks (kein zweiter Sicherheitsbegriff). Bleibt
-  austauschbar (feste Schnittstelle `(q_start, q_goal, ik_solver) → Wegpunkte`).
+- **Arm-Planer:** **OMPL (RRTConnect)** als Standard-Backend, eingebauter
+  RRT-Connect als Fallback (`arm_planner.py`). Nutzt exakt die bestehenden
+  IK-Kollisionschecks als `StateValidityChecker` (kein zweiter
+  Sicherheitsbegriff), Rückgabe-Kontrakt unverändert → `arm_controller.py`
+  blieb unangetastet. **Voll-MoveIt2 wurde bewusst nicht** gewählt (großer
+  Umbau gegen die ros2_control-lose DDS-Steuerung; würde ohnehin nur den
+  plan-execute-Pfad betreffen). Reines `ompl`-Wheel, keine ROS-Abhängigkeit.
+  *(Ursprünglich als schlanker eigener RRT-Connect gestartet; die feste,
+  steckbare Schnittstelle `(q_start, q_goal, ik_solver) → Wegpunkte` machte den
+  Backend-Wechsel auf OMPL ohne Controller-Änderung möglich.)*
 - **Dual-Arm-Planung:** **sequenziell** (erst rechts, dann links) statt
   gemeinsamem 14-DOF-Planer — der jeweils andere Arm gilt waehrend der Planung
   als fest; das Selbstkollisions-Gate deckt Arm-zu-Arm trotzdem ab. Ausfuehrung
@@ -389,11 +409,19 @@ Modell tut es. Damit ist der LiDAR-Plan voll kompatibel.
 Live-Szenen-Bruecke (MuJoCo → UDP → `scene_bridge` → `/scene_markers`),
 `create_map` aus echten Objekten, Umgebungs-Kollision + Hindernis/Grasp-ACM im
 IK-Solver, Dual-Mode Arm (reaktives Servoing bleibt unveraendert + neuer
-geplanter Positionsspeicher-Modus mit RRT-Connect), Streamdeck-Buttons.
+geplanter Positionsspeicher-Modus mit **OMPL RRTConnect**, Fallback eingebauter
+RRT-Connect), Streamdeck-Buttons.
+
+**Nachträglich umgesetzt (Backend-Wechsel):** Der Arm-Planer nutzt jetzt
+**OMPL (RRTConnect)** statt des eigenen RRT-Connect — über die bereits
+vorhandene steckbare Schnittstelle, ohne `arm_controller.py` anzufassen. Der
+eigene RRT-Connect bleibt als Fallback erhalten (falls das `ompl`-Wheel fehlt).
 
 **Bewusst nicht gebaut** (mit „Zukunft" markiert bzw. vom Nutzer
 zurückgestellt): LiDAR-Perzeptionsebene (§11), Basis-Positionsspeicher (§10,
-Nav war explizit nicht Prio), MoveIt/OMPL-Migration.
+Nav war explizit nicht Prio), **Voll-MoveIt2** (move_group/SRDF +
+`FollowJointTrajectory→DDS`-Adapter — bewusst zugunsten des schlanken
+OMPL-Backends verworfen).
 
 **Wie geprüft wurde** (dieses Environment hat kein RViz/ROS2-Runtime, aber
 MuJoCo und Pinocchio ließen sich per pip installieren — daher konnte ein
@@ -415,8 +443,22 @@ Großteil *wirklich ausgeführt* werden, nicht nur gelesen):
   `arm_controller._on_scene_markers` → `ik_solver.sync_environment` → ein
   Marker an der Handposition löst die Umgebungs-Kollision korrekt aus.
 - `ik_solver.py`/`arm_planner.py`: **mit echtem G1-URDF und Pinocchio** —
-  Umgebungs-ACM, RRT-Connect-Umwegplanung um ein echtes Hindernis (inkl.
-  unabhängiger Segment-Nachprüfung), Mehr-Thread-Stresstest.
+  Umgebungs-ACM, Umwegplanung um ein echtes Hindernis (inkl. unabhängiger
+  Segment-Nachprüfung), Mehr-Thread-Stresstest.
+- **OMPL-Planer-Backend** (`arm_planner.py`, Umbau): `ompl`-Wheel real
+  installiert und die Bindings-API **wirklich ausgeführt** (`SimpleSetup`,
+  subklassierter `StateValidityChecker`, `RRTConnect`, `PathSimplifier`).
+  Verifiziert: (a) OMPL findet einen kollisionsfreien **Umweg** und die
+  unabhängige Segment-Nachprüfung akzeptiert ihn; (b) `direct`/
+  `start_in_collision`/`goal_in_collision` liefern dieselben Reason-Codes wie
+  zuvor; (c) **Fallback** ohne OMPL liefert einen gültigen Pfad; (d)
+  `shortcut_path` kürzt und bleibt gültig. **Mit echtem G1-URDF + Pinocchio**:
+  OMPL umplant um ein **echtes** Umgebungs-Hindernis (dünne Box auf der
+  Hand-Bahn) herum — `ompl_rrtconnect`, Umweg unabhängig als kollisionsfrei
+  bestätigt, direkter Weg nachweislich gesperrt. **Sicherheits-Feinheit
+  geprüft:** zu grobe OMPL-Auflösung überspringt dünne Hindernisse → an
+  `substep/Ausdehnung` gekoppelt; die zusätzliche Segment-Nachvalidierung fängt
+  einen Rest-Diskretisierungsfall ab und löst dann den Fallback aus.
 - `arm_controller.py`: mit gestubbten ROS-/DDS-Abhängigkeiten **instanziiert
   und durchlaufen** — komplette Wegpunkt-Zustandsmaschine bis zum Abschluss
   (realistische Taktrate) **plus 8 Sicherheits-Szenarien** für den

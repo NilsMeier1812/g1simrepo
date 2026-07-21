@@ -45,6 +45,11 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     colcon build --cmake-args -DROS_EDITION=ROS2 -DHUMBLE_ROS=humble
 
 RUN pip install pyqt6 pin meshcat evdev
+# OMPL: Wegplaner-Backend fuer den Positionsspeicher (arm_planner.py). Reines
+# Python-Wheel (manylinux, cp310; x86_64 UND aarch64 -> laeuft auch auf dem
+# Jetson am echten G1), keine ROS-/MoveIt-Abhaengigkeit. Fehlt es, faellt
+# arm_planner transparent auf den eingebauten RRT-Connect zurueck.
+RUN pip install ompl
 RUN apt-get update && apt-get install -y \
     libxkbcommon-x11-0 \
     libxcb-cursor0 \

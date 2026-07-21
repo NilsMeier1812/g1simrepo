@@ -42,6 +42,12 @@ RUN git clone https://github.com/lnotspotl/unitree_sdk2_python.git \
 # inspire_hand-Bridge braucht websockets fuer die HTML-GUIs)
 RUN pip3 install pyqt6 "pin>=2.6" meshcat evdev numpy websockets
 
+# OMPL: Wegplaner-Backend fuer den Positionsspeicher (arm_planner.py). Reines
+# Python-Wheel (manylinux, cp310 fuer Ubuntu 22.04 = ros:humble), keine
+# ROS-/MoveIt-Abhaengigkeit. Fehlt es, faellt arm_planner transparent auf den
+# eingebauten RRT-Connect zurueck -- der Build bleibt also auch dann lauffaehig.
+RUN pip3 install ompl
+
 # ONNX Runtime (CPU) fuer die Whole-Body-Loco-Policy (loco_sim laedt
 # policies/g1_wholebody/policy.onnx). onnx fuer die Metadaten/Gegenprobe.
 # Schlank, kein CUDA noetig, kein PyTorch mehr.

@@ -1,18 +1,34 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-arm_planner.py — schlanker RRT-Connect-Planer im 7-DOF-Gelenkraum EINES Arms,
-fuer den GEPLANTEN Positionsspeicher-Modus (siehe g1pilot/SCENE_BRIDGE.md
-Abschnitt 9: "Positionsspeicher (Oberkoerper/Arm) — plan-execute").
+arm_planner.py — Wegplaner im 7-DOF-Gelenkraum EINES Arms, fuer den GEPLANTEN
+Positionsspeicher-Modus (siehe g1pilot/SCENE_BRIDGE.md Abschnitt 9:
+"Positionsspeicher (Oberkoerper/Arm) — plan-execute").
 
-Bewusst KEIN MoveIt/OMPL: die Kollisionspruefung nutzt exakt dieselben,
+PLANER-BACKEND: OMPL (RRTConnect) mit einem SCHLANKEN, HANDGESCHRIEBENEN
+RRT-Connect als Fallback, falls die OMPL-Python-Bindings im Container nicht
+verfuegbar sind. Beide Backends nutzen EXAKT dieselbe Kollisionspruefung: die
 bereits vorhandenen und produktiv genutzten Pinocchio-Checks des IK-Solvers
-(Selbstkollisions-Gate + Umgebungs-ACM, siehe utils/ik_solver.py), damit ein
-gefundener Pfad garantiert dieselben Sicherheitsschranken erfuellt wie der
-reaktive Servoing-Pfad -- kein zweiter, abweichender Kollisionsbegriff. Die
-Planer-API ist bewusst schmal (q_start, q_goal, IK-Solver mit synchronisierter
-Umgebung -> Wegpunktliste), damit sie sich spaeter durch einen anderen Planer
-(z.B. MoveIt/OMPL) ersetzen liesse, ohne arm_controller.py anzufassen.
+(Selbstkollisions-Gate + Umgebungs-ACM, siehe utils/ik_solver.py). Ein
+gefundener Pfad erfuellt damit garantiert dieselben Sicherheitsschranken wie
+der reaktive Servoing-Pfad -- kein zweiter, abweichender Kollisionsbegriff.
+
+WARUM OMPL statt weiter handgeschrieben? OMPL bringt ausgereifte, breit
+getestete Planer (RRTConnect, RRT*, BIT*, ...) und eine robuste
+Pfad-Vereinfachung mit. Die Planer-API hier bleibt aber bewusst schmal
+(q_start, q_goal, IK-Solver mit synchronisierter Umgebung -> Wegpunktliste),
+sodass arm_controller.py NICHT angefasst werden muss (der Rueckgabe-Kontrakt
+ist identisch geblieben).
+
+SICHERHEIT / DISKRETISIERUNG: OMPLs Motion-Validator prueft eine Strecke in
+festen Schritten ab, deren Aufloesung als BRUCHTEIL der Raum-Ausdehnung
+angegeben wird. Zu grob -> duenne Hindernisse werden uebersprungen. Wir koppeln
+die Aufloesung deshalb an denselben absoluten Schritt (`substep`, in rad), den
+auch der Fallback nutzt: resolution = substep / raum_ausdehnung. Zusaetzlich
+wird JEDER von OMPL gelieferte Pfad danach nochmals mit exakt derselben
+Segment-Pruefung (_segment_valid) wie der Fallback nachvalidiert -- schlaegt
+das fehl (etwa durch einen Diskretisierungs-Rest), faellt der Aufruf auf den
+handgeschriebenen Planer zurueck.
 
 Nur EIN Arm pro Aufruf (7 DOF). Sollen beide Arme in eine gespeicherte Pose,
 plant/faehrt arm_controller sie NACHEINANDER (siehe dortige Doku) -- ein
@@ -21,11 +37,26 @@ aufwendiger; das bestehende Selbstkollisions-Gate deckt Arm-zu-Arm trotzdem ab,
 weil der jeweils ANDERE Arm waehrend der Planung als FESTE Konfiguration in
 die Kollisionspruefung eingeht (siehe _make_state_validity_fn).
 """
+import math
 import time
 
 import numpy as np
 
 from g1pilot.utils.joints_names import LEFT_JOINT_INDICES_LIST, RIGHT_JOINT_INDICES_LIST
+
+# ── OMPL-Bindings optional laden ─────────────────────────────────────────
+# Fehlen sie (schlankes Image ohne ompl-Wheel), faellt plan_arm_joint_path
+# transparent auf den handgeschriebenen RRT-Connect zurueck -- der
+# Positionsspeicher funktioniert also auch ohne OMPL, nur mit dem simpleren
+# Planer. So bleibt das Feature nicht an einer optionalen Abhaengigkeit haengen.
+try:
+    from ompl import base as _ob
+    from ompl import geometric as _og
+    from ompl import util as _ou
+    _ou.setLogLevel(_ou.LOG_WARN)   # OMPLs Info-Spam aus stderr heraushalten
+    OMPL_AVAILABLE = True
+except Exception:   # ImportError, aber auch evtl. Laufzeit-/ABI-Fehler beim Laden
+    OMPL_AVAILABLE = False
 
 
 def _make_state_validity_fn(ik_solver, side, base_current_all):
@@ -44,7 +75,10 @@ def _make_state_validity_fn(ik_solver, side, base_current_all):
     demselben ik_solver reaktiv weiterrechnet. Die vielen Checks hier holen
     sich deshalb EIGENE Scratch-Puffer (make_scratch_buffers()) statt der
     Live-Puffer des Solvers -- sonst wuerden zwei Threads denselben mutable
-    Pinocchio-Zustand (pin.Data/GeometryData) gleichzeitig beschreiben."""
+    Pinocchio-Zustand (pin.Data/GeometryData) gleichzeitig beschreiben. Gilt
+    auch fuer den OMPL-Pfad: OMPLs StateValidityChecker ruft dieselbe is_valid
+    (und damit dieselben Scratch-Puffer) aus dem Planungs-Thread heraus auf --
+    RRTConnect plant single-threaded, daher genuegt EIN Puffersatz pro Aufruf."""
     scratch = ik_solver.make_scratch_buffers()
     idx_list = LEFT_JOINT_INDICES_LIST if side == "left" else RIGHT_JOINT_INDICES_LIST
 
@@ -65,7 +99,7 @@ def _make_state_validity_fn(ik_solver, side, base_current_all):
 
 def _segment_valid(is_valid, a, b, substep=0.05) -> bool:
     """Prueft ALLE Zwischenpunkte auf der Strecke a->b (nicht nur den
-    Endpunkt) -- sonst koennte ein duennes Hindernis zwischen zwei RRT-Knoten
+    Endpunkt) -- sonst koennte ein duennes Hindernis zwischen zwei Knoten
     unbemerkt durchrutschen."""
     dist = float(np.linalg.norm(b - a))
     n = max(1, int(np.ceil(dist / substep)))
@@ -76,6 +110,103 @@ def _segment_valid(is_valid, a, b, substep=0.05) -> bool:
     return True
 
 
+def _path_segments_valid(is_valid, waypoints, substep=0.05) -> bool:
+    """Nachvalidierung: prueft JEDES Segment einer fertigen Wegpunktliste mit
+    exakt derselben Segment-Pruefung wie der Fallback-Planer. Damit haengt die
+    Sicherheit NICHT an OMPLs interner Diskretisierung -- der zurueckgegebene
+    Pfad genuegt garantiert demselben Kollisionsbegriff wie ein Fallback-Pfad."""
+    for a, b in zip(waypoints[:-1], waypoints[1:]):
+        if not _segment_valid(is_valid, np.asarray(a, dtype=float),
+                              np.asarray(b, dtype=float), substep):
+            return False
+    return True
+
+
+# ══════════════════════════════════════════════════════════════════════
+# OMPL-Backend (Primaer)
+# ══════════════════════════════════════════════════════════════════════
+def _plan_ompl(is_valid, q_start7, q_goal7, joint_limits7,
+               step_size, substep, time_budget_s):
+    """Plant mit OMPL RRTConnect im 7-DOF-RealVectorStateSpace. Rueckgabe:
+    Liste von np.ndarray(7) (inkl. beider Enden) oder None. Start/Ziel/Direkt
+    wurden vom Aufrufer bereits geprueft; hier geht es nur um den Umweg."""
+    dim = len(q_start7)
+    lo = [float(l) for l, _ in joint_limits7]
+    hi = [float(h) for _, h in joint_limits7]
+
+    space = _ob.RealVectorStateSpace(dim)
+    bounds = _ob.RealVectorBounds(dim)
+    for i in range(dim):
+        # Start/Ziel koennen minimal ausserhalb der nominellen Limits liegen
+        # (Messrauschen); Grenzen leicht weiten, damit sie im Raum liegen.
+        lb = min(lo[i], float(q_start7[i]), float(q_goal7[i]))
+        ub = max(hi[i], float(q_start7[i]), float(q_goal7[i]))
+        bounds.setLow(i, lb)
+        bounds.setHigh(i, ub)
+    space.setBounds(bounds)
+
+    setup = _og.SimpleSetup(space)
+    si = setup.getSpaceInformation()
+
+    class _Checker(_ob.StateValidityChecker):
+        def __init__(self, si_):
+            super().__init__(si_)
+
+        def isValid(self, state):
+            q = np.fromiter((state[i] for i in range(dim)), dtype=float, count=dim)
+            return bool(is_valid(q))
+
+    checker = _Checker(si)
+    setup.setStateValidityChecker(checker)
+
+    # Aufloesung an den absoluten substep (rad) koppeln (siehe Modul-Doku):
+    # OMPL erwartet einen Bruchteil der maximalen Raum-Ausdehnung.
+    extent = math.sqrt(sum((hi[i] - lo[i]) ** 2 for i in range(dim))) or 1.0
+    si.setStateValidityCheckingResolution(min(0.05, substep / extent))
+
+    start = space.allocState()
+    goal = space.allocState()
+    for i in range(dim):
+        start[i] = float(q_start7[i])
+        goal[i] = float(q_goal7[i])
+    setup.setStartAndGoalStates(start, goal)
+
+    planner = _og.RRTConnect(si)
+    planner.setRange(float(step_size))
+    setup.setPlanner(planner)
+
+    # Kein RNG-Seeding: OMPL nutzt eine GLOBALE, bereits beim Konstruieren des
+    # Planers gestartete RNG -- ein spaeteres setSeed waere wirkungslos und
+    # wuerde nur "RNG already started" auf stderr spammen. Zeitbasierte
+    # Default-Seed = nicht-deterministisch pro Aufruf, genau wie der Fallback
+    # (der Controller ruft ohne festes rng auf -> frische Zufalls-Seed).
+
+    setup.setup()
+    setup.solve(float(time_budget_s))
+    if not setup.haveExactSolutionPath():
+        return None   # nur eine Naeherung -> als Fehlschlag behandeln
+
+    setup.simplifySolution(min(2.0, time_budget_s * 0.25))
+    path = setup.getSolutionPath()
+
+    # In dichtere Wegpunkte aufloesen (Segmentlaenge ~substep), damit der
+    # nachgelagerte Rate-Limiter des Controllers nah an der geprueften Geraden
+    # bleibt und die Nachvalidierung feine Stuetzstellen hat.
+    length = float(path.length())
+    n = max(2, int(math.ceil(length / substep)) + 1)
+    path.interpolate(n)
+
+    count = path.getStateCount()
+    waypoints = []
+    for k in range(count):
+        s = path.getState(k)
+        waypoints.append(np.fromiter((s[i] for i in range(dim)), dtype=float, count=dim))
+    return waypoints
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Fallback-Backend: handgeschriebener RRT-Connect (ohne OMPL)
+# ══════════════════════════════════════════════════════════════════════
 class _Tree:
     def __init__(self, root: np.ndarray):
         self.nodes = [root]
@@ -115,32 +246,12 @@ def _extend(tree, target, is_valid, step_size, substep):
     return ("reached" if dist <= step_size else "advanced"), new_idx
 
 
-def plan_arm_joint_path(ik_solver, side, base_current_all, q_start7, q_goal7,
-                        joint_limits7, max_iters=1500, step_size=0.15,
-                        substep=0.05, goal_bias=0.1, time_budget_s=8.0,
-                        rng=None):
-    """RRT-Connect im 7-DOF-Gelenkraum. Rueckgabe (waypoints, reason):
-      - waypoints: Liste von np.ndarray(7) [q_start7 ... q_goal7] (inklusive
-        beider Enden), oder None bei Fehlschlag.
-      - reason: "direct" (Strecke war schon frei), "rrt_connect" (Pfad
-        gefunden), "start_in_collision"/"goal_in_collision"/"no_path_found"
-        bei Fehlschlag -- fuer Logging/GUI-Rueckmeldung.
-
-    joint_limits7: Liste von (lo, hi) je Gelenk, gleiche Reihenfolge wie
-    q_start7/q_goal7 (siehe utils/joints_names.JOINT_LIMITS_RAD)."""
-    rng = rng or np.random.default_rng()
-    is_valid = _make_state_validity_fn(ik_solver, side, base_current_all)
-
-    q_start7 = np.asarray(q_start7, dtype=float)
-    q_goal7 = np.asarray(q_goal7, dtype=float)
-
-    if not is_valid(q_start7):
-        return None, "start_in_collision"
-    if not is_valid(q_goal7):
-        return None, "goal_in_collision"
-    if _segment_valid(is_valid, q_start7, q_goal7, substep):
-        return [q_start7, q_goal7], "direct"
-
+def _plan_rrt_connect_builtin(is_valid, q_start7, q_goal7, joint_limits7,
+                              max_iters, step_size, substep, goal_bias,
+                              time_budget_s, rng):
+    """Handgeschriebener RRT-Connect. Erwartet, dass Start/Ziel gueltig und die
+    direkte Strecke NICHT frei ist (der Aufrufer hat das bereits geprueft).
+    Rueckgabe: Wegpunktliste oder None."""
     lo = np.array([l for l, _ in joint_limits7], dtype=float)
     hi = np.array([h for _, h in joint_limits7], dtype=float)
 
@@ -176,20 +287,74 @@ def plan_arm_joint_path(ik_solver, side, base_current_all, q_start7, q_goal7,
             full = path_a + path_b
             if not a_is_start:
                 full = list(reversed(full))
-            return full, "rrt_connect"
+            return full
 
         tree_a, tree_b = tree_b, tree_a
         a_is_start = not a_is_start
 
-    return None, "no_path_found"
+    return None
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Oeffentliche API (Rueckgabe-Kontrakt unveraendert)
+# ══════════════════════════════════════════════════════════════════════
+def plan_arm_joint_path(ik_solver, side, base_current_all, q_start7, q_goal7,
+                        joint_limits7, max_iters=1500, step_size=0.15,
+                        substep=0.05, goal_bias=0.1, time_budget_s=8.0,
+                        rng=None):
+    """Plant einen kollisionsfreien Gelenkraum-Pfad. Rueckgabe (waypoints, reason):
+      - waypoints: Liste von np.ndarray(7) [q_start7 ... q_goal7] (inklusive
+        beider Enden), oder None bei Fehlschlag.
+      - reason: "direct" (Strecke war schon frei), "ompl_rrtconnect" (OMPL-Pfad),
+        "rrt_connect" (Fallback-Pfad), "start_in_collision"/"goal_in_collision"/
+        "no_path_found" bei Fehlschlag -- fuer Logging/GUI-Rueckmeldung.
+
+    joint_limits7: Liste von (lo, hi) je Gelenk, gleiche Reihenfolge wie
+    q_start7/q_goal7 (siehe utils/joints_names.JOINT_LIMITS_RAD)."""
+    rng = rng or np.random.default_rng()
+    is_valid = _make_state_validity_fn(ik_solver, side, base_current_all)
+
+    q_start7 = np.asarray(q_start7, dtype=float)
+    q_goal7 = np.asarray(q_goal7, dtype=float)
+
+    # Schnelle, deterministische Vorpruefungen -- identischer Sicherheitsbegriff
+    # fuer BEIDE Backends, mit klaren Reason-Codes.
+    if not is_valid(q_start7):
+        return None, "start_in_collision"
+    if not is_valid(q_goal7):
+        return None, "goal_in_collision"
+    if _segment_valid(is_valid, q_start7, q_goal7, substep):
+        return [q_start7, q_goal7], "direct"
+
+    # Primaer: OMPL. Der gelieferte Pfad wird mit derselben Segment-Pruefung
+    # wie der Fallback nachvalidiert; schlaegt das fehl, wird der Fallback
+    # verwendet (Sicherheit haengt NICHT an OMPLs interner Diskretisierung).
+    if OMPL_AVAILABLE:
+        try:
+            wps = _plan_ompl(is_valid, q_start7, q_goal7, joint_limits7,
+                             step_size, substep, time_budget_s)
+        except Exception:
+            wps = None
+        if wps is not None and _path_segments_valid(is_valid, wps, substep):
+            return wps, "ompl_rrtconnect"
+        # OMPL fand nichts (Gueltiges) -> Fallback versuchen.
+
+    path = _plan_rrt_connect_builtin(
+        is_valid, q_start7, q_goal7, joint_limits7,
+        max_iters, step_size, substep, goal_bias, time_budget_s, rng)
+    if path is None:
+        return None, "no_path_found"
+    return path, "rrt_connect"
 
 
 def shortcut_path(ik_solver, side, base_current_all, path, iterations=100,
                   substep=0.05, rng=None):
     """Zufaellige Shortcut-Glaettung: entfernt unnoetige Zwischenpunkte des
-    RRT-Pfads, wenn die direkte Strecke zwischen zwei (nicht benachbarten)
-    Wegpunkten kollisionsfrei ist. Rein kosmetisch/Effizienz -- Sicherheit
-    bleibt unveraendert (dieselbe is_valid-Pruefung wie beim Planen)."""
+    Pfads, wenn die direkte Strecke zwischen zwei (nicht benachbarten)
+    Wegpunkten kollisionsfrei ist. Backend-unabhaengig -- funktioniert auf
+    jeder Wegpunktliste (OMPL wie Fallback) und nutzt exakt dieselbe
+    is_valid-Pruefung wie beim Planen. Rein kosmetisch/Effizienz -- Sicherheit
+    bleibt unveraendert."""
     if len(path) <= 2:
         return list(path)
     rng = rng or np.random.default_rng()
