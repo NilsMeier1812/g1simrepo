@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import time, threading, math
+import time, threading, math, json
 import numpy as np
 import rclpy
 from rclpy.node import Node
@@ -11,7 +11,7 @@ from rclpy.qos import QoSProfile, DurabilityPolicy
 from geometry_msgs.msg import PoseStamped, Point
 from visualization_msgs.msg import Marker, MarkerArray
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Bool, ColorRGBA, String
+from std_msgs.msg import Bool, ColorRGBA, String, Float32MultiArray
 from tf2_ros import Buffer, TransformListener
 from tf2_geometry_msgs import do_transform_pose
 import pinocchio as pin
@@ -29,7 +29,7 @@ from g1pilot.utils.joints_names import (
 from g1pilot.utils.ik_solver import G1IKSolver
 from g1pilot.navigation import scene_markers as sm
 from g1pilot.manipulation.pose_store import PoseStore
-from g1pilot.manipulation.arm_planner import plan_arm_joint_path, shortcut_path
+from g1pilot.manipulation.arm_planner import plan_arms_joint_path, shortcut_path
 
 from unitree_sdk2py.core.channel import ChannelPublisher, ChannelSubscriber
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_ , LowState_
@@ -264,15 +264,28 @@ class ArmController(Node):
 
         # Positionsspeicher (plan-execute, siehe g1pilot/SCENE_BRIDGE.md
         # Abschnitt 9): Endpunkt wird gespeichert, die Bahn dorthin JEDES MAL
-        # neu geplant (arm_planner.plan_arm_joint_path), weil Startpose und
+        # neu geplant (arm_planner.plan_arms_joint_path), weil Startpose und
         # Umgebung sich seit dem Speichern geaendert haben koennen.
         self._pose_store = PoseStore()
         self._planned_motion_active = False
-        self._planned_order = []                      # z.B. ["right","left"] -- nacheinander
-        self._planned_waypoints = {"left": None, "right": None}
-        self._planned_wp_idx = {"left": 0, "right": 0}
+        # Gleichzeitige Ausfuehrung: EINE geteilte Wegpunktliste ueber die
+        # geplanten Arme (7 DOF je Seite, in _planned_sides-Reihenfolge
+        # konkateniert). Ein gemeinsamer Index -> beide Arme ruecken synchron
+        # weiter (siehe main_loop). _planned_sides == [] bedeutet: keine
+        # Arm-Bewegung (z.B. nur Handposition wiederherstellen).
+        self._planned_sides = []                      # z.B. ["left","right"] oder ["right"]
+        self._planned_waypoints = None                # Liste np.ndarray(7*len(sides))
+        self._planned_wp_idx = 0
         self._planned_pose_name = None
         self._planning_thread = None
+        # Zuletzt empfangener Hand-Ist-Zustand (6 Inspire-DOF je Hand, 0..1000)
+        # von der inspire-Bridge (siehe manipulation/inspire_ftp/bridge.py) --
+        # nur zum SPEICHERN der Handposition. None = Bridge liefert (noch) nichts.
+        self._hand_state = {"left": None, "right": None}
+        # Hand-Ziele, die beim START der geplanten Armbewegung an die Bridge
+        # gehen (damit Finger und Arme gemeinsam losfahren). Bei reiner
+        # Handposition (ohne Arme) werden sie sofort gesendet.
+        self._pending_hand_goals = {}
         self._plan_result = DataBuffer()               # Thread-sicherer Handoff Planer -> main_loop
         self._plan_result_seen = None
         # Generations-Zaehler: jeder POSE ANFAHREN erhoeht ihn, jeder Abbruch
@@ -381,6 +394,20 @@ class ArmController(Node):
         self.create_subscription(String, "/g1pilot/pose_store/save", self._on_pose_save, 10)
         self.create_subscription(String, "/g1pilot/pose_store/goto", self._on_pose_goto, 10)
         self.create_subscription(Bool, "/g1pilot/pose_store/cancel", self._on_pose_cancel, 10)
+
+        # Hand-Ist-Zustand von der inspire-Bridge (nur zum SPEICHERN der
+        # Handposition) und Hand-Ziel zurueck (zum Wiederherstellen). Laeuft die
+        # Bridge nicht, bleibt _hand_state None -> Handposition wird uebersprungen.
+        self.create_subscription(
+            Float32MultiArray, "/g1pilot/hand_state/left",
+            lambda m: self._on_hand_state("left", m), 10)
+        self.create_subscription(
+            Float32MultiArray, "/g1pilot/hand_state/right",
+            lambda m: self._on_hand_state("right", m), 10)
+        self.pub_hand_goal = {
+            "left": self.create_publisher(Float32MultiArray, "/g1pilot/hand_goal/left", 10),
+            "right": self.create_publisher(Float32MultiArray, "/g1pilot/hand_goal/right", 10),
+        }
 
         self._init_robot_interface()
 
@@ -1198,14 +1225,70 @@ class ArmController(Node):
     # Positionsspeicher (plan-execute), siehe g1pilot/SCENE_BRIDGE.md Abschnitt 9
     # --------------------------------------------------------
 
+    def _on_hand_state(self, side: str, msg: Float32MultiArray):
+        """Aktuellen Fingerzustand (6 Inspire-DOF, 0..1000) von der Bridge
+        merken -- ausschliesslich, um ihn beim Speichern der Handposition
+        mitnehmen zu koennen."""
+        vals = list(msg.data)
+        if len(vals) == 6:
+            self._hand_state[side] = [float(v) for v in vals]
+
+    def _publish_hand_goals(self, hand_goals: dict) -> None:
+        """Gespeicherte Handstellungen an die inspire-Bridge senden (setzt dort
+        alle 6 DOF je Hand, siehe bridge.py /g1pilot/hand_goal)."""
+        for side, vals in hand_goals.items():
+            if vals is None:
+                continue
+            m = Float32MultiArray()
+            m.data = [float(v) for v in vals]
+            self.pub_hand_goal[side].publish(m)
+            self.get_logger().info(f"Handposition ({side}) wiederhergestellt.")
+
     def _on_pose_save(self, msg: String):
-        name = (msg.data or "").strip()
+        """Speichert eine Pose mit AUSWAHL der Komponenten. Nachricht ist
+        entweder ein JSON `{"name":..., "components":[...]}` (aus der GUI) oder
+        -- rueckwaerts-kompatibel -- ein reiner Name (dann beide Arme). Gueltige
+        components: 'left_arm', 'right_arm', 'hand' (beide Haende)."""
+        raw = (msg.data or "").strip()
+        if not raw:
+            self.get_logger().warn("Pose speichern ignoriert: kein Name angegeben.")
+            return
+        name, components = raw, ["left_arm", "right_arm"]
+        if raw.startswith("{"):
+            try:
+                obj = json.loads(raw)
+                name = (obj.get("name") or "").strip()
+                components = list(obj.get("components", []))
+            except (ValueError, TypeError):
+                self.get_logger().warn("Pose speichern ignoriert: ungueltiges JSON.")
+                return
         if not name:
             self.get_logger().warn("Pose speichern ignoriert: kein Name angegeben.")
             return
+
+        kwargs = {}
+        if "left_arm" in components:
+            kwargs["left_arm"] = self._last_q_target[0:7].copy()
+        if "right_arm" in components:
+            kwargs["right_arm"] = self._last_q_target[7:14].copy()
+        if "hand" in components:
+            for side in ("left", "right"):
+                st = self._hand_state[side]
+                if st is not None:
+                    kwargs[f"{side}_hand"] = list(st)
+            if "left_hand" not in kwargs and "right_hand" not in kwargs:
+                self.get_logger().warn(
+                    "Handposition ausgewaehlt, aber kein Hand-Zustand verfuegbar "
+                    "(inspire-Bridge nicht aktiv?) -- Haende werden ausgelassen.")
+
+        if not kwargs:
+            self.get_logger().warn(
+                f"Pose '{name}' nicht gespeichert: nichts Speicherbares ausgewaehlt.")
+            return
         try:
-            self._pose_store.save(name, self._last_q_target[0:7], self._last_q_target[7:14])
-            self.get_logger().info(f"Pose '{name}' gespeichert (aktuelle Arm-Konfiguration).")
+            self._pose_store.save(name, **kwargs)
+            self.get_logger().info(
+                f"Pose '{name}' gespeichert ({', '.join(sorted(kwargs))}).")
         except Exception as e:
             self.get_logger().error(f"Pose '{name}' konnte nicht gespeichert werden: {e}")
 
@@ -1230,55 +1313,69 @@ class ArmController(Node):
         if self._planning_thread is not None and self._planning_thread.is_alive():
             self.get_logger().warn("Es laeuft bereits eine Planung -- bitte warten.")
             return
-        q_left_goal, q_right_goal = entry
+
+        # Welche Arme sind gespeichert? Reihenfolge fix (links, dann rechts) --
+        # das ist die Spaltenreihenfolge im gemeinsamen Gelenkvektor.
+        sides = [s for s in ("left", "right") if f"{s}_arm" in entry]
+        goals = {s: np.asarray(entry[f"{s}_arm"], dtype=float) for s in sides}
+        hand_goals = {s: entry.get(f"{s}_hand") for s in ("left", "right")
+                      if f"{s}_hand" in entry}
+
+        if not sides and not hand_goals:
+            self.get_logger().warn(f"Pose '{name}' enthaelt nichts zum Anfahren.")
+            return
+
+        if not sides:
+            # Nur Handposition -- keine Armplanung noetig, sofort senden.
+            self._publish_hand_goals(hand_goals)
+            self.get_logger().info(f"Pose '{name}': nur Handposition wiederhergestellt.")
+            return
+
+        # Hand-Ziele fahren beim START der Armbewegung mit los (gemeinsam).
+        self._pending_hand_goals = hand_goals
         self._plan_gen += 1                    # neue Planungs-Generation
         gen = self._plan_gen
-        self.get_logger().info(f"Plane Weg zu Pose '{name}' ...")
+        self.get_logger().info(
+            f"Plane Weg zu Pose '{name}' ({'+'.join(sides)}) ...")
         self._planning_thread = threading.Thread(
-            target=self._plan_pose_worker,
-            args=(name, gen, np.asarray(q_left_goal, dtype=float),
-                  np.asarray(q_right_goal, dtype=float)),
-            daemon=True)
+            target=self._plan_pose_worker, args=(name, gen, sides, goals), daemon=True)
         self._planning_thread.start()
 
-    def _plan_pose_worker(self, name: str, gen: int,
-                          q_left_goal: np.ndarray, q_right_goal: np.ndarray):
-        """Laeuft in einem Hintergrund-Thread (RRT-Connect kann Sekunden
-        dauern) -- blockt NIE den 250-Hz-Regelkreis. Plant rechts, dann links
-        NACHEINANDER (siehe arm_planner.py-Moduldoku): der jeweils andere Arm
-        gilt waehrend der Planung als FEST (aktuelle bzw. -- fuer den zweiten
-        Arm -- bereits am Ziel stehend). Ergebnis (mit Generation `gen`) geht
-        per DataBuffer (thread-sicher) an main_loop."""
+    def _plan_pose_worker(self, name: str, gen: int, sides: list, goals: dict):
+        """Laeuft in einem Hintergrund-Thread (Planung kann Sekunden dauern) --
+        blockt NIE den 250-Hz-Regelkreis. Plant die AUSGEWAEHLTEN Arme
+        GEMEINSAM (7 DOF je Seite -> bei beiden Armen ein 14-DOF-Problem), sodass
+        Arm-zu-Arm an jedem Zwischenzustand geprueft ist und beide Arme spaeter
+        SYNCHRON abgefahren werden koennen (siehe main_loop). Ergebnis (mit
+        Generation `gen`) geht per DataBuffer (thread-sicher) an main_loop."""
         try:
             base_current_all = (self.get_current_motor_q() if self.use_robot
                                 else self._assemble_full_from_last())
-            q_start_left = self._last_q_target[0:7].copy()
-            q_start_right = self._last_q_target[7:14].copy()
-            results = {}
-            for side, q_start, q_goal, idx_list in (
-                ("right", q_start_right, q_right_goal, RIGHT_JOINT_INDICES_LIST),
-                ("left", q_start_left, q_left_goal, LEFT_JOINT_INDICES_LIST),
-            ):
-                limits = [JOINT_LIMITS_RAD[i] for i in idx_list]
-                path, reason = plan_arm_joint_path(
-                    self.ik_solver, side, base_current_all, q_start, q_goal, limits)
-                if path is None:
-                    self._plan_result.SetData(("failed", name, gen, side, reason))
-                    self.get_logger().warn(
-                        f"Planung zu Pose '{name}' ({side}) fehlgeschlagen: {reason}")
-                    return
-                results[side] = shortcut_path(self.ik_solver, side, base_current_all, path)
-                # Fuer die Planung des NAECHSTEN Arms gilt dieser Arm als am
-                # Ziel stehend -- er wird VOR dem naechsten Arm abgefahren
-                # (siehe main_loop: self._planned_order).
-                for i, jidx in enumerate(idx_list):
-                    base_current_all[jidx] = q_goal[i]
-            total_wp = sum(len(v) for v in results.values())
-            self._plan_result.SetData(("ok", name, gen, results))
+            # Start/Ziel/Limits ueber die Seiten in FESTER Reihenfolge konkatenieren.
+            q_start, q_goal, limits = [], [], []
+            for side in sides:
+                sl = slice(0, 7) if side == "left" else slice(7, 14)
+                idx_list = LEFT_JOINT_INDICES_LIST if side == "left" else RIGHT_JOINT_INDICES_LIST
+                q_start.append(self._last_q_target[sl].copy())
+                q_goal.append(goals[side])
+                limits += [JOINT_LIMITS_RAD[i] for i in idx_list]
+            q_start = np.concatenate(q_start)
+            q_goal = np.concatenate(q_goal)
+
+            path, reason = plan_arms_joint_path(
+                self.ik_solver, sides, base_current_all, q_start, q_goal, limits)
+            if path is None:
+                self._plan_result.SetData(("failed", name, gen, sides, reason))
+                self.get_logger().warn(
+                    f"Planung zu Pose '{name}' ({'+'.join(sides)}) fehlgeschlagen: {reason}")
+                return
+            waypoints = shortcut_path(self.ik_solver, sides, base_current_all, path)
+            self._plan_result.SetData(("ok", name, gen, sides, waypoints))
             self.get_logger().info(
-                f"Planung zu Pose '{name}' erfolgreich ({total_wp} Wegpunkte gesamt).")
+                f"Planung zu Pose '{name}' erfolgreich ({len(waypoints)} Wegpunkte, "
+                f"{'+'.join(sides)}).")
         except Exception as e:
-            self._plan_result.SetData(("failed", name, gen, "both", str(e)))
+            self._plan_result.SetData(("failed", name, gen, sides, str(e)))
             self.get_logger().error(f"Planung zu Pose '{name}' abgestuerzt: {e}")
 
     def _poll_plan_result(self):
@@ -1305,14 +1402,18 @@ class ArmController(Node):
                 f"Geplante Bewegung zu Pose '{result[1]}' verworfen "
                 f"(Arme nicht mehr bereit -- erneut POSE ANFAHREN).")
             return
-        _, name, _gen, results = result
+        _, name, _gen, sides, waypoints = result
         self._planned_pose_name = name
-        self._planned_waypoints = results
-        self._planned_wp_idx = {"left": 0, "right": 0}
-        self._planned_order = ["right", "left"]
+        self._planned_sides = list(sides)
+        self._planned_waypoints = waypoints
+        self._planned_wp_idx = 0
         self._planned_motion_active = True
         self.homing_active = False
         self.homing_reached = False
+        # Finger fahren gemeinsam mit den Armen los.
+        if self._pending_hand_goals:
+            self._publish_hand_goals(self._pending_hand_goals)
+            self._pending_hand_goals = {}
         self.get_logger().info(f"Fahre geplante Bewegung zu Pose '{name}' ab.")
 
     def _abort_planned_motion(self, reason: str = "") -> None:
@@ -1323,7 +1424,9 @@ class ArmController(Node):
         HOMING, WALK, Marker-Griff und POSE ABBRECHEN aufgerufen."""
         was_active = self._planned_motion_active
         self._planned_motion_active = False
-        self._planned_order = []
+        self._planned_sides = []
+        self._planned_waypoints = None
+        self._pending_hand_goals = {}
         self._plan_gen += 1     # invalidiert jedes in-flight/pending Planungs-Ergebnis
         if was_active and reason:
             self.get_logger().info(f"Geplante Bewegung abgebrochen ({reason}).")
@@ -1624,33 +1727,41 @@ class ArmController(Node):
             q_target = np.concatenate((self.home_left, self.home_right))
 
         elif self._planned_motion_active:
-            # Positionsspeicher: geplante Bahn abfahren -- NACHEINANDER rechts,
-            # dann links (siehe _plan_pose_worker: links wurde geplant unter
-            # der Annahme, dass rechts bereits am Ziel steht -- also muss
-            # rechts auch WIRKLICH zuerst ankommen). Marker-Beruehrung bricht
-            # das ueber _planned_motion_active=False in *_goal_callback ab.
+            # Positionsspeicher: geplante Bahn abfahren -- die ausgewaehlten Arme
+            # GLEICHZEITIG ueber EINE geteilte Wegpunktliste (7 DOF je Seite, in
+            # _planned_sides-Reihenfolge konkateniert). Ein gemeinsamer Index ->
+            # beide Arme ruecken erst weiter, wenn BEIDE den aktuellen Wegpunkt
+            # erreicht haben (bleiben also synchron; die 14-DOF-Planung hat den
+            # gemeinsamen Pfad Arm-zu-Arm-sicher geprueft). Marker-Beruehrung
+            # bricht das ueber _planned_motion_active=False in *_goal_callback ab.
             q_target = self._last_q_target.copy()
-            if not self._planned_order:
+            wps = self._planned_waypoints
+            sides = self._planned_sides
+            if not sides or wps is None:
                 self._planned_motion_active = False
-                self._align_ik_to_config(self._last_q_target[0:7], self._last_q_target[7:14])
-                self.get_logger().info(
-                    f"Geplante Bewegung zu Pose '{self._planned_pose_name}' abgeschlossen.")
             else:
-                side = self._planned_order[0]
-                sl = slice(0, 7) if side == "left" else slice(7, 14)
-                wps = self._planned_waypoints[side]
-                idx = self._planned_wp_idx[side]
-                cur = self._last_q_target[sl]
+                idx = self._planned_wp_idx
                 wp = wps[idx]
-                reached_wp = bool(np.linalg.norm(wp - cur) < self.planned_motion_tolerance)
+                # (spalten-slice im Wegpunkt, ziel-slice in q_target) je Seite
+                slices = [(slice(7 * k, 7 * k + 7),
+                           slice(0, 7) if side == "left" else slice(7, 14))
+                          for k, side in enumerate(sides)]
+                reached_wp = all(
+                    np.linalg.norm(wp[col] - self._last_q_target[tgt])
+                    < self.planned_motion_tolerance
+                    for col, tgt in slices)
                 if reached_wp and idx + 1 < len(wps):
                     idx += 1
-                    self._planned_wp_idx[side] = idx
+                    self._planned_wp_idx = idx
                     wp = wps[idx]
                     reached_wp = False
-                q_target[sl] = wp
+                for col, tgt in slices:
+                    q_target[tgt] = wp[col]
                 if reached_wp and idx == len(wps) - 1:
-                    self._planned_order.pop(0)   # dieser Arm fertig -> naechster (falls noch einer)
+                    self._planned_motion_active = False
+                    self._align_ik_to_config(q_target[0:7], q_target[7:14])
+                    self.get_logger().info(
+                        f"Geplante Bewegung zu Pose '{self._planned_pose_name}' abgeschlossen.")
 
         else:
             # IK-Seed: Arm-Gelenke aus dem LETZTEN ZIEL (deterministisch), nicht
