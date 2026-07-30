@@ -237,6 +237,67 @@ def _relocate_meshes(xml_path: Path, notes: list) -> None:
             notes.append(f"XML nicht schreibbar: {exc}")
 
 
+def _repair_orphan_parents(editor, notes: list) -> None:
+    """Verwaiste Eltern-Pfade reparieren, BEVOR exportiert wird.
+
+    Hintergrund (Bug im Fremdpaket 'robits', das der Editor fuers Exportieren
+    nutzt): neue Objekte bekommen als Eltern-Pfad das, was gerade oben unter
+    "Elements" ausgewaehlt ist. Ist dabei ein normales Objekt (Box/Mesh/...)
+    statt eine ECHTE Gruppe ausgewaehlt, haengt der Editor das neue Objekt
+    intern unter diesen Pfad (z.B. "/box_0001/box_0002"). Der MuJoCo-Exporter
+    traegt aber NUR Gruppen (BlueprintGroup) in seine interne Eltern-Zuordnung
+    ein -- fuer alles andere schlaegt die Suche fehl und der Export stuerzt mit
+    "AttributeError: 'NoneType' object has no attribute 'joints'" ab (robits/
+    sim/scene/mjcf_utils.py:has_freejoint auf einem nicht gefundenen Parent).
+
+    Wir heben solche Objekte hier auf die oberste Ebene, statt den Export
+    scheitern zu lassen - fuer unsere Umgebungen (nur Hindernisse/Greif-
+    objekte, siehe scene_editor/README.md) macht flach vs. verschachtelt
+    ohnehin keinen Unterschied: build_env_scene.py flacht beim Kombinieren
+    sowieso alles ab.
+    """
+    from dataclasses import replace as _dc_replace
+
+    from robits.sim.blueprints import BlueprintGroup
+
+    ctrl = editor.controller
+    blueprints = ctrl.state.blueprints
+    top_level_groups = {
+        p.strip("/").split("/", 1)[0]
+        for p, bp in blueprints.items()
+        if isinstance(bp, BlueprintGroup)
+    }
+    used_top_names = {p.strip("/").split("/", 1)[0] for p in blueprints}
+
+    fixed = {}
+    for path, bp in blueprints.items():
+        parts = path.strip("/").split("/")
+        if len(parts) <= 1 or parts[0] in top_level_groups:
+            continue
+        leaf = parts[-1] or "objekt"
+        new_path = f"/{leaf}"
+        n = 2
+        while new_path in blueprints or new_path in fixed or \
+                new_path.strip("/") in used_top_names:
+            new_path = f"/{leaf}_{n}"
+            n += 1
+        fixed[new_path] = _dc_replace(bp, path=new_path)
+        used_top_names.add(new_path.strip("/"))
+        notes.append(f"'{path}' hatte keinen gueltigen Eltern-Pfad mehr "
+                     f"-> auf oberste Ebene gehoben als '{new_path}'.")
+
+    if not fixed:
+        return
+
+    ctrl.state.push_state_to_history()
+    for old_path in list(blueprints):
+        parts = old_path.strip("/").split("/")
+        if len(parts) > 1 and parts[0] not in top_level_groups:
+            del blueprints[old_path]
+    blueprints.update(fixed)
+    ctrl.renderer.render_from_state(list(blueprints.values()))
+
+
 def save_environment(editor, name: str):
     """Szene als scenes/<name>.xml speichern.
 
@@ -256,6 +317,7 @@ def save_environment(editor, name: str):
     notes = []
 
     try:
+        _repair_orphan_parents(editor, notes)
         with tempfile.TemporaryDirectory(prefix="scene_export_") as td:
             tmp_xml = Path(td) / f"{clean}.xml"
             editor.controller.export_scene(tmp_xml)

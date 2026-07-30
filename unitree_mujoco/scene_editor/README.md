@@ -345,6 +345,17 @@ Nach Aenderungen an der Normalisierung: `python3 test_build_env_scene.py`
 
 ## Bekannte Stolpersteine
 
+- **`Speichern fehlgeschlagen: AttributeError: 'NoneType' object has no
+  attribute 'joints'`** – Bug im Fremdpaket: neue Objekte bekommen als
+  Eltern-Pfad das, was gerade oben unter „Elements" ausgewaehlt ist. War dabei
+  zufaellig ein normales Objekt (Box/Mesh/...) statt eine echte Gruppe
+  ausgewaehlt, haengt der Editor das neue Objekt intern darunter – der
+  Exporter kennt aber nur Gruppen als Eltern und stuerzt sonst ab.
+  `run_editor.py` faengt das seit kurzem ab: verwaiste Objekte werden vor dem
+  Speichern automatisch auf die oberste Ebene gehoben (Hinweis erscheint in
+  der Speichern-Meldung) – nichts geht verloren. Vorbeugen: vor „Create Box"
+  o.ae. in „Elements" erst **„— none —"** waehlen, wenn du keine Gruppe
+  meinst.
 - **`ModuleNotFoundError: yourdfpy`** – `setup.sh` erneut laufen lassen
   (installiert es); oder `.venv/bin/pip install yourdfpy`.
 - **Build-Fehler bei `GPUtil` / `install_layout`** – passiert nur bei
