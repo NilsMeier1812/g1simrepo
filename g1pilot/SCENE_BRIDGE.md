@@ -361,7 +361,8 @@ Modell tut es. Damit ist der LiDAR-Plan voll kompatibel.
 | `unitree_mujoco/simulate_python/scene_state_publisher.py` *(neu)* | Sendet Hindernisse (statisch) + Greif-Objekte (live aus `mj_data`) periodisch per UDP an `scene_bridge` |
 | `unitree_mujoco/simulate_python/config.py` | `SCENE_UDP_PORT`/`SCENE_UDP_HOST`/`SCENE_PUBLISH_HZ`/`SCENE_ENABLE` |
 | `unitree_mujoco/simulate_python/unitree_mujoco.py` | `SceneStatePublisher` in beide Sim-Loops (Realtime + Lockstep) eingehängt |
-| `unitree_mujoco/scene_editor/build_env_scene.py` | `grasp_`-Namenskonvention: wrapt passende `<geom>` automatisch in `<body><freejoint/>…</body>` |
+| `unitree_mujoco/scene_editor/build_env_scene.py` | Normalisiert den Editor-Export auf die kanonische Form: `grasp_`-Namen → `<body><freejoint/><geom/></body>`, alles andere → statisches `<geom>` im worldbody (der Editor exportiert **alles** mit freiem Gelenk) |
+| `unitree_mujoco/scene_editor/run_editor.py` | Speichern nur mit Namen (Ziel fest `scenes/`), Objekt-Umbenennen (macht `grasp_` überhaupt erst setzbar), Mesh-Pfade repo-relativ |
 | `unitree_mujoco/scene_editor/README.md` | Hindernis-vs-Greif-Objekt-Konvention dokumentiert |
 | `g1pilot/g1pilot/navigation/scene_markers.py` *(neu)* | Gemeinsames Wire-Format (`/scene_markers`-Kontrakt): ns/id/text-Codec, Marker↔MuJoCo-Skalierung, AABB/Footprint-Helfer |
 | `g1pilot/g1pilot/navigation/scene_bridge.py` *(neu)* | ROS2-Node: UDP-Empfang → `visualization_msgs/MarkerArray` auf `/scene_markers` |
@@ -424,9 +425,10 @@ Modell tut es. Damit ist der LiDAR-Plan voll kompatibel.
 - **DOF-Umfang der gespeicherten Pose:** 7 DOF je Arm (Schulter…Handgelenk),
   **ohne** Taille — konsistent mit der bestehenden Home-/Walk-Pose-Konvention
   in `arm_controller.py`.
-- **Editor-Umbau:** **nicht** angefasst (kein Klassen-Dropdown im Browser-
-  Editor) — die Namenskonvention macht das unnötig; Objekte werden im Editor
-  ganz normal umbenannt (Feld existiert bereits).
+- **Editor-Umbau:** kein Klassen-Dropdown im Browser-Editor — die
+  Namenskonvention macht das unnötig. Ein **Umbenennen-Feld** fehlte dem
+  Fremdpaket allerdings (die ursprüngliche Annahme, es gäbe eines, war falsch);
+  es wird jetzt von `run_editor.py` ergänzt, ohne das Paket zu patchen.
 
 ---
 
