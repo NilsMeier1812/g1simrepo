@@ -10,3 +10,8 @@ __pycache__/
 
 # MuJoCo-Log aus Validierungslaeufen
 MUJOCO_LOG.TXT
+
+# Automatisch importierte Meshes (Objekte ausserhalb des Repos, die beim
+# Speichern/Kombinieren nach hierher kopiert werden, siehe run_editor.py /
+# build_env_scene.py)
+meshes/imported/

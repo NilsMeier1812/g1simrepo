@@ -345,6 +345,18 @@ Nach Aenderungen an der Normalisierung: `python3 test_build_env_scene.py`
 
 ## Bekannte Stolpersteine
 
+- **`stl_decoder: number of faces should be between 1 and 200000 ...
+  perhaps this is an ASCII file?`** – MuJoCo laedt nur **binaeres** STL, kein
+  ASCII-STL (haeufig bei Downloads/Exporten aus Blender, Sketchfab,
+  Objaverse). Wird automatisch behoben: beim Speichern im Editor prueft
+  `run_editor.py` alle verwendeten STLs und schreibt ASCII-Dateien binaer neu
+  (mit `trimesh`); `build_env_scene.py` macht dieselbe Reparatur beim
+  Kombinieren nochmal als Sicherheitsnetz (z.B. fuer Umgebungen, die nicht
+  ueber den Editor entstanden sind). Fehlt `trimesh` (nur beim Aufruf mit
+  blankem System-`python3` moeglich) oder laesst sich die Datei nicht
+  reparieren, wird nur DAS betroffene Objekt weggelassen (mit Warnung) statt
+  die ganze Umgebung zu verwerfen – von Hand reparieren: Datei in
+  Blender/MeshLab als binaeres STL neu exportieren.
 - **`Speichern fehlgeschlagen: AttributeError: 'NoneType' object has no
   attribute 'joints'`** – Bug im Fremdpaket: neue Objekte bekommen als
   Eltern-Pfad das, was gerade oben unter „Elements" ausgewaehlt ist. War dabei

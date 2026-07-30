@@ -54,6 +54,7 @@ import argparse
 import os
 import re
 import shutil
+import struct
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -366,10 +367,71 @@ def _make_grasp_body(geom_el, name, pos, quat):
     return body
 
 
-def _resolve_mesh(file_attr: str, env_dir: Path, warnings):
-    """Mesh-Datei finden und - falls noetig - ins Repo kopieren.
+# MuJoCos eigene Grenze fuer die Face-Anzahl in binaeren STL-Dateien (siehe
+# dessen Fehlermeldung "number of faces should be between 1 and 200000").
+_MJ_STL_MAX_FACES = 200000
 
-    Rueckgabe: absoluter Pfad oder None (nicht gefunden).
+
+def is_valid_binary_stl(path: Path) -> bool:
+    """True, wenn MuJoCo diese Datei als binaere STL laden kann.
+
+    MuJoCo lehnt ASCII-STL beim Kompilieren ab ("stl_decoder: ... perhaps this
+    is an ASCII file?"). Binaeres STL hat einen festen Aufbau: 80-Byte-Header +
+    4-Byte-Face-Anzahl + Face-Anzahl*50 Bytes, exakt passend zur Dateigroesse.
+    ASCII-STL (beginnt meist mit "solid") erfuellt das praktisch nie.
+    """
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return False
+    if len(data) < 84:
+        return False
+    ntri = struct.unpack_from("<I", data, 80)[0]
+    if not (1 <= ntri <= _MJ_STL_MAX_FACES):
+        return False
+    return len(data) == 84 + ntri * 50
+
+
+def convert_stl_to_binary(path: Path, warnings) -> bool:
+    """Versucht, eine ASCII-/kaputte STL mit trimesh binaer neu zu schreiben.
+
+    Rueckgabe: True, wenn `path` danach eine gueltige binaere STL ist.
+    trimesh ist eine Abhaengigkeit von mujoco-scene-editor - im Editor-venv
+    also immer da; unter dem blanken System-python3 (start.sh-Aufruf) evtl.
+    nicht, dann bleibt es bei einer klaren Warnung statt eines Absturzes.
+    """
+    try:
+        import trimesh
+    except ImportError:
+        warnings.append(
+            f"  ! '{path.name}' ist keine binaere STL-Datei (MuJoCo laedt nur "
+            "binaeres STL) und 'trimesh' fehlt hier zum Reparieren -> Objekt(e) "
+            "damit werden weggelassen. Im Editor einmal speichern behebt das "
+            "automatisch, oder die Datei in Blender/MeshLab als binaeres STL "
+            "neu exportieren.")
+        return False
+    try:
+        mesh = trimesh.load_mesh(str(path), file_type="stl")
+        path.write_bytes(trimesh.exchange.stl.export_stl(mesh))
+    except Exception as exc:
+        warnings.append(f"  ! '{path.name}' laesst sich nicht als STL lesen/reparieren "
+                        f"({exc}) -> Objekt(e) damit werden weggelassen.")
+        return False
+    if not is_valid_binary_stl(path):
+        warnings.append(f"  ! '{path.name}' bleibt nach der Reparatur ungueltig "
+                        "-> Objekt(e) damit werden weggelassen.")
+        return False
+    warnings.append(f"  i '{path.name}' war eine ASCII-STL (MuJoCo kann nur binaeres STL) "
+                    "-> automatisch binaer neu geschrieben.")
+    return True
+
+
+def _resolve_mesh(file_attr: str, env_dir: Path, warnings):
+    """Mesh-Datei finden, ggf. ins Repo kopieren und auf ladbares binaeres STL
+    pruefen/reparieren.
+
+    Rueckgabe: absoluter Pfad oder None (nicht verwendbar - der Grund steht
+    dann bereits in `warnings`).
     """
     p = Path(os.path.expanduser(file_attr))
     candidates = [p] if p.is_absolute() else [env_dir / p, MESHES_DIR / p.name]
@@ -383,27 +445,32 @@ def _resolve_mesh(file_attr: str, env_dir: Path, warnings):
             mesh_abs = rc
             break
     if mesh_abs is None:
+        warnings.append(f"  ! Mesh-Datei nicht gefunden: {file_attr}")
         return None
 
     try:
         mesh_abs.relative_to(MJ_ROOT)
-        return mesh_abs
+        final = mesh_abs
     except ValueError:
-        pass
+        # Ausserhalb von unitree_mujoco/ -> ins Repo kopieren, sonst sieht der
+        # (read-only) Docker-Container die Datei nicht.
+        try:
+            IMPORTED_MESHES_DIR.mkdir(parents=True, exist_ok=True)
+            dest = IMPORTED_MESHES_DIR / mesh_abs.name
+            if not dest.is_file() or dest.stat().st_size != mesh_abs.stat().st_size:
+                shutil.copy2(mesh_abs, dest)
+            warnings.append(f"  i Mesh '{mesh_abs.name}' nach meshes/imported/ kopiert "
+                            "(lag ausserhalb von unitree_mujoco/).")
+            final = dest.resolve()
+        except OSError as exc:
+            warnings.append(f"  ! Mesh '{mesh_abs}' konnte nicht ins Repo kopiert werden: {exc}")
+            return None
 
-    # Ausserhalb von unitree_mujoco/ -> ins Repo kopieren, sonst sieht der
-    # (read-only) Docker-Container die Datei nicht.
-    try:
-        IMPORTED_MESHES_DIR.mkdir(parents=True, exist_ok=True)
-        dest = IMPORTED_MESHES_DIR / mesh_abs.name
-        if not dest.is_file() or dest.stat().st_size != mesh_abs.stat().st_size:
-            shutil.copy2(mesh_abs, dest)
-        warnings.append(f"  i Mesh '{mesh_abs.name}' nach meshes/imported/ kopiert "
-                        "(lag ausserhalb von unitree_mujoco/).")
-        return dest.resolve()
-    except OSError as exc:
-        warnings.append(f"  ! Mesh '{mesh_abs}' konnte nicht ins Repo kopiert werden: {exc}")
-        return mesh_abs
+    if final.suffix.lower() == ".stl" and not is_valid_binary_stl(final):
+        if not convert_stl_to_binary(final, warnings):
+            return None
+
+    return final
 
 
 def merge_assets(env_root, asset, env_dir, warnings):
@@ -434,8 +501,7 @@ def merge_assets(env_root, asset, env_dir, warnings):
                     continue
                 mesh_abs = _resolve_mesh(file_attr, env_dir, warnings)
                 if mesh_abs is None:
-                    warnings.append(f"  ! Mesh-Datei nicht gefunden: {file_attr} -> Objekt(e) "
-                                    "damit werden weggelassen.")
+                    # _resolve_mesh hat den Grund schon in warnings eingetragen.
                     if nm:
                         dropped.add(nm)
                     continue

@@ -15,6 +15,8 @@ Genau diese Form erwarten scene_objects.py (Sim) und scene_bridge.py (ROS).
 Laufen lassen (braucht nur die Standardbibliothek):
     python3 test_build_env_scene.py
 """
+import struct
+import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -225,6 +227,114 @@ class TestRobustheit(unittest.TestCase):
         </mujoco>"""
         _wb, _asset, warnings, _c = merge(xml)
         self.assertTrue(any("<actuator>" in w for w in warnings))
+
+
+class TestSTLBehandlung(unittest.TestCase):
+    """MuJoCo laedt nur binaeres STL ('perhaps this is an ASCII file?').
+
+    Ohne diese Pruefung/Reparatur reisst EIN schlechtes Mesh die ganze
+    Umgebung mit sich (MuJoCo bricht das Kompilieren der GESAMTEN Szene ab,
+    egal wie viele anderen Objekte fehlerfrei sind).
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+
+    def _mesh_path(self, data: bytes, name="mesh.stl") -> Path:
+        p = Path(self._tmpdir.name) / name
+        p.write_bytes(data)
+        return p
+
+    @staticmethod
+    def _binary_stl_bytes(ntri=1):
+        # Minimalste gueltige binaere STL: 80-Byte-Header + Face-Anzahl +
+        # ntri * 50 Byte-Dreiecke (Dreiecksinhalt ist fuer den Groessen-Check
+        # irrelevant, Nullen reichen).
+        return b"\0" * 80 + struct.pack("<I", ntri) + b"\0" * (50 * ntri)
+
+    def test_erkennt_binaere_stl(self):
+        p = self._mesh_path(self._binary_stl_bytes(3))
+        self.assertTrue(bes.is_valid_binary_stl(p))
+
+    def test_erkennt_ascii_stl(self):
+        ascii_stl = (b"solid test\n facet normal 0 0 1\n outer loop\n"
+                    b"  vertex 0 0 0\n vertex 1 0 0\n vertex 0 1 0\n"
+                    b" endloop\nendfacet\nendsolid test\n")
+        p = self._mesh_path(ascii_stl)
+        self.assertFalse(bes.is_valid_binary_stl(p))
+
+    def test_erkennt_kaputten_face_count(self):
+        # Groesse passt nicht zur behaupteten Face-Anzahl im Header.
+        bad = b"\0" * 80 + struct.pack("<I", 5) + b"\0" * 10
+        p = self._mesh_path(bad)
+        self.assertFalse(bes.is_valid_binary_stl(p))
+
+    def test_resolve_mesh_repariert_ascii_stl_automatisch(self):
+        try:
+            import trimesh
+        except ImportError:
+            self.skipTest("trimesh nicht installiert")
+        box = trimesh.creation.box(extents=[0.1, 0.1, 0.1])
+        p = self._mesh_path(b"", name="ascii_box.stl")
+        box.export(str(p), file_type="stl_ascii")
+        self.assertFalse(bes.is_valid_binary_stl(p))
+
+        warnings = []
+        result = bes._resolve_mesh(str(p), p.parent, warnings)
+        # /tmp liegt ausserhalb von unitree_mujoco/ -> wird nach
+        # meshes/imported/ kopiert; DORT muss die Reparatur sichtbar sein.
+        self.assertIsNotNone(result)
+        self.addCleanup(lambda: result.unlink(missing_ok=True))
+        self.assertTrue(bes.is_valid_binary_stl(result))
+        self.assertTrue(any("ASCII-STL" in w for w in warnings))
+
+    def test_convert_ohne_trimesh_laesst_objekt_weg_statt_abzustuerzen(self):
+        p = self._mesh_path(b"solid x\nendsolid x\n")
+        warnings = []
+        # trimesh-Importfehler simulieren, ohne das echte Modul zu deinstallieren.
+        import builtins
+        real_import = builtins.__import__
+
+        def blocked(name, *a, **k):
+            if name == "trimesh":
+                raise ImportError("blockiert fuer Test")
+            return real_import(name, *a, **k)
+
+        builtins.__import__ = blocked
+        try:
+            ok = bes.convert_stl_to_binary(p, warnings)
+        finally:
+            builtins.__import__ = real_import
+        self.assertFalse(ok)
+        self.assertTrue(any("trimesh" in w for w in warnings))
+
+    def test_fehlerhaftes_mesh_reisst_nicht_die_ganze_umgebung_mit(self):
+        bad = self._mesh_path(b"solid x\nendsolid x\n", name="bad.stl")
+        xml = f"""
+        <mujoco>
+          <asset><mesh name="bad_mesh" file="{bad}"/></asset>
+          <worldbody>
+            <geom name="kaputt" type="mesh" mesh="bad_mesh" pos="1 0 0"/>
+            <geom name="ok" type="box" size="0.1 0.1 0.1" pos="2 0 0"/>
+          </worldbody>
+        </mujoco>"""
+        import builtins
+        real_import = builtins.__import__
+
+        def blocked(name, *a, **k):
+            if name == "trimesh":
+                raise ImportError("blockiert fuer Test")
+            return real_import(name, *a, **k)
+
+        builtins.__import__ = blocked
+        try:
+            wb, _asset, warnings, _counts = merge(xml, env_dir=Path(self._tmpdir.name))
+        finally:
+            builtins.__import__ = real_import
+        self.assertNotIn("kaputt", geoms(wb))
+        self.assertIn("ok", geoms(wb))
+        self.assertTrue(any("fehlendes Mesh" in w for w in warnings))
 
 
 class TestNamenUndPfade(unittest.TestCase):

@@ -298,6 +298,30 @@ def _repair_orphan_parents(editor, notes: list) -> None:
     ctrl.renderer.render_from_state(list(blueprints.values()))
 
 
+def _fix_bad_stl_meshes(editor, notes: list) -> None:
+    """STL-Meshes reparieren, BEVOR robits die Szene zum Exportieren kompiliert.
+
+    MuJoCo laedt nur BINAERE STL-Dateien. ASCII-STL (haeufig bei Assets aus
+    Blender/Sketchfab/Objaverse-Downloads) laesst robits' Kompilierschritt mit
+    "ValueError: ... stl_decoder: ... perhaps this is an ASCII file?" abstuerzen
+    - noch bevor build_env_scene.py ueberhaupt ins Spiel kommt. Alle im
+    aktuellen Editor-Stand referenzierten STLs werden deshalb hier schon
+    geprueft und bei Bedarf binaer neu geschrieben (mit trimesh, das der Editor
+    ohnehin als Abhaengigkeit mitbringt).
+    """
+    from robits.sim.blueprints import MeshBlueprint
+
+    for bp in editor.controller.state.blueprints.values():
+        if not isinstance(bp, MeshBlueprint):
+            continue
+        mesh_path = Path(bp.mesh_path)
+        if mesh_path.suffix.lower() != ".stl" or not mesh_path.is_file():
+            continue
+        if bes.is_valid_binary_stl(mesh_path):
+            continue
+        bes.convert_stl_to_binary(mesh_path, notes)
+
+
 def save_environment(editor, name: str):
     """Szene als scenes/<name>.xml speichern.
 
@@ -318,6 +342,7 @@ def save_environment(editor, name: str):
 
     try:
         _repair_orphan_parents(editor, notes)
+        _fix_bad_stl_meshes(editor, notes)
         with tempfile.TemporaryDirectory(prefix="scene_export_") as td:
             tmp_xml = Path(td) / f"{clean}.xml"
             editor.controller.export_scene(tmp_xml)
