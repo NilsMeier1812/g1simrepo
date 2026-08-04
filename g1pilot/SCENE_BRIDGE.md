@@ -252,10 +252,13 @@ separat — reitet auf dem bestehenden Dijkstra-Plan-Execute, siehe §10.)
 > - **Speichern in EINEM Fenster:** `PoseSaveDialog` (`ui_interface.py`) fragt
 >   **Name**, **Kategorie** (Dropdown + Button „Kategorie anlegen") und die
 >   Komponenten-Häkchen **auf einmal** ab — vorher waren das zwei
->   aufeinanderfolgende Dialoge (erst Name, dann Komponenten). Häkchen:
->   **Linker Arm / Rechter Arm / Handposition**, plus Tickbox **„Hände getrennt
->   speichern"** (dann linke/rechte Hand einzeln wählbar, sonst beide
->   gemeinsam). Nur die gewählten Komponenten kommen in die Pose
+>   aufeinanderfolgende Dialoge (erst Name, dann Komponenten). Häkchen sind die
+>   **vier Komponenten flach nebeneinander**: **Linker Arm / Rechter Arm /
+>   Linke Hand / Rechte Hand** (alle vorausgewählt, jede einzeln abwählbar) —
+>   genau die Granularität, die der Store führt. Bewusst **kein** Sammel-
+>   Häkchen „Handposition" mit Zusatz-Tickbox „Hände getrennt": das war ein
+>   Überrest aus der Version mit *einer* Hand-Komponente und kostete nur
+>   Klicks. Nur die gewählten Komponenten kommen in die Pose
 >   (`pose_store.py` speichert komponentenweise: `left_arm`, `right_arm`,
 >   `left_hand`, `right_hand`; Legacy-Einträge mit `left`/`right` werden
 >   transparent gelesen). Die Auswahl geht als JSON
@@ -265,8 +268,8 @@ separat — reitet auf dem bestehenden Dijkstra-Plan-Execute, siehe §10.)
 >   **gruppiert nach Kategorie** (inkl. leerer Ordner) und je Pose, *was* drin
 >   ist („Rechter Arm, Rechte Hand") — man sieht vor dem Anfahren, ob die Hände
 >   mitfahren. Kategorie-Zeilen sind Überschriften, nicht anfahrbar.
-> - **Handposition:** „Handposition" speichert die aktuelle 6-DOF-Fingerstellung
->   **beider** Inspire-Hände. Dazu veröffentlicht die inspire-Bridge
+> - **Handposition:** Ein Hand-Häkchen speichert die aktuelle 6-DOF-Finger-
+>   stellung der jeweiligen Inspire-Hand. Dazu veröffentlicht die inspire-Bridge
 >   (`inspire_ftp/bridge.py`) den Ist-Zustand auf `/g1pilot/hand_state/{side}`
 >   (arm_controller merkt ihn sich zum Speichern) und nimmt Zielwinkel auf
 >   `/g1pilot/hand_goal/{side}` entgegen (zum Wiederherstellen, `set_all_angles`).
@@ -397,7 +400,7 @@ Modell tut es. Damit ist der LiDAR-Plan voll kompatibel.
 | `g1pilot/docker/Dockerfile.sim`, `g1pilot/docker/Dockerfile` | `pip install ompl` (Planer-Backend; reines manylinux-Wheel cp310, x86_64+aarch64, keine ROS-/MoveIt-Abhängigkeit) |
 | `g1pilot/g1pilot/manipulation/arm_controller.py` | `/scene_markers`-Abo → `sync_environment`; Kollisions-Gate; Auswahl-Save (JSON inkl. `category`, Hände gemeinsam *oder* seitenweise); **gleichzeitige** 14-DOF-Planung + synchrone Wegpunkt-Zustandsmaschine; `hand_state`-Abo/`hand_goal`-Publish |
 | `g1pilot/g1pilot/manipulation/inspire_ftp/bridge.py` | `/g1pilot/hand_state/{side}` (Ist-Fingerwinkel raus) + `/g1pilot/hand_goal/{side}` (Zielwinkel rein → `set_all_angles`) für den Positionsspeicher |
-| `g1pilot/g1pilot/teleoperation/ui_interface.py` | Streamdeck-Buttons „POSE SPEICHERN/ANFAHREN/ABBRECHEN"; `PoseSaveDialog` (**ein** Fenster: Name + Kategorie inkl. „Kategorie anlegen" + Komponenten, Tickbox „Hände getrennt speichern"); `PoseLoadDialog` (Baum **nach Kategorie**, zeigt enthaltene Komponenten) |
+| `g1pilot/g1pilot/teleoperation/ui_interface.py` | Streamdeck-Buttons „POSE SPEICHERN/ANFAHREN/ABBRECHEN"; `PoseSaveDialog` (**ein** Fenster: Name + Kategorie inkl. „Kategorie anlegen" + vier flache Komponenten-Häkchen L/R-Arm, L/R-Hand); `PoseLoadDialog` (Baum **nach Kategorie**, zeigt enthaltene Komponenten) |
 | `g1pilot/config/nav.rviz` | `MarkerArray`-Display auf `/scene_markers` |
 | `g1pilot/launch/bringup_sim.launch.py` | `scene_bridge` **unconditional** (IK braucht es auch ohne Nav); `create_map` weiter an `G1_ENABLE_NAV` gekoppelt |
 | `g1pilot/launch/navigation_launcher.launch.py` | `scene_bridge`-Node ergänzt (Real-Full-Profil) |
@@ -487,8 +490,9 @@ Ablage im bind-gemounteten Repo statt `$HOME`, damit Posen das Schließen der
 Sim überleben (inkl. automatischer Migration der alten Datei); (b)
 **Kategorien** („Ordner") in derselben Datei, mit „Kategorie anlegen"; (c)
 **ein** Speichern-Dialog für Name + Kategorie + Komponenten (statt zwei
-hintereinander), mit Tickbox für **getrennte Hände**; (d) **Laden** zeigt die
-Posen nach Kategorie gruppiert samt enthaltener Komponenten.
+hintereinander), mit den **vier Komponenten flach** (L/R-Arm, L/R-Hand) statt
+Sammel-Häkchen + Trenn-Tickbox; (d) **Laden** zeigt die Posen nach Kategorie
+gruppiert samt enthaltener Komponenten.
 
 **Bewusst nicht gebaut** (mit „Zukunft" markiert bzw. vom Nutzer
 zurückgestellt): LiDAR-Perzeptionsebene (§11), Basis-Positionsspeicher (§10,

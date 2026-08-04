@@ -102,9 +102,11 @@ class PoseSaveDialog(QDialog):
     ("Ordner", mit Anlegen-Button) und die Komponenten-Haekchen -- vorher waren
     das zwei aufeinanderfolgende Dialoge.
 
-    Die Haende werden per Default GEMEINSAM gespeichert (eine Komponente
-    "hand"); die Tickbox "Haende getrennt speichern" schaltet auf einzeln
-    waehlbare linke/rechte Hand um. Ergebnis via result_data() als
+    Die vier speicherbaren Komponenten stehen FLACH nebeneinander (linker/
+    rechter Arm, linke/rechte Hand) -- so, wie sie der Store fuehrt. Kein
+    Sammel-Haekchen "Handposition" mit Zusatz-Tickbox: das war ein Ueberrest
+    aus der Version, in der beide Haende eine einzige Komponente waren, und
+    kostete nur Klicks. Ergebnis via result_data() als
     {"name", "category", "components"} -- genau das JSON, das
     arm_controller._on_pose_save erwartet."""
 
@@ -133,42 +135,26 @@ class PoseSaveDialog(QDialog):
 
         box = QGroupBox("Was speichern?")
         box_lay = QVBoxLayout(box)
-        self.cb_left_arm = QCheckBox("Linker Arm"); self.cb_left_arm.setChecked(True)
-        self.cb_right_arm = QCheckBox("Rechter Arm"); self.cb_right_arm.setChecked(True)
-        self.cb_hands = QCheckBox("Handposition (Finger)"); self.cb_hands.setChecked(True)
-        self.cb_split_hands = QCheckBox("Haende getrennt speichern")
-        self.cb_left_hand = QCheckBox("Linke Hand"); self.cb_left_hand.setChecked(True)
-        self.cb_right_hand = QCheckBox("Rechte Hand"); self.cb_right_hand.setChecked(True)
-        for w in (self.cb_left_arm, self.cb_right_arm, self.cb_hands):
+        self.cb_left_arm = QCheckBox("Linker Arm")
+        self.cb_right_arm = QCheckBox("Rechter Arm")
+        self.cb_left_hand = QCheckBox("Linke Hand (Finger)")
+        self.cb_right_hand = QCheckBox("Rechte Hand (Finger)")
+        # Alle vier standardmaessig an: der haeufige Fall ist "ganze Haltung".
+        for w in (self.cb_left_arm, self.cb_right_arm,
+                  self.cb_left_hand, self.cb_right_hand):
+            w.setChecked(True)
             box_lay.addWidget(w)
-        # Die Haende-Details eingerueckt unter der Handposition-Zeile.
-        for w in (self.cb_split_hands, self.cb_left_hand, self.cb_right_hand):
-            row = QHBoxLayout()
-            row.addSpacing(24)
-            row.addWidget(w)
-            box_lay.addLayout(row)
         root.addWidget(box)
-
-        self.cb_hands.toggled.connect(self._sync_hand_widgets)
-        self.cb_split_hands.toggled.connect(self._sync_hand_widgets)
-        self._sync_hand_widgets()
 
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btns.button(QDialogButtonBox.StandardButton.Ok).setText("Speichern")
+        btns.button(QDialogButtonBox.StandardButton.Cancel).setText("Abbrechen")
         btns.accepted.connect(self._on_accept)
         btns.rejected.connect(self.reject)
         root.addWidget(btns)
 
         self.ed_name.setFocus()
-
-    def _sync_hand_widgets(self):
-        """Seiten-Haekchen nur relevant, wenn Handposition AN und getrennt AN."""
-        hands = self.cb_hands.isChecked()
-        self.cb_split_hands.setEnabled(hands)
-        per_side = hands and self.cb_split_hands.isChecked()
-        self.cb_left_hand.setEnabled(per_side)
-        self.cb_right_hand.setEnabled(per_side)
 
     def _new_category(self):
         """Neue Kategorie anlegen. Sie wird SOFORT im Store vermerkt (leerer
@@ -189,20 +175,10 @@ class PoseSaveDialog(QDialog):
         self.cb_category.setCurrentIndex(idx)
 
     def _components(self):
-        comps = []
-        if self.cb_left_arm.isChecked():
-            comps.append("left_arm")
-        if self.cb_right_arm.isChecked():
-            comps.append("right_arm")
-        if self.cb_hands.isChecked():
-            if self.cb_split_hands.isChecked():
-                if self.cb_left_hand.isChecked():
-                    comps.append("left_hand")
-                if self.cb_right_hand.isChecked():
-                    comps.append("right_hand")
-            else:
-                comps.append("hand")   # beide Haende (wie bisher)
-        return comps
+        """-> Komponenten-Schluessel in Store-Reihenfolge (pose_store.COMPONENTS)."""
+        boxes = (("left_arm", self.cb_left_arm), ("right_arm", self.cb_right_arm),
+                 ("left_hand", self.cb_left_hand), ("right_hand", self.cb_right_hand))
+        return [key for key, cb in boxes if cb.isChecked()]
 
     def _on_accept(self):
         if not self.ed_name.text().strip():
@@ -231,7 +207,7 @@ class PoseLoadDialog(QDialog):
     def __init__(self, parent, grouped, components_of=None):
         super().__init__(parent)
         self.setWindowTitle("Pose anfahren")
-        self.resize(460, 420)
+        self.resize(560, 420)
         self._name = None
 
         lay = QVBoxLayout(self)
@@ -256,12 +232,14 @@ class PoseLoadDialog(QDialog):
                 top.addChild(empty)
             self.tree.addTopLevelItem(top)
         self.tree.expandAll()
-        self.tree.resizeColumnToContents(0)
+        for col in (0, 1):
+            self.tree.resizeColumnToContents(col)
         lay.addWidget(self.tree, 1)
 
         self.btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         self.btns.button(QDialogButtonBox.StandardButton.Ok).setText("Anfahren")
+        self.btns.button(QDialogButtonBox.StandardButton.Cancel).setText("Abbrechen")
         self.btns.accepted.connect(self._on_accept)
         self.btns.rejected.connect(self.reject)
         lay.addWidget(self.btns)
