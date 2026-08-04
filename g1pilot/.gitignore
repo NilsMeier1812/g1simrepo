@@ -67,5 +67,9 @@ hardware/~$armAssembly.SLDASM
 # Trigger-Datei: Streamdeck-Button -> Host-Browser-Watcher (start.sh)
 .gui_open_request
 
+# Laufzeit-/Nutzerdaten im bind-gemounteten Repo (persistent ueber Container-
+# Neustarts, aber nicht versioniert): Positionsspeicher (pose_store.py).
+/data/
+
 *.FCBak
 

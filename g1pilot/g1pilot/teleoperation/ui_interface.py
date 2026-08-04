@@ -11,7 +11,8 @@ import time
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QGridLayout, QPushButton, QVBoxLayout,
     QHBoxLayout, QSlider, QLabel, QInputDialog, QMessageBox,
-    QDialog, QCheckBox, QDialogButtonBox
+    QDialog, QCheckBox, QDialogButtonBox, QLineEdit, QComboBox,
+    QFormLayout, QGroupBox, QTreeWidget, QTreeWidgetItem
 )
 from PyQt6.QtCore import QTimer, Qt, QPointF
 from PyQt6.QtGui import QPainter, QColor, QPen, QBrush
@@ -84,6 +85,210 @@ class VirtualJoystick(QWidget):
         p.setBrush(QBrush(QColor("#4CAF50") if active else QColor("#3c3c3c")))
         p.setPen(QPen(QColor("#80ff80") if active else QColor("#666"), 2))
         p.drawEllipse(QPointF(c + self._knob.x(), c + self._knob.y()), 15, 15)
+
+
+# Anzeigenamen der speicherbaren Pose-Komponenten (Schluessel wie in
+# manipulation/pose_store.py COMPONENTS).
+COMPONENT_LABELS = {
+    "left_arm": "Linker Arm",
+    "right_arm": "Rechter Arm",
+    "left_hand": "Linke Hand",
+    "right_hand": "Rechte Hand",
+}
+
+
+class PoseSaveDialog(QDialog):
+    """EIN Fenster fuer den kompletten Speichern-Vorgang: Name, Kategorie
+    ("Ordner", mit Anlegen-Button) und die Komponenten-Haekchen -- vorher waren
+    das zwei aufeinanderfolgende Dialoge.
+
+    Die Haende werden per Default GEMEINSAM gespeichert (eine Komponente
+    "hand"); die Tickbox "Haende getrennt speichern" schaltet auf einzeln
+    waehlbare linke/rechte Hand um. Ergebnis via result_data() als
+    {"name", "category", "components"} -- genau das JSON, das
+    arm_controller._on_pose_save erwartet."""
+
+    def __init__(self, parent, store=None, categories=None):
+        super().__init__(parent)
+        self._store = store
+        self.setWindowTitle("Pose speichern")
+        self.setMinimumWidth(420)
+
+        root = QVBoxLayout(self)
+
+        form = QFormLayout()
+        self.ed_name = QLineEdit()
+        self.ed_name.setPlaceholderText("z. B. Regal oben rechts")
+        form.addRow("Name:", self.ed_name)
+
+        self.cb_category = QComboBox()
+        self.cb_category.addItems(categories or [])
+        btn_new_cat = QPushButton("Kategorie anlegen")
+        btn_new_cat.clicked.connect(self._new_category)
+        cat_row = QHBoxLayout()
+        cat_row.addWidget(self.cb_category, 1)
+        cat_row.addWidget(btn_new_cat)
+        form.addRow("Kategorie:", cat_row)
+        root.addLayout(form)
+
+        box = QGroupBox("Was speichern?")
+        box_lay = QVBoxLayout(box)
+        self.cb_left_arm = QCheckBox("Linker Arm"); self.cb_left_arm.setChecked(True)
+        self.cb_right_arm = QCheckBox("Rechter Arm"); self.cb_right_arm.setChecked(True)
+        self.cb_hands = QCheckBox("Handposition (Finger)"); self.cb_hands.setChecked(True)
+        self.cb_split_hands = QCheckBox("Haende getrennt speichern")
+        self.cb_left_hand = QCheckBox("Linke Hand"); self.cb_left_hand.setChecked(True)
+        self.cb_right_hand = QCheckBox("Rechte Hand"); self.cb_right_hand.setChecked(True)
+        for w in (self.cb_left_arm, self.cb_right_arm, self.cb_hands):
+            box_lay.addWidget(w)
+        # Die Haende-Details eingerueckt unter der Handposition-Zeile.
+        for w in (self.cb_split_hands, self.cb_left_hand, self.cb_right_hand):
+            row = QHBoxLayout()
+            row.addSpacing(24)
+            row.addWidget(w)
+            box_lay.addLayout(row)
+        root.addWidget(box)
+
+        self.cb_hands.toggled.connect(self._sync_hand_widgets)
+        self.cb_split_hands.toggled.connect(self._sync_hand_widgets)
+        self._sync_hand_widgets()
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.button(QDialogButtonBox.StandardButton.Ok).setText("Speichern")
+        btns.accepted.connect(self._on_accept)
+        btns.rejected.connect(self.reject)
+        root.addWidget(btns)
+
+        self.ed_name.setFocus()
+
+    def _sync_hand_widgets(self):
+        """Seiten-Haekchen nur relevant, wenn Handposition AN und getrennt AN."""
+        hands = self.cb_hands.isChecked()
+        self.cb_split_hands.setEnabled(hands)
+        per_side = hands and self.cb_split_hands.isChecked()
+        self.cb_left_hand.setEnabled(per_side)
+        self.cb_right_hand.setEnabled(per_side)
+
+    def _new_category(self):
+        """Neue Kategorie anlegen. Sie wird SOFORT im Store vermerkt (leerer
+        "Ordner"), damit sie auch nach Abbruch dieses Dialogs erhalten bleibt."""
+        name, ok = QInputDialog.getText(self, "Kategorie anlegen", "Name der Kategorie:")
+        name = (name or "").strip()
+        if not ok or not name:
+            return
+        if self._store is not None:
+            try:
+                self._store.add_category(name)
+            except Exception as e:   # noqa: BLE001 -- Anlegen darf den Dialog nie killen
+                QMessageBox.warning(self, "Kategorie", f"Nicht gespeichert: {e}")
+        idx = self.cb_category.findText(name)
+        if idx < 0:
+            self.cb_category.addItem(name)
+            idx = self.cb_category.count() - 1
+        self.cb_category.setCurrentIndex(idx)
+
+    def _components(self):
+        comps = []
+        if self.cb_left_arm.isChecked():
+            comps.append("left_arm")
+        if self.cb_right_arm.isChecked():
+            comps.append("right_arm")
+        if self.cb_hands.isChecked():
+            if self.cb_split_hands.isChecked():
+                if self.cb_left_hand.isChecked():
+                    comps.append("left_hand")
+                if self.cb_right_hand.isChecked():
+                    comps.append("right_hand")
+            else:
+                comps.append("hand")   # beide Haende (wie bisher)
+        return comps
+
+    def _on_accept(self):
+        if not self.ed_name.text().strip():
+            QMessageBox.warning(self, "Pose speichern", "Bitte einen Namen eingeben.")
+            self.ed_name.setFocus()
+            return
+        if not self._components():
+            QMessageBox.warning(self, "Pose speichern",
+                                "Bitte mindestens eine Komponente auswaehlen.")
+            return
+        self.accept()
+
+    def result_data(self):
+        return {
+            "name": self.ed_name.text().strip(),
+            "category": self.cb_category.currentText().strip(),
+            "components": self._components(),
+        }
+
+
+class PoseLoadDialog(QDialog):
+    """Auswahl einer gespeicherten Pose, nach Kategorie ("Ordner") gruppiert.
+    Zeigt je Pose auch, welche Komponenten drin sind -- man sieht vor dem
+    Anfahren, ob z. B. die Haende mitfahren. selected_name() -> Pose-Name."""
+
+    def __init__(self, parent, grouped, components_of=None):
+        super().__init__(parent)
+        self.setWindowTitle("Pose anfahren")
+        self.resize(460, 420)
+        self._name = None
+
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel("Gespeicherte Posen (nach Kategorie):"))
+
+        self.tree = QTreeWidget()
+        self.tree.setColumnCount(2)
+        self.tree.setHeaderLabels(["Pose", "Enthaelt"])
+        for category, names in grouped.items():
+            top = QTreeWidgetItem([category, ""])
+            # Kategorie-Zeilen sind Ueberschriften, keine anfahrbaren Ziele.
+            top.setFlags(top.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            for name in names:
+                comps = (components_of(name) if components_of else None) or []
+                labels = ", ".join(COMPONENT_LABELS.get(c, c) for c in comps)
+                child = QTreeWidgetItem([name, labels])
+                child.setData(0, Qt.ItemDataRole.UserRole, name)
+                top.addChild(child)
+            if not names:
+                empty = QTreeWidgetItem(["(leer)", ""])
+                empty.setFlags(empty.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+                top.addChild(empty)
+            self.tree.addTopLevelItem(top)
+        self.tree.expandAll()
+        self.tree.resizeColumnToContents(0)
+        lay.addWidget(self.tree, 1)
+
+        self.btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.btns.button(QDialogButtonBox.StandardButton.Ok).setText("Anfahren")
+        self.btns.accepted.connect(self._on_accept)
+        self.btns.rejected.connect(self.reject)
+        lay.addWidget(self.btns)
+
+        self.tree.currentItemChanged.connect(self._sync_ok)
+        self.tree.itemDoubleClicked.connect(lambda *_: self._on_accept())
+        self._sync_ok()
+
+    def _current_name(self):
+        item = self.tree.currentItem()
+        if item is None:
+            return None
+        return item.data(0, Qt.ItemDataRole.UserRole)
+
+    def _sync_ok(self, *_):
+        self.btns.button(QDialogButtonBox.StandardButton.Ok).setEnabled(
+            self._current_name() is not None)
+
+    def _on_accept(self):
+        name = self._current_name()
+        if name is None:
+            return   # Kategorie-Zeile markiert -> nichts anzufahren
+        self._name = name
+        self.accept()
+
+    def selected_name(self):
+        return self._name
 
 
 class StreamDeck(Node):
@@ -471,74 +676,53 @@ class ButtonGUI(QWidget):
         timer.timeout.connect(lambda: self.set_button_active(pos, False))
         timer.start(duration)
 
-    def _list_saved_poses(self):
-        """Liest den Pose-Store DIREKT von der Platte -- dieselbe Datei, die
+    def _pose_store(self):
+        """Pose-Store DIREKT von der Platte -- dieselbe Datei, die
         arm_controller.py schreibt/liest (siehe manipulation/pose_store.py).
         Kein ROS-Service-Umweg noetig, beide Prozesse laufen im selben
-        Container/unter demselben User."""
+        Container/unter demselben User. -> PoseStore oder None (dann nur
+        eingeschraenkte Anzeige, Speichern selbst laeuft ueber den Controller)."""
         try:
             from g1pilot.manipulation.pose_store import PoseStore
-            return PoseStore().list_names()
-        except Exception as e:
-            self.node.get_logger().warn(f"Pose-Liste konnte nicht gelesen werden: {e}")
-            return []
-
-    def _ask_pose_components(self):
-        """Auswahl-Dialog: WAS soll gespeichert werden? Rueckgabe Liste der
-        Komponenten (Teilmenge von 'right_arm','left_arm','hand') oder None bei
-        Abbruch / leerer Auswahl. Die Auswahl wird als JSON an arm_controller
-        geschickt (siehe _on_pose_save dort)."""
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Was speichern?")
-        lay = QVBoxLayout(dlg)
-        lay.addWidget(QLabel("Komponenten dieser Pose:"))
-        cb_right = QCheckBox("Rechter Arm"); cb_right.setChecked(True)
-        cb_left = QCheckBox("Linker Arm"); cb_left.setChecked(True)
-        cb_hand = QCheckBox("Handposition (beide Haende)"); cb_hand.setChecked(True)
-        for cb in (cb_right, cb_left, cb_hand):
-            lay.addWidget(cb)
-        btns = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        btns.accepted.connect(dlg.accept)
-        btns.rejected.connect(dlg.reject)
-        lay.addWidget(btns)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return PoseStore()
+        except Exception as e:   # noqa: BLE001
+            self.node.get_logger().warn(f"Pose-Store nicht lesbar: {e}")
             return None
-        comps = []
-        if cb_right.isChecked(): comps.append("right_arm")
-        if cb_left.isChecked(): comps.append("left_arm")
-        if cb_hand.isChecked(): comps.append("hand")
-        return comps or None
 
     def _pose_save(self):
-        """Aktuelle Konfiguration unter einem Namen speichern -- mit AUSWAHL,
-        was mitgenommen wird (rechter/linker Arm, Handposition). arm_controller
-        speichert die zuletzt kommandierte Gelenkstellung bzw. den aktuellen
-        Fingerzustand (siehe _on_pose_save dort), NICHT die Marker-Zielpose."""
-        name, ok = QInputDialog.getText(self, "Pose speichern", "Name der Pose:")
-        name = (name or "").strip()
-        if not ok or not name:
+        """Aktuelle Konfiguration speichern -- EIN Fenster fuer Name,
+        Kategorie ("Ordner") und Komponenten-Auswahl (inkl. optional getrennter
+        Haende). arm_controller speichert die zuletzt kommandierte
+        Gelenkstellung bzw. den aktuellen Fingerzustand (siehe _on_pose_save
+        dort), NICHT die Marker-Zielpose."""
+        store = self._pose_store()
+        try:
+            from g1pilot.manipulation.pose_store import DEFAULT_CATEGORY
+        except Exception:   # noqa: BLE001
+            DEFAULT_CATEGORY = "Allgemein"
+        categories = store.list_categories() if store is not None else [DEFAULT_CATEGORY]
+        dlg = PoseSaveDialog(self, store=store, categories=categories)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        components = self._ask_pose_components()
-        if not components:
-            return   # abgebrochen oder nichts ausgewaehlt
-        self.node.publish_str(
-            self.node.pub_pose_save,
-            json.dumps({"name": name, "components": components}))
+        self.node.publish_str(self.node.pub_pose_save, json.dumps(dlg.result_data()))
         self._flash_visual((3, 0))
 
     def _pose_goto(self):
-        """Gespeicherte Pose auswaehlen und anfahren -- arm_controller plant
-        die Bahn dorthin NEU (kollisionsfrei um die aktuellen Hindernisse/
-        Greif-Objekte), die Startpose ist ja jedes Mal anders."""
-        names = self._list_saved_poses()
-        if not names:
+        """Gespeicherte Pose (nach Kategorie gruppiert) auswaehlen und anfahren
+        -- arm_controller plant die Bahn dorthin NEU (kollisionsfrei um die
+        aktuellen Hindernisse/Greif-Objekte), die Startpose ist ja jedes Mal
+        anders."""
+        store = self._pose_store()
+        grouped = store.list_grouped() if store is not None else {}
+        if not any(grouped.values()):
             QMessageBox.information(self, "Keine Posen",
                                     "Noch keine Pose gespeichert (POSE SPEICHERN).")
             return
-        name, ok = QInputDialog.getItem(
-            self, "Pose anfahren", "Gespeicherte Pose:", names, 0, False)
-        if not ok or not name:
+        dlg = PoseLoadDialog(self, grouped, components_of=store.components)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        name = dlg.selected_name()
+        if not name:
             return
         self.node.publish_str(self.node.pub_pose_goto, name)
         self._flash_visual((3, 1))

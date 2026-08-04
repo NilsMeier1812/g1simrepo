@@ -266,7 +266,11 @@ class ArmController(Node):
         # Abschnitt 9): Endpunkt wird gespeichert, die Bahn dorthin JEDES MAL
         # neu geplant (arm_planner.plan_arms_joint_path), weil Startpose und
         # Umgebung sich seit dem Speichern geaendert haben koennen.
+        # Ablage liegt im bind-gemounteten Repo -> ueberlebt Container-Neustarts
+        # (siehe pose_store.default_store_path); Pfad loggen, damit man beim
+        # Backup/Umzug weiss, wo die Posen liegen.
         self._pose_store = PoseStore()
+        self.get_logger().info(f"Positionsspeicher: {self._pose_store.path}")
         self._planned_motion_active = False
         # Gleichzeitige Ausfuehrung: EINE geteilte Wegpunktliste ueber die
         # geplanten Arme (7 DOF je Seite, in _planned_sides-Reihenfolge
@@ -1245,20 +1249,23 @@ class ArmController(Node):
             self.get_logger().info(f"Handposition ({side}) wiederhergestellt.")
 
     def _on_pose_save(self, msg: String):
-        """Speichert eine Pose mit AUSWAHL der Komponenten. Nachricht ist
-        entweder ein JSON `{"name":..., "components":[...]}` (aus der GUI) oder
+        """Speichert eine Pose mit AUSWAHL der Komponenten und einer Kategorie
+        ("Ordner"). Nachricht ist entweder ein JSON
+        `{"name":..., "category":..., "components":[...]}` (aus der GUI) oder
         -- rueckwaerts-kompatibel -- ein reiner Name (dann beide Arme). Gueltige
-        components: 'left_arm', 'right_arm', 'hand' (beide Haende)."""
+        components: 'left_arm', 'right_arm', 'left_hand', 'right_hand' sowie
+        'hand' als Kurzform fuer BEIDE Haende."""
         raw = (msg.data or "").strip()
         if not raw:
             self.get_logger().warn("Pose speichern ignoriert: kein Name angegeben.")
             return
-        name, components = raw, ["left_arm", "right_arm"]
+        name, components, category = raw, ["left_arm", "right_arm"], ""
         if raw.startswith("{"):
             try:
                 obj = json.loads(raw)
                 name = (obj.get("name") or "").strip()
                 components = list(obj.get("components", []))
+                category = (obj.get("category") or "").strip()
             except (ValueError, TypeError):
                 self.get_logger().warn("Pose speichern ignoriert: ungueltiges JSON.")
                 return
@@ -1271,24 +1278,28 @@ class ArmController(Node):
             kwargs["left_arm"] = self._last_q_target[0:7].copy()
         if "right_arm" in components:
             kwargs["right_arm"] = self._last_q_target[7:14].copy()
-        if "hand" in components:
-            for side in ("left", "right"):
-                st = self._hand_state[side]
-                if st is not None:
-                    kwargs[f"{side}_hand"] = list(st)
-            if "left_hand" not in kwargs and "right_hand" not in kwargs:
-                self.get_logger().warn(
-                    "Handposition ausgewaehlt, aber kein Hand-Zustand verfuegbar "
-                    "(inspire-Bridge nicht aktiv?) -- Haende werden ausgelassen.")
+        # 'hand' = beide Haende; zusaetzlich seitenweise waehlbar (GUI-Tickbox
+        # "Haende getrennt speichern").
+        hand_sides = [s for s in ("left", "right")
+                      if "hand" in components or f"{s}_hand" in components]
+        for side in hand_sides:
+            st = self._hand_state[side]
+            if st is not None:
+                kwargs[f"{side}_hand"] = list(st)
+        if hand_sides and not any(f"{s}_hand" in kwargs for s in hand_sides):
+            self.get_logger().warn(
+                "Handposition ausgewaehlt, aber kein Hand-Zustand verfuegbar "
+                "(inspire-Bridge nicht aktiv?) -- Haende werden ausgelassen.")
 
         if not kwargs:
             self.get_logger().warn(
                 f"Pose '{name}' nicht gespeichert: nichts Speicherbares ausgewaehlt.")
             return
         try:
-            self._pose_store.save(name, **kwargs)
+            self._pose_store.save(name, category=category, **kwargs)
             self.get_logger().info(
-                f"Pose '{name}' gespeichert ({', '.join(sorted(kwargs))}).")
+                f"Pose '{name}' in Kategorie '{self._pose_store.category_of(name)}' "
+                f"gespeichert ({', '.join(sorted(kwargs))}).")
         except Exception as e:
             self.get_logger().error(f"Pose '{name}' konnte nicht gespeichert werden: {e}")
 
