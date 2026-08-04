@@ -1,13 +1,14 @@
 # ARM_API.md — Posen live einspielen und direkt ausführen
 
 > **Status: implementiert.** Für fremde Projekte, die eine Armposition
-> *berechnen*, sie aber nicht ausführen können.
+> *berechnen*, sie aber nicht ausführen können: sie schicken das Ziel hierher,
+> g1pilot fährt es an. Zusätzlich kann die aktuelle Stellung über
+> `POST /arm/save` in den Positionsspeicher geschrieben werden (`pose_store.py`,
+> siehe `SCENE_BRIDGE.md` §9) — Fahren und Speichern sind getrennte Endpunkte.
 >
 > **Diese Datei ist die Referenz** (jedes Feld, jeder Zustand, jeder Code).
 > Schritt-für-Schritt-Anleitung mit Rezepten und fertigem CLI:
-> **[`ARM_API_HOWTO.md`](ARM_API_HOWTO.md)**. Sie schicken das Ziel hierher,
-> g1pilot fährt es an. **Es wird nichts gespeichert** — der Positionsspeicher
-> (`pose_store.py`, siehe `SCENE_BRIDGE.md` §9) ist eine andere Sache.
+> **[`ARM_API_HOWTO.md`](ARM_API_HOWTO.md)**.
 
 Zwei Varianten, je nachdem was das aufrufende Projekt ausrechnet:
 
@@ -18,9 +19,8 @@ Zwei Varianten, je nachdem was das aufrufende Projekt ausrechnet:
 
 In beiden Fällen wird die Bahn **jedes Mal neu geplant** (OMPL RRTConnect,
 kollisionsfrei gegen Körper und Umgebung) und die Arme fahren **synchron**.
-Gespeichert wird nichts, geschummelt an Sicherheitsgates auch nicht: ein
-eingespieltes Kommando geht durch **genau dieselben Schranken** wie der
-Streamdeck-Button „POSE ANFAHREN".
+Geschummelt an Sicherheitsgates wird dabei nicht: ein eingespieltes Kommando geht
+durch **genau dieselben Schranken** wie der Streamdeck-Button „POSE ANFAHREN".
 
 ---
 
