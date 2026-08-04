@@ -469,7 +469,9 @@ Modell tut es. Damit ist der LiDAR-Plan voll kompatibel.
 
 ## 14a · Live-Pose-Schnittstelle (fremde Projekte)
 
-Eigenes Dokument: **[`ARM_API.md`](ARM_API.md)**. Kurz die Entscheidungen:
+Eigene Dokumente: **[`ARM_API.md`](ARM_API.md)** (Referenz) und
+**[`ARM_API_HOWTO.md`](ARM_API_HOWTO.md)** (Anleitung + CLI unter
+`examples/arm_api/`). Kurz die Entscheidungen:
 
 - **Kanonischer Eingang ist ein ROS-Topic** (`/g1pilot/arm_command`,
   `std_msgs/String` mit JSON) — **kein eigenes `.msg`-Interface-Paket**, gleiche

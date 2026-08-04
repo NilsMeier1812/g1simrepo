@@ -1,7 +1,11 @@
 # ARM_API.md — Posen live einspielen und direkt ausführen
 
 > **Status: implementiert.** Für fremde Projekte, die eine Armposition
-> *berechnen*, sie aber nicht ausführen können. Sie schicken das Ziel hierher,
+> *berechnen*, sie aber nicht ausführen können.
+>
+> **Diese Datei ist die Referenz** (jedes Feld, jeder Zustand, jeder Code).
+> Schritt-für-Schritt-Anleitung mit Rezepten und fertigem CLI:
+> **[`ARM_API_HOWTO.md`](ARM_API_HOWTO.md)**. Sie schicken das Ziel hierher,
 > g1pilot fährt es an. **Es wird nichts gespeichert** — der Positionsspeicher
 > (`pose_store.py`, siehe `SCENE_BRIDGE.md` §9) ist eine andere Sache.
 
