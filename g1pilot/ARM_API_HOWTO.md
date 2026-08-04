@@ -103,7 +103,45 @@ python3 arm_cli.py pose --right 1.20 0.30 0.90 --rpy 0 0 0 --frame map --wait 60
 Position in **Metern**, Default-Frame ist `pelvis` (Ursprung im Becken, x nach
 vorn, y nach links, z nach oben).
 
-### c) Abbrechen
+### c) Aktuelle Stellung speichern
+
+Bewegt nichts — schreibt die Stellung, in der der Arm gerade steht, in die
+Pose-Datei. Danach ist sie in der GUI unter „POSE ANFAHREN" auswählbar.
+
+```bash
+# In eine Kategorie ("Ordner"), Arme und Hände
+python3 arm_cli.py save "Regal oben" --category Greifen --components arms hands
+
+# Ohne Kategorie -> Default-Kategorie "Allgemein"; ohne --components -> beide Arme
+python3 arm_cli.py save "Zwischenstellung"
+
+# Nur einzelne Komponenten
+python3 arm_cli.py save "Nur links" --components left_arm left_hand
+```
+
+`--components` versteht `left_arm`, `right_arm`, `left_hand`, `right_hand` sowie
+die Kurzformen `arms`, `hands`, `all`.
+
+Die Antwort sagt, was **wirklich** gespeichert wurde. Läuft die Inspire-Bridge
+nicht, landen die Arme in der Datei und die Hände erscheinen unter `skipped`:
+
+```json
+{"state": "saved", "name": "Regal oben", "category": "Greifen",
+ "requested": ["left_arm", "right_arm", "left_hand", "right_hand"],
+ "components": ["left_arm", "right_arm"],
+ "skipped": ["left_hand", "right_hand"]}
+```
+
+Typischer Ablauf aus einem Programm: **erst fahren, dann speichern.**
+
+```python
+requests.post(f"{API}/arm/pose", timeout=120, json={
+    "right": {"position": [0.35, -0.20, 0.10], "rpy_deg": [0, 0, 0]}, "wait": 90})
+requests.post(f"{API}/arm/save", timeout=15, json={
+    "name": "Regal oben", "category": "Greifen", "components": ["arms", "hands"]})
+```
+
+### d) Abbrechen
 
 ```bash
 python3 arm_cli.py cancel
@@ -304,6 +342,7 @@ def sicher_fahren(body, path="/arm/pose"):
 | Code / Zustand | Bedeutung | Deine Reaktion |
 |---|---|---|
 | `200` `reached` | Ziel erreicht | weiter |
+| `200` `saved` | Pose steht in der Datei | `components` gegen `requested` prüfen (`skipped`!) |
 | `202` `accepted`/`executing` | läuft noch | `GET /arm/status/<id>` pollen, oder `wait` nutzen |
 | `400` | Kommando kaputt (Feld fehlt, falsche Anzahl, NaN) | **Bug im Aufrufer** — Meldung in `error` lesen, nichts wurde gesendet |
 | `409` `rejected` | Verstanden, jetzt nicht möglich (E-Stop, nicht aktiviert, Gelenklimit, Planung läuft) | Ursache beheben (`reason`), dann erneut |
@@ -326,8 +365,12 @@ die Physik, `504` ist die Infrastruktur.
   (`cancelled` unter ihrer alten `id`) und die neue übernimmt.
 * **Der Mensch gewinnt.** Wird ein RViz-Marker angefasst, wird deine Bewegung
   `cancelled`. Das ist Absicht.
-* **Nichts wird gespeichert.** Diese Schnittstelle führt aus. Zum Speichern gibt
-  es den Positionsspeicher in der GUI (`SCENE_BRIDGE.md` §9).
+* **Fahren und Speichern sind getrennt.** `/arm/pose` und `/arm/joints` führen
+  nur aus; erst `POST /arm/save` schreibt etwas in die Pose-Datei — in dieselbe,
+  die die GUI benutzt (`SCENE_BRIDGE.md` §9).
+* **Gleicher Name überschreibt.** `POST /arm/save` fragt nicht nach.
+* **`skipped` beachten.** „Gespeichert" heißt nicht zwangsläufig „alles
+  gespeichert" — ohne Inspire-Bridge fehlen die Hände.
 * **`wait` ist rein HTTP-seitig** — es beeinflusst die Bewegung nicht, nur wie
   lange dein Request offen bleibt. Maximal 300 s.
 * **Reichweite.** Rund **0,45 m** von der Schulter zum Hand-TCP (aus dem URDF
@@ -382,7 +425,9 @@ Wenn jemand sein Projekt anbinden soll, reicht das hier:
 1. **Adresse:** `http://localhost:8770` (auf demselben Rechner). Von einem
    anderen Rechner nur mit geöffnetem Bind + Token — dann bekommt er beides von dir.
 2. **Was er schickt:** entweder 7 Gelenkwinkel je Arm (rad) oder eine
-   Hand-Pose (Position in m + Orientierung). Format: `ARM_API.md` §3.
+   Hand-Pose (Position in m + Orientierung). Format: `ARM_API.md` §3. Wenn er
+   Posen auch ablegen soll: `POST /arm/save` mit `name` (+ optional `category`
+   und `components`).
 3. **Was er zurückbekommt:** `state` + bei Problemen `reason`/`detail`, plus die
    HTTP-Codes aus §6 hier.
 4. **Was er vorher tun muss:** nichts — nur prüfen, ob `GET /arm/health`

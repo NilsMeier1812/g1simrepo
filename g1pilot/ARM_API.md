@@ -127,6 +127,61 @@ Basis: `http://127.0.0.1:8770`. Alle Bodies und Antworten sind JSON.
 Ist die Pose nicht erreichbar (außerhalb der Reichweite, Singularität), kommt
 **HTTP 422** mit dem Restfehler in `detail` — der Arm bewegt sich nicht.
 
+### `POST /arm/save` — aktuelle Stellung in die Pose-Datei speichern
+
+Bewegt **nichts**. Schreibt die aktuelle Stellung unter einem Namen in dieselbe
+Datei, die der Streamdeck-Dialog benutzt (`pose_store.py`, siehe
+`SCENE_BRIDGE.md` §9) — danach ist die Pose auch in „POSE ANFAHREN" auswählbar.
+
+```json
+{
+  "name": "Regal oben",
+  "category": "Greifen",
+  "components": ["arms", "hands"]
+}
+```
+
+* `name` (**Pflicht**): Schlüssel in der Datei. Ein vorhandener Name wird
+  überschrieben. Max. 128 Zeichen.
+* `category`: der „Ordner". **Leer oder weggelassen → Default-Kategorie
+  `Allgemein`.** Eine noch nicht existierende Kategorie wird angelegt.
+* `components`: was gespeichert wird. Weggelassen → **beide Arme**. Erlaubt sind
+  die vier Einzelschlüssel und die Kurzformen:
+
+  | Wert | Bedeutung |
+  |---|---|
+  | `left_arm`, `right_arm` | einzelner Arm (7 Gelenkwinkel) |
+  | `left_hand`, `right_hand` | einzelne Hand (6 Fingerwinkel) |
+  | `arms` | beide Arme |
+  | `hands` (auch `hand`) | beide Hände |
+  | `all` | Arme **und** Hände |
+
+Gespeichert wird das zuletzt **kommandierte** Gelenkziel (nicht die Messung, die
+rauscht) und der letzte von der Inspire-Bridge gemeldete Fingerzustand.
+
+Antwort sagt, was **wirklich** in der Datei landete:
+
+```json
+{
+  "id": "9c2f13ab77e0",
+  "state": "saved",
+  "name": "Regal oben",
+  "category": "Greifen",
+  "requested": ["left_arm", "right_arm", "left_hand", "right_hand"],
+  "components": ["left_arm", "right_arm"],
+  "skipped": ["left_hand", "right_hand"],
+  "reason": ""
+}
+```
+
+Hier lief die Inspire-Bridge nicht: die Arme wurden gespeichert, die Hände unter
+`skipped` gemeldet — statt stillschweigend weniger zu speichern als angefordert.
+Ist **nichts** speicherbar (nur Hände angefordert, keine verfügbar), kommt `422`
+mit `state: "failed"` und es wird nichts geschrieben. Codes: `200` gespeichert,
+`400` Format (z.B. `name` fehlt), `422` nichts speicherbar oder Schreibfehler.
+
+Kein `wait` nötig — Speichern ist sofort fertig.
+
 ### Weitere Endpunkte
 
 | Endpunkt | Zweck |
@@ -136,6 +191,7 @@ Ist die Pose nicht erreichbar (außerhalb der Reichweite, Singularität), kommt
 | `GET /arm/status` | Letzte Statusmeldung (egal welcher Vorgang) |
 | `GET /arm/state` | Ist-Gelenkwinkel beider Arme (aus `/joint_states`), letzter Status, offene Vorgänge |
 | `GET /arm/health` | Lebt der Node? (kein Token nötig) |
+| `POST /arm/save` | Aktuelle Stellung in die Pose-Datei speichern (siehe oben) |
 | `GET /` | Selbstbeschreibung: Endpunkte + Beispiel |
 
 `GET /arm/state` ist der bequeme Weg, die **Startpose** zu holen und nach dem
@@ -159,6 +215,7 @@ externes Werkzeug mitlesen will, was der Arm gerade tut:
 | `rejected` | Nicht ausführbar: Format, Gelenklimit, Arme nicht bereit, TF fehlt | ✔ |
 | `failed` | IK konvergiert nicht oder Planung findet keinen kollisionsfreien Weg | ✔ |
 | `cancelled` | Abgebrochen: `/arm/cancel`, E-Stop, DISABLE, Homing, WALK, oder **Marker angefasst** (manueller Vorrang) | ✔ |
+| `saved` | Nur bei `POST /arm/save`: Pose steht in der Datei (Rückkanal `/g1pilot/pose_store/save/status`) | ✔ |
 
 HTTP-Codes:
 
@@ -223,6 +280,11 @@ curl -sS -X POST http://localhost:8770/arm/pose \
 # Ist-Zustand holen / abbrechen
 curl -sS http://localhost:8770/arm/state
 curl -sS -X POST http://localhost:8770/arm/cancel
+
+# Aktuelle Stellung speichern (bewegt nichts)
+curl -sS -X POST http://localhost:8770/arm/save \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "Regal oben", "category": "Greifen", "components": ["arms", "hands"]}'
 ```
 
 ### Python (das fremde Projekt)
@@ -295,7 +357,8 @@ Was die API **nicht** kann (bewusst):
   solange geplant wird (`"Es laeuft bereits eine Planung."`).
 * Den Marker überstimmen — wird ein RViz-Marker angefasst, gewinnt der Mensch
   und die eingespielte Bewegung wird `cancelled`.
-* Etwas speichern — dafür ist der Positionsspeicher da.
+* Bewegen **und** speichern in einem Aufruf — das sind zwei Endpunkte
+  (`/arm/pose` bzw. `/arm/joints` und danach `/arm/save`).
 
 ---
 

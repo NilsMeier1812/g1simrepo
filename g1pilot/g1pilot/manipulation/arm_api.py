@@ -70,7 +70,7 @@ class _Vorgang:
     def add(self, status: dict) -> None:
         self.states.append(status)
         self.answered.set()
-        if status.get("state") in ac.TERMINAL_STATES:
+        if status.get("state") in ac.ALL_TERMINAL_STATES:
             self.terminal.set()
 
 
@@ -89,6 +89,11 @@ class ArmApiNode(Node):
         self.pub_cmd = self.create_publisher(String, "/g1pilot/arm_command", 10)
         self.pub_cancel = self.create_publisher(Bool, "/g1pilot/arm_command/cancel", 10)
         self.create_subscription(String, "/g1pilot/arm_command/status",
+                                 self._on_status, 50)
+        # Speichern laeuft ueber das Topic, das auch die Streamdeck-GUI nutzt --
+        # eine Implementierung, zwei Aufrufer (siehe arm_controller._on_pose_save).
+        self.pub_save = self.create_publisher(String, "/g1pilot/pose_store/save", 10)
+        self.create_subscription(String, "/g1pilot/pose_store/save/status",
                                  self._on_status, 50)
         self.create_subscription(JointState, "/joint_states", self._on_joint_states, 10)
 
@@ -141,7 +146,7 @@ class ArmApiNode(Node):
             pass
 
     # ── Von der HTTP-Seite benutzt ───────────────────────────────────────
-    def submit(self, wire: dict, cmd: dict) -> _Vorgang:
+    def submit(self, wire: dict, cmd: dict, *, save: bool = False) -> _Vorgang:
         """Kommando publizieren und den Vorgang registrieren.
 
         Auf das Topic geht das WIRE-Format (`wire`, so wie der Client es
@@ -159,10 +164,17 @@ class ArmApiNode(Node):
             while len(self._order) > max(10, self.history):
                 old = self._order.pop(0)
                 self._vorgaenge.pop(old, None)
-        self.pub_cmd.publish(String(data=json.dumps(wire)))
-        self.get_logger().info(
-            f"arm_command '{vg.id}' ({cmd['type']}, {'+'.join(cmd['sides'])}) "
-            f"per HTTP eingespielt.")
+        if save:
+            self.pub_save.publish(String(data=json.dumps(wire)))
+            self.get_logger().info(
+                f"Pose '{cmd['name']}' -> Kategorie "
+                f"'{cmd['category'] or '(Default)'}' per HTTP zum Speichern "
+                f"angefordert ({', '.join(cmd['components'])}).")
+        else:
+            self.pub_cmd.publish(String(data=json.dumps(wire)))
+            self.get_logger().info(
+                f"arm_command '{vg.id}' ({cmd['type']}, {'+'.join(cmd['sides'])}) "
+                f"per HTTP eingespielt.")
         return vg
 
     def cancel(self) -> None:
@@ -274,9 +286,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.node.cancel()
             self._send(200, {"cancelled": True})
             return
+        if path == "/arm/save":
+            self._do_save()
+            return
         if path not in ("/arm/joints", "/arm/pose"):
             self._send(404, {"error": f"Unbekannter Pfad '{path}'.",
-                             "hint": "POST /arm/joints oder /arm/pose."})
+                             "hint": "POST /arm/joints, /arm/pose, /arm/save "
+                                     "oder /arm/cancel."})
             return
 
         try:
@@ -327,6 +343,42 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                           "sides": cmd["sides"],
                           "history": vg.states})
 
+    def _do_save(self):
+        """POST /arm/save — AKTUELLE Stellung in die Pose-Datei schreiben.
+
+        Bewegt nichts. Geht auf dasselbe Topic wie der Streamdeck-Speichern-
+        Dialog, also dieselbe Implementierung und dieselbe Datei; der Rueckkanal
+        sagt, WAS tatsaechlich gespeichert wurde (Haende brauchen eine laufende
+        inspire-Bridge). Gespeichert wird immer sofort -- kein `wait` noetig, die
+        Antwort kommt innerhalb eines Ticks."""
+        try:
+            obj = self._read_json()
+            cmd = ac.parse_save_command(obj)
+            if not cmd["id"]:
+                cmd["id"] = ac.new_request_id()
+            obj["id"] = cmd["id"]     # ohne id kann der Status nicht zugeordnet werden
+        except ac.CommandError as e:
+            self._send(400, {"error": str(e)})
+            return
+
+        vg = self.node.submit(obj, cmd, save=True)
+        if not vg.answered.wait(ACCEPT_TIMEOUT_S):
+            self._send(504, {
+                "id": vg.id, "state": "unknown",
+                "error": "Keine Antwort vom arm_controller -- laeuft der Node?"})
+            return
+        last = vg.last or {}
+        state = last.get("state")
+        code = {ac.ST_SAVED: 200, ac.ST_REJECTED: 400, ac.ST_FAILED: 422}.get(state, 202)
+        self._send(code, {
+            "id": vg.id, "state": state, "name": last.get("name", cmd["name"]),
+            "category": last.get("category", ""),
+            "requested": cmd["components"],
+            "components": last.get("components", []),
+            "skipped": last.get("skipped", []),
+            "reason": last.get("reason", ""),
+        })
+
     def _describe(self) -> dict:
         return {
             "service": "g1pilot arm API",
@@ -335,6 +387,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 "POST /arm/joints": "Gelenkwinkel (7 je Arm, rad) direkt anfahren",
                 "POST /arm/pose": "Kartesische Hand-Pose anfahren (IK + Planung)",
                 "POST /arm/cancel": "laufende Bewegung abbrechen",
+                "POST /arm/save": "aktuelle Stellung in die Pose-Datei speichern "
+                                  "(name, category, components)",
                 "GET /arm/status/<id>": "Status eines Vorgangs",
                 "GET /arm/state": "Ist-Gelenkwinkel + letzter Status",
                 "GET /arm/health": "lebt der Node?",
@@ -344,6 +398,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     "right": {"position": [0.35, -0.20, 0.10],
                               "rpy_deg": [0, 0, 0], "frame": "pelvis"},
                     "wait": 60,
+                },
+                "POST /arm/save": {
+                    "name": "Regal oben", "category": "Greifen",
+                    "components": ["arms", "hands"],
                 },
             },
         }

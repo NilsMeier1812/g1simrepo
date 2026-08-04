@@ -415,6 +415,10 @@ class ArmController(Node):
         # ein API-Nutzer den Positionsspeicher-Namensraum kennen muss.
         self.create_subscription(Bool, "/g1pilot/arm_command/cancel", self._on_pose_cancel, 10)
         self.pub_cmd_status = self.create_publisher(String, "/g1pilot/arm_command/status", 10)
+        # Rueckkanal des Speicherns (POST /arm/save bzw. Streamdeck-Dialog):
+        # sagt, WAS unter welchem Namen/Kategorie wirklich in der Datei landete.
+        self.pub_save_status = self.create_publisher(
+            String, "/g1pilot/pose_store/save/status", 10)
 
         # Hand-Ist-Zustand von der inspire-Bridge (nur zum SPEICHERN der
         # Handposition) und Hand-Ziel zurueck (zum Wiederherstellen). Laeuft die
@@ -1265,59 +1269,73 @@ class ArmController(Node):
             self.pub_hand_goal[side].publish(m)
             self.get_logger().info(f"Handposition ({side}) wiederhergestellt.")
 
-    def _on_pose_save(self, msg: String):
-        """Speichert eine Pose mit AUSWAHL der Komponenten und einer Kategorie
-        ("Ordner"). Nachricht ist entweder ein JSON
-        `{"name":..., "category":..., "components":[...]}` (aus der GUI) oder
-        -- rueckwaerts-kompatibel -- ein reiner Name (dann beide Arme). Gueltige
-        components: 'left_arm', 'right_arm', 'left_hand', 'right_hand' sowie
-        'hand' als Kurzform fuer BEIDE Haende."""
-        raw = (msg.data or "").strip()
-        if not raw:
-            self.get_logger().warn("Pose speichern ignoriert: kein Name angegeben.")
-            return
-        name, components, category = raw, ["left_arm", "right_arm"], ""
-        if raw.startswith("{"):
-            try:
-                obj = json.loads(raw)
-                name = (obj.get("name") or "").strip()
-                components = list(obj.get("components", []))
-                category = (obj.get("category") or "").strip()
-            except (ValueError, TypeError):
-                self.get_logger().warn("Pose speichern ignoriert: ungueltiges JSON.")
-                return
-        if not name:
-            self.get_logger().warn("Pose speichern ignoriert: kein Name angegeben.")
-            return
+    def _publish_save_status(self, state: str, *, req_id: str = "", **kw) -> None:
+        """Ergebnis eines Speicher-Vorgangs veroeffentlichen
+        (/g1pilot/pose_store/save/status). Ohne diesen Rueckkanal wuesste ein
+        Aufrufer der HTTP-Schnittstelle nicht, ob wirklich gespeichert wurde --
+        die GUI sieht es am Log, ein fremdes Programm nicht."""
+        self.pub_save_status.publish(
+            String(data=ac.save_status_message(req_id, state, **kw)))
 
-        kwargs = {}
+    def _on_pose_save(self, msg: String):
+        """Speichert die AKTUELLE Stellung unter einem Namen, mit Auswahl der
+        Komponenten und einer Kategorie ("Ordner"). Quellen: der Streamdeck-
+        Dialog und der HTTP-Endpunkt POST /arm/save (siehe ARM_API.md) -- beide
+        schicken dasselbe JSON `{id?, name, category?, components?}` auf dieses
+        Topic; ein reiner Name (Altform) gilt weiter als "beide Arme".
+
+        Gespeichert wird das zuletzt KOMMANDIERTE Gelenkziel (nicht die Messung,
+        die rauscht) bzw. der letzte gemeldete Fingerzustand."""
+        try:
+            cmd = ac.parse_save_command(msg.data)
+        except ac.CommandError as e:
+            self._publish_save_status(ac.ST_REJECTED, reason=str(e))
+            self.get_logger().warn(f"Pose speichern abgelehnt: {e}")
+            return
+        req_id, name = cmd["id"], cmd["name"]
+        category, components = cmd["category"], cmd["components"]
+
+        kwargs, skipped = {}, []
         if "left_arm" in components:
             kwargs["left_arm"] = self._last_q_target[0:7].copy()
         if "right_arm" in components:
             kwargs["right_arm"] = self._last_q_target[7:14].copy()
-        # 'hand' = beide Haende; zusaetzlich seitenweise waehlbar (GUI-Tickbox
-        # "Haende getrennt speichern").
-        hand_sides = [s for s in ("left", "right")
-                      if "hand" in components or f"{s}_hand" in components]
-        for side in hand_sides:
+        # Haende: nur speicherbar, wenn die inspire-Bridge einen Ist-Zustand
+        # gemeldet hat. Fehlt er, wird die Seite ausgelassen UND das im Status
+        # als 'skipped' zurueckgegeben -- stillschweigend weniger zu speichern
+        # als angefordert waere die schlechtere Antwort.
+        for side in ("left", "right"):
+            if f"{side}_hand" not in components:
+                continue
             st = self._hand_state[side]
-            if st is not None:
+            if st is None:
+                skipped.append(f"{side}_hand")
+            else:
                 kwargs[f"{side}_hand"] = list(st)
-        if hand_sides and not any(f"{s}_hand" in kwargs for s in hand_sides):
+        if skipped:
             self.get_logger().warn(
-                "Handposition ausgewaehlt, aber kein Hand-Zustand verfuegbar "
-                "(inspire-Bridge nicht aktiv?) -- Haende werden ausgelassen.")
+                f"Kein Hand-Zustand fuer {', '.join(skipped)} (inspire-Bridge "
+                f"nicht aktiv?) -- ausgelassen.")
 
         if not kwargs:
-            self.get_logger().warn(
-                f"Pose '{name}' nicht gespeichert: nichts Speicherbares ausgewaehlt.")
+            why = ("Nichts Speicherbares: " + ", ".join(skipped) + " nicht verfuegbar."
+                   if skipped else "Nichts Speicherbares ausgewaehlt.")
+            self._publish_save_status(ac.ST_FAILED, req_id=req_id, name=name,
+                                      reason=why, skipped=skipped)
+            self.get_logger().warn(f"Pose '{name}' nicht gespeichert: {why}")
             return
         try:
             self._pose_store.save(name, category=category, **kwargs)
+            saved_in = self._pose_store.category_of(name)
+            self._publish_save_status(
+                ac.ST_SAVED, req_id=req_id, name=name, category=saved_in,
+                components=[c for c in ac.COMPONENTS if c in kwargs], skipped=skipped)
             self.get_logger().info(
-                f"Pose '{name}' in Kategorie '{self._pose_store.category_of(name)}' "
+                f"Pose '{name}' in Kategorie '{saved_in}' "
                 f"gespeichert ({', '.join(sorted(kwargs))}).")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- Schreibfehler darf den Node nie killen
+            self._publish_save_status(ac.ST_FAILED, req_id=req_id, name=name,
+                                      reason=f"Schreiben fehlgeschlagen: {e}")
             self.get_logger().error(f"Pose '{name}' konnte nicht gespeichert werden: {e}")
 
     def _on_pose_cancel(self, msg: Bool):

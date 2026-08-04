@@ -16,6 +16,7 @@ Beispiele:
     python3 arm_cli.py pose --left 0.30 0.20 0.10 --quat 0 0 0 1
     python3 arm_cli.py cancel
     python3 arm_cli.py status 3f9a1c4e77b2
+    python3 arm_cli.py save "Regal oben" --category Greifen --components arms hands
 """
 from __future__ import annotations
 
@@ -59,7 +60,7 @@ def _print(code: int, payload: dict) -> int:
     erreicht bzw. Abfrage ok), damit das Skript in Shell-Pipelines taugt."""
     print(json.dumps(payload, indent=2, ensure_ascii=False))
     state = payload.get("state")
-    if code == 200 and state in (None, "reached"):
+    if code == 200 and state in (None, "reached", "saved"):
         return 0
     if code == 202:
         print("# laeuft noch -- mit --wait <sekunden> auf das Ende warten",
@@ -103,6 +104,15 @@ def cmd_joints(args) -> int:
                            token=args.token))
 
 
+def cmd_save(args) -> int:
+    """Aktuelle Stellung in die Pose-Datei schreiben (bewegt nichts)."""
+    body = {"name": args.name, "category": args.category}
+    if args.components:
+        body["components"] = args.components
+    return _print(*request(args.url, "POST", "/arm/save", body=body,
+                           token=args.token, timeout=15))
+
+
 def cmd_pose(args) -> int:
     if bool(args.rpy) == bool(args.quat):
         raise SystemExit("Genau eines von --rpy (Grad) oder --quat (x y z w) angeben.")
@@ -144,6 +154,15 @@ def main(argv=None) -> int:
                    help="Sekunden auf den Endzustand warten (0 = nicht warten)")
     p.add_argument("--id", default="", help="eigene Vorgangs-ID")
     p.set_defaults(fn=cmd_joints)
+
+    p = sub.add_parser("save", help="Aktuelle Stellung in die Pose-Datei speichern")
+    p.add_argument("name", help="Name der Pose (Schluessel in der Datei)")
+    p.add_argument("--category", default="",
+                   help="Kategorie/\"Ordner\" (leer = Default-Kategorie)")
+    p.add_argument("--components", nargs="+", default=[],
+                   metavar="C", help="z.B. arms hands / left_arm right_hand / all "
+                                     "(Default: beide Arme)")
+    p.set_defaults(fn=cmd_save)
 
     p = sub.add_parser("pose", help="Kartesische Hand-Pose anfahren (IK + Planung)")
     p.add_argument("--right", type=float, nargs=3, metavar=("X", "Y", "Z"))

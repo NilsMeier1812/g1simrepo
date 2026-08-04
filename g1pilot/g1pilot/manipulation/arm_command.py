@@ -25,6 +25,10 @@ import json
 import math
 import uuid
 
+# Einzige Definition der speicherbaren Komponenten: der Store fuehrt sie, hier
+# werden sie nur validiert. (pose_store ist wie dieses Modul ROS-frei.)
+from g1pilot.manipulation.pose_store import COMPONENTS
+
 SIDES = ("left", "right")
 ARM_DOF = 7
 HAND_DOF = 6
@@ -42,6 +46,22 @@ ST_REACHED = "reached"       # Ziel erreicht -- Endzustand
 ST_FAILED = "failed"         # IK/Planung fehlgeschlagen -- Endzustand
 ST_CANCELLED = "cancelled"   # abgebrochen (E-Stop, Marker, cancel) -- Endzustand
 TERMINAL_STATES = (ST_REJECTED, ST_REACHED, ST_FAILED, ST_CANCELLED)
+
+# Speichern (Positionsspeicher) laeuft ueber ein eigenes Topic und hat einen
+# eigenen Erfolgs-Endzustand -- sonst dieselbe Zustands-Sprache wie oben.
+ST_SAVED = "saved"
+SAVE_TERMINAL_STATES = (ST_SAVED, ST_REJECTED, ST_FAILED)
+# Alles, worauf ein wartender Aufrufer (arm_api) als "fertig" reagieren darf.
+ALL_TERMINAL_STATES = tuple(set(TERMINAL_STATES) | set(SAVE_TERMINAL_STATES))
+
+# Kurzformen fuer die Komponenten-Auswahl beim Speichern. 'hand' ist die
+# Altform der GUI (beide Haende) und bleibt bewusst gueltig.
+COMPONENT_ALIASES = {
+    "arms": ("left_arm", "right_arm"),
+    "hands": ("left_hand", "right_hand"),
+    "hand": ("left_hand", "right_hand"),
+    "all": COMPONENTS,
+}
 
 
 class CommandError(ValueError):
@@ -185,6 +205,106 @@ def parse_command(raw) -> dict:
         "hands": hands,
         "apply_ee_offset": offset,
     }
+
+
+def parse_save_command(raw) -> dict:
+    """Rohes SPEICHER-Kommando (JSON-Text oder dict) -> normalisiert:
+
+        {"id": str, "name": str, "category": str, "components": [...]}
+
+    Anders als parse_command() faehrt hier nichts -- die aktuelle Stellung wird
+    in die Pose-Datei geschrieben (siehe pose_store.py). `category` leer =
+    Default-Kategorie (der Store setzt sie ein). `components` erlaubt die vier
+    Schluessel aus COMPONENTS und die Kurzformen aus COMPONENT_ALIASES; fehlt
+    das Feld, werden BEIDE ARME gespeichert (wie die Altform der GUI).
+
+    Rueckwaerts-kompatibel: ein reiner Text (kein JSON) gilt als Pose-Name."""
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8", errors="replace")
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            raise CommandError("Leeres Kommando -- 'name' fehlt.")
+        if text.startswith("["):
+            # Sieht nach JSON aus, ist aber kein Objekt -> nicht stillschweigend
+            # als Pose-NAME durchgehen lassen.
+            raise CommandError("Erwarte ein JSON-Objekt oder einen Pose-Namen.")
+        if not text.startswith("{"):
+            # Altform: nur der Name auf dem Topic -> beide Arme.
+            return {"id": "", "name": text, "category": "",
+                    "components": ["left_arm", "right_arm"]}
+        try:
+            raw = json.loads(text)
+        except ValueError as e:
+            raise CommandError(f"Kein gueltiges JSON: {e}")
+    if not isinstance(raw, dict):
+        raise CommandError("Erwarte ein JSON-Objekt.")
+
+    name = raw.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise CommandError("'name' fehlt -- unter welchem Namen soll gespeichert werden?")
+    name = name.strip()
+    if len(name) > 128:
+        raise CommandError("'name': maximal 128 Zeichen.")
+
+    category = raw.get("category") or ""
+    if not isinstance(category, str):
+        raise CommandError("'category': erwarte Text (leer = Default-Kategorie).")
+    if len(category.strip()) > 128:
+        raise CommandError("'category': maximal 128 Zeichen.")
+
+    req_id = raw.get("id") or ""
+    if not isinstance(req_id, str) or len(req_id) > 64:
+        raise CommandError("'id': erwarte Text mit maximal 64 Zeichen.")
+
+    raw_comps = raw.get("components")
+    if raw_comps is None:
+        comps = ["left_arm", "right_arm"]
+    else:
+        if isinstance(raw_comps, str) or not isinstance(raw_comps, (list, tuple)):
+            raise CommandError(
+                "'components': erwarte eine Liste, z.B. [\"arms\", \"hands\"].")
+        chosen = []
+        for item in raw_comps:
+            if not isinstance(item, str):
+                raise CommandError(f"'components': {item!r} ist kein Text.")
+            key = item.strip().lower()
+            if key in COMPONENT_ALIASES:
+                chosen.extend(COMPONENT_ALIASES[key])
+            elif key in COMPONENTS:
+                chosen.append(key)
+            else:
+                raise CommandError(
+                    f"'components': '{item}' unbekannt -- erlaubt sind "
+                    f"{', '.join(COMPONENTS)} sowie "
+                    f"{', '.join(sorted(COMPONENT_ALIASES))}.")
+        # Reihenfolge wie COMPONENTS, ohne Duplikate (arms + left_arm ist ok).
+        comps = [c for c in COMPONENTS if c in chosen]
+        if not comps:
+            raise CommandError("'components': leere Auswahl -- nichts zu speichern.")
+
+    return {"id": req_id, "name": name, "category": category.strip(),
+            "components": comps}
+
+
+def save_status_message(req_id: str, state: str, *, name: str = "",
+                        category: str = "", components=None, skipped=None,
+                        reason: str = "") -> str:
+    """JSON-Text fuer /g1pilot/pose_store/save/status. `components` = was
+    TATSAECHLICH gespeichert wurde, `skipped` = angefordert, aber nicht
+    verfuegbar (z.B. Haende ohne laufende inspire-Bridge)."""
+    msg = {"id": req_id or "", "state": state, "source": "pose_store_save"}
+    if name:
+        msg["name"] = name
+    if category:
+        msg["category"] = category
+    if components:
+        msg["components"] = list(components)
+    if skipped:
+        msg["skipped"] = list(skipped)
+    if reason:
+        msg["reason"] = reason
+    return json.dumps(msg, ensure_ascii=False)
 
 
 def status_message(req_id: str, state: str, *, reason: str = "",

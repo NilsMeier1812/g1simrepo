@@ -491,7 +491,14 @@ Eigene Dokumente: **[`ARM_API.md`](ARM_API.md)** (Referenz) und
   gibt es jetzt `solve_pose()` (eigene `pin.Data`, kein `set_goal`) — läuft im
   Planungs-Thread, ohne das Marker-Servoing zu stören. Nicht erreichbare Ziele
   werden mit **Restfehler** abgelehnt statt näherungsweise angefahren.
-- **Nichts wird gespeichert** — bewusst getrennt vom Positionsspeicher (§9).
+- **Fahren und Speichern sind getrennte Endpunkte.** `/arm/joints` und
+  `/arm/pose` führen nur aus. `POST /arm/save` schreibt die aktuelle Stellung in
+  den Positionsspeicher (§9) — und zwar über **dasselbe Topic**
+  (`/g1pilot/pose_store/save`), das der Streamdeck-Dialog benutzt: eine
+  Implementierung, zwei Aufrufer. Neu ist dafür nur ein Rückkanal
+  (`/g1pilot/pose_store/save/status`), weil ein fremdes Programm — anders als ein
+  Mensch vor dem Log — wissen muss, *was* wirklich in der Datei landete (Hände
+  brauchen eine laufende inspire-Bridge → Feld `skipped`).
 - **Bind auf `127.0.0.1`** als Default (Token optional): der Container läuft mit
   `network_mode: host`, ein Host-Prozess erreicht die API also lokal, ohne dass
   sie im Netz hängt.
