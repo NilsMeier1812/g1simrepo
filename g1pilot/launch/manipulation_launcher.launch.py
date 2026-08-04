@@ -1,5 +1,6 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -55,6 +56,16 @@ def generate_launch_description():
         DeclareLaunchArgument("marker_publish_default", default_value="true"),
         # Leader-Follower: Marker folgt der Hand im Idle (per Streamdeck/Topic schaltbar).
         DeclareLaunchArgument("marker_follow_ee", default_value="true"),
+        # Live-Pose-Schnittstelle (siehe ARM_API.md): HTTP-JSON-Bruecke, damit
+        # fremde Projekte OHNE ROS Zielposen einspielen koennen. Bind bewusst auf
+        # 127.0.0.1 -- der Container laeuft mit network_mode: host, ein Prozess
+        # auf dem Host erreicht die API also ueber localhost, das Netz nicht.
+        DeclareLaunchArgument("enable_arm_api", default_value="true"),
+        DeclareLaunchArgument("arm_api_host", default_value="127.0.0.1"),
+        DeclareLaunchArgument("arm_api_port", default_value="8770"),
+        # Leer = kein Token. Sobald arm_api_host geoeffnet wird, MUSS hier ein
+        # Token stehen (Header X-Auth-Token) -- die API fahrt einen echten Arm.
+        DeclareLaunchArgument("arm_api_token", default_value=""),
 
         Node(
             package='g1pilot',
@@ -81,6 +92,20 @@ def generate_launch_description():
                 'kd_low': ParameterValue(LaunchConfiguration("kd_low"), value_type=float),
                 'kp_wrist': ParameterValue(LaunchConfiguration("kp_wrist"), value_type=float),
                 'kd_wrist': ParameterValue(LaunchConfiguration("kd_wrist"), value_type=float),
+            }],
+            output='screen'
+        ),
+
+        Node(
+            package='g1pilot',
+            executable='arm_api',
+            name='arm_api',
+            condition=IfCondition(LaunchConfiguration("enable_arm_api")),
+            parameters=[{
+                'bind_host': LaunchConfiguration("arm_api_host"),
+                'port': ParameterValue(
+                    LaunchConfiguration("arm_api_port"), value_type=int),
+                'auth_token': LaunchConfiguration("arm_api_token"),
             }],
             output='screen'
         ),

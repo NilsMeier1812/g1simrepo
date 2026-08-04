@@ -233,15 +233,43 @@ ohne Planung. Wir übernehmen das Muster, nicht das Paket.)*
 separat — reitet auf dem bestehenden Dijkstra-Plan-Execute, siehe §10.)
 
 > **Umgesetzt (Stand aktuell):**
-> - **Auswahl beim Speichern:** Der Speichern-Dialog (`ui_interface.py`) fragt
->   per Häkchen ab, *was* gespeichert wird — **Rechter Arm / Linker Arm /
->   Handposition**. Nur die gewählten Komponenten kommen in die Pose
+> - **Persistent statt flüchtig:** Die Pose-Datei liegt im **bind-gemounteten
+>   Repo** (`<repo>/data/arm_poses.json`, in `.gitignore`) und **nicht** mehr
+>   unter `$HOME` — `$HOME` liegt im Container-Overlay und war beim nächsten
+>   `docker compose up` weg (alle Posen verloren). Ohne Mount (Betrieb direkt
+>   auf dem Host) bleibt `~/.g1pilot/arm_poses.json`; Override per
+>   `G1_POSE_STORE`. Eine vorhandene alte Datei wird beim ersten Zugriff
+>   **automatisch übernommen** (Migration). `arm_controller` loggt den Pfad
+>   beim Start.
+> - **Kategorien („Ordner"):** Jede Pose hängt in genau einer Kategorie —
+>   alles bleibt in **derselben** Datei, nur getrennt geführt. Pose-Namen sind
+>   global eindeutig (der Name ist der Schlüssel für
+>   `/g1pilot/pose_store/goto`), die Kategorie ist Metadatum. Leere Kategorien
+>   werden mitgespeichert, damit ein angelegter „Ordner" auch ohne Pose darin
+>   erhalten bleibt. Dateiformat **Version 2**
+>   (`{"version","categories","poses"}`); Version 1 (flach) wird transparent
+>   gelesen und beim nächsten Schreiben überführt.
+> - **Speichern in EINEM Fenster:** `PoseSaveDialog` (`ui_interface.py`) fragt
+>   **Name**, **Kategorie** (Dropdown + Button „Kategorie anlegen") und die
+>   Komponenten-Häkchen **auf einmal** ab — vorher waren das zwei
+>   aufeinanderfolgende Dialoge (erst Name, dann Komponenten). Häkchen sind die
+>   **vier Komponenten flach nebeneinander**: **Linker Arm / Rechter Arm /
+>   Linke Hand / Rechte Hand** (alle vorausgewählt, jede einzeln abwählbar) —
+>   genau die Granularität, die der Store führt. Bewusst **kein** Sammel-
+>   Häkchen „Handposition" mit Zusatz-Tickbox „Hände getrennt": das war ein
+>   Überrest aus der Version mit *einer* Hand-Komponente und kostete nur
+>   Klicks. Nur die gewählten Komponenten kommen in die Pose
 >   (`pose_store.py` speichert komponentenweise: `left_arm`, `right_arm`,
 >   `left_hand`, `right_hand`; Legacy-Einträge mit `left`/`right` werden
->   transparent gelesen). Die Auswahl geht als JSON `{"name","components"}` an
->   `arm_controller._on_pose_save`.
-> - **Handposition:** „Handposition" speichert die aktuelle 6-DOF-Fingerstellung
->   **beider** Inspire-Hände. Dazu veröffentlicht die inspire-Bridge
+>   transparent gelesen). Die Auswahl geht als JSON
+>   `{"name","category","components"}` an `arm_controller._on_pose_save`
+>   (`components`: Komponenten-Schlüssel, `"hand"` = beide Hände).
+> - **Laden nach Kategorie:** `PoseLoadDialog` zeigt die Posen als Baum
+>   **gruppiert nach Kategorie** (inkl. leerer Ordner) und je Pose, *was* drin
+>   ist („Rechter Arm, Rechte Hand") — man sieht vor dem Anfahren, ob die Hände
+>   mitfahren. Kategorie-Zeilen sind Überschriften, nicht anfahrbar.
+> - **Handposition:** Ein Hand-Häkchen speichert die aktuelle 6-DOF-Finger-
+>   stellung der jeweiligen Inspire-Hand. Dazu veröffentlicht die inspire-Bridge
 >   (`inspire_ftp/bridge.py`) den Ist-Zustand auf `/g1pilot/hand_state/{side}`
 >   (arm_controller merkt ihn sich zum Speichern) und nimmt Zielwinkel auf
 >   `/g1pilot/hand_goal/{side}` entgegen (zum Wiederherstellen, `set_all_angles`).
@@ -367,12 +395,15 @@ Modell tut es. Damit ist der LiDAR-Plan voll kompatibel.
 | `g1pilot/g1pilot/navigation/scene_bridge.py` *(neu)* | ROS2-Node: UDP-Empfang → `visualization_msgs/MarkerArray` auf `/scene_markers` |
 | `g1pilot/g1pilot/navigation/create_map.py` | Dummy → Footprints aus `/scene_markers`; Frame-Default `odom`→`map` |
 | `g1pilot/g1pilot/utils/ik_solver.py` | `sync_environment()`, `environment_command_in_collision()` (Punkt-zu-OBB, ACM Hindernis/Grasp), `make_scratch_buffers()` (Thread-Sicherheit) |
-| `g1pilot/g1pilot/manipulation/pose_store.py` *(neu, komponentenweise)* | JSON-Datei-Ablage: pro Pose eine Teilmenge aus `left_arm`/`right_arm`/`left_hand`/`right_hand` (Legacy `left`/`right` transparent gelesen) |
+| `g1pilot/g1pilot/manipulation/pose_store.py` *(neu, komponentenweise + Kategorien)* | JSON-Datei-Ablage: pro Pose eine Teilmenge aus `left_arm`/`right_arm`/`left_hand`/`right_hand` (Legacy `left`/`right` transparent gelesen) + `category`; **persistenter Default-Pfad** im Repo-Mount (`data/arm_poses.json`, Override `G1_POSE_STORE`, Migration von `~/.g1pilot/`); Format v2 mit `categories`/`poses`, v1 transparent gelesen |
+| `g1pilot/g1pilot/manipulation/arm_command.py` *(neu)* | Wire-Format der Live-Pose-Schnittstelle: Parsen/Validieren von `{type,left,right,hands,...}` + Status-Zustaende. ROS-frei, von Controller UND HTTP-Bruecke benutzt (siehe ARM_API.md) |
+| `g1pilot/g1pilot/manipulation/arm_api.py` *(neu)* | HTTP-JSON-Bruecke (Default `127.0.0.1:8770`) -> `/g1pilot/arm_command`; wartet optional bis zum Endzustand, liefert Ablehnungsgrund/IK-Restfehler zurueck |
+| `g1pilot/g1pilot/utils/ik_solver.py` *(Erweiterung)* | `solve_pose()`: EINMAL auskonvergierte IK auf eigenen Buffern (thread-sicher, ruehrt `set_goal`/`self.data` des Servoings nicht an) -- Basis fuer kartesische Live-Ziele |
 | `g1pilot/g1pilot/manipulation/arm_planner.py` *(Backend OMPL, Multi-Arm)* | `plan_arms_joint_path` plant EINEN oder BEIDE Arme (7/14 DOF) via OMPL RRTConnect gegen den bestehenden Pinocchio-Check als `StateValidityChecker`; eingebauter RRT-Connect als Fallback; Shortcut |
 | `g1pilot/docker/Dockerfile.sim`, `g1pilot/docker/Dockerfile` | `pip install ompl` (Planer-Backend; reines manylinux-Wheel cp310, x86_64+aarch64, keine ROS-/MoveIt-Abhängigkeit) |
-| `g1pilot/g1pilot/manipulation/arm_controller.py` | `/scene_markers`-Abo → `sync_environment`; Kollisions-Gate; Auswahl-Save (JSON); **gleichzeitige** 14-DOF-Planung + synchrone Wegpunkt-Zustandsmaschine; `hand_state`-Abo/`hand_goal`-Publish |
+| `g1pilot/g1pilot/manipulation/arm_controller.py` | `/scene_markers`-Abo → `sync_environment`; Kollisions-Gate; Auswahl-Save (JSON inkl. `category`, Hände gemeinsam *oder* seitenweise); **gleichzeitige** 14-DOF-Planung + synchrone Wegpunkt-Zustandsmaschine; `hand_state`-Abo/`hand_goal`-Publish |
 | `g1pilot/g1pilot/manipulation/inspire_ftp/bridge.py` | `/g1pilot/hand_state/{side}` (Ist-Fingerwinkel raus) + `/g1pilot/hand_goal/{side}` (Zielwinkel rein → `set_all_angles`) für den Positionsspeicher |
-| `g1pilot/g1pilot/teleoperation/ui_interface.py` | Streamdeck-Buttons „POSE SPEICHERN/ANFAHREN/ABBRECHEN"; **Auswahl-Dialog** (Rechter/Linker Arm, Handposition) beim Speichern |
+| `g1pilot/g1pilot/teleoperation/ui_interface.py` | Streamdeck-Buttons „POSE SPEICHERN/ANFAHREN/ABBRECHEN"; `PoseSaveDialog` (**ein** Fenster: Name + Kategorie inkl. „Kategorie anlegen" + vier flache Komponenten-Häkchen L/R-Arm, L/R-Hand); `PoseLoadDialog` (Baum **nach Kategorie**, zeigt enthaltene Komponenten) |
 | `g1pilot/config/nav.rviz` | `MarkerArray`-Display auf `/scene_markers` |
 | `g1pilot/launch/bringup_sim.launch.py` | `scene_bridge` **unconditional** (IK braucht es auch ohne Nav); `create_map` weiter an `G1_ENABLE_NAV` gekoppelt |
 | `g1pilot/launch/navigation_launcher.launch.py` | `scene_bridge`-Node ergänzt (Real-Full-Profil) |
@@ -420,13 +451,57 @@ Modell tut es. Damit ist der LiDAR-Plan voll kompatibel.
   lesen denselben Standard-Topic. Klasse via `ns`, stabile Identität via
   `id` (Hash des Namens), Name (+ Mesh-AABB) via wiederverwendetes `text`-Feld.
 - **Speicher-Backend Positionsspeicher:** lokale JSON-Datei
-  (`~/.g1pilot/arm_poses.json`, `pose_store.py`) — kein Datenbank-Server.
+  (`<repo>/data/arm_poses.json`, `pose_store.py`) — kein Datenbank-Server. Der
+  Ort ist bewusst das **bind-gemountete Repo** statt `$HOME`: nur so überlebt
+  die Datei den Container (Overlay-FS). **Kategorien in derselben Datei**
+  (Feld `category` je Pose + Liste `categories` für leere Ordner) statt eigener
+  Dateien/Unterverzeichnisse pro Ordner — ein atomares Rewrite, kein
+  Verzeichnis-Scan, und der Pose-Name bleibt global eindeutiger Schlüssel für
+  `/g1pilot/pose_store/goto`.
 - **DOF-Umfang der gespeicherten Pose:** 7 DOF je Arm (Schulter…Handgelenk),
   **ohne** Taille — konsistent mit der bestehenden Home-/Walk-Pose-Konvention
   in `arm_controller.py`.
 - **Editor-Umbau:** **nicht** angefasst (kein Klassen-Dropdown im Browser-
   Editor) — die Namenskonvention macht das unnötig; Objekte werden im Editor
   ganz normal umbenannt (Feld existiert bereits).
+
+---
+
+## 14a · Live-Pose-Schnittstelle (fremde Projekte)
+
+Eigene Dokumente: **[`ARM_API.md`](ARM_API.md)** (Referenz) und
+**[`ARM_API_HOWTO.md`](ARM_API_HOWTO.md)** (Anleitung + CLI unter
+`examples/arm_api/`). Kurz die Entscheidungen:
+
+- **Kanonischer Eingang ist ein ROS-Topic** (`/g1pilot/arm_command`,
+  `std_msgs/String` mit JSON) — **kein eigenes `.msg`-Interface-Paket**, gleiche
+  Regel wie beim `/scene_markers`-Wire-Format (§14). Status zurück auf
+  `/g1pilot/arm_command/status`.
+- **HTTP-JSON-Brücke als EIGENER Node** (`arm_api.py`), nicht im
+  `arm_controller`: der regelt mit 250 Hz, dort hat kein Webserver etwas zu
+  suchen (dieselbe Trennung wie bei der `scene_bridge`). Der Aufrufer braucht so
+  **kein ROS/DDS** — das ist der eigentliche Zweck, denn das fremde Projekt soll
+  nicht den halben Container nachbauen müssen.
+- **Kein neuer Ausführungspfad:** eingespielte Ziele laufen durch **dieselbe**
+  Plan-Execute-Maschinerie und dieselben Gates wie „POSE ANFAHREN"
+  (`_start_planned_motion`). Ein fremdes Projekt kann sich nicht an E-Stop,
+  `arms_enabled`, Kollisions-Gate oder Gelenklimits vorbeischreiben.
+- **Kartesische Ziele brauchten neue IK-Semantik:** `solve()` ist ein
+  Servo-Schritt auf geteiltem Zustand; für ein einmalig auskonvergiertes Ziel
+  gibt es jetzt `solve_pose()` (eigene `pin.Data`, kein `set_goal`) — läuft im
+  Planungs-Thread, ohne das Marker-Servoing zu stören. Nicht erreichbare Ziele
+  werden mit **Restfehler** abgelehnt statt näherungsweise angefahren.
+- **Fahren und Speichern sind getrennte Endpunkte.** `/arm/joints` und
+  `/arm/pose` führen nur aus. `POST /arm/save` schreibt die aktuelle Stellung in
+  den Positionsspeicher (§9) — und zwar über **dasselbe Topic**
+  (`/g1pilot/pose_store/save`), das der Streamdeck-Dialog benutzt: eine
+  Implementierung, zwei Aufrufer. Neu ist dafür nur ein Rückkanal
+  (`/g1pilot/pose_store/save/status`), weil ein fremdes Programm — anders als ein
+  Mensch vor dem Log — wissen muss, *was* wirklich in der Datei landete (Hände
+  brauchen eine laufende inspire-Bridge → Feld `skipped`).
+- **Bind auf `127.0.0.1`** als Default (Token optional): der Container läuft mit
+  `network_mode: host`, ein Host-Prozess erreicht die API also lokal, ohne dass
+  sie im Netz hängt.
 
 ---
 
@@ -450,6 +525,15 @@ Speichern** — Häkchen für Rechter Arm / Linker Arm / Handposition
 über neue Bridge-Topics `hand_state`/`hand_goal` (6-DOF je Inspire-Hand); (c)
 **gleichzeitige Ausführung** beider Arme via gemeinsamer 14-DOF-Planung statt
 sequenziell rechts-dann-links.
+
+**Nachträglich umgesetzt (Speichern/Laden überarbeitet):** (a) **Persistenz** —
+Ablage im bind-gemounteten Repo statt `$HOME`, damit Posen das Schließen der
+Sim überleben (inkl. automatischer Migration der alten Datei); (b)
+**Kategorien** („Ordner") in derselben Datei, mit „Kategorie anlegen"; (c)
+**ein** Speichern-Dialog für Name + Kategorie + Komponenten (statt zwei
+hintereinander), mit den **vier Komponenten flach** (L/R-Arm, L/R-Hand) statt
+Sammel-Häkchen + Trenn-Tickbox; (d) **Laden** zeigt die Posen nach Kategorie
+gruppiert samt enthaltener Komponenten.
 
 **Bewusst nicht gebaut** (mit „Zukunft" markiert bzw. vom Nutzer
 zurückgestellt): LiDAR-Perzeptionsebene (§11), Basis-Positionsspeicher (§10,
