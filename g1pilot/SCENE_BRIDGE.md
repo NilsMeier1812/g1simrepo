@@ -396,6 +396,9 @@ Modell tut es. Damit ist der LiDAR-Plan voll kompatibel.
 | `g1pilot/g1pilot/navigation/create_map.py` | Dummy → Footprints aus `/scene_markers`; Frame-Default `odom`→`map` |
 | `g1pilot/g1pilot/utils/ik_solver.py` | `sync_environment()`, `environment_command_in_collision()` (Punkt-zu-OBB, ACM Hindernis/Grasp), `make_scratch_buffers()` (Thread-Sicherheit) |
 | `g1pilot/g1pilot/manipulation/pose_store.py` *(neu, komponentenweise + Kategorien)* | JSON-Datei-Ablage: pro Pose eine Teilmenge aus `left_arm`/`right_arm`/`left_hand`/`right_hand` (Legacy `left`/`right` transparent gelesen) + `category`; **persistenter Default-Pfad** im Repo-Mount (`data/arm_poses.json`, Override `G1_POSE_STORE`, Migration von `~/.g1pilot/`); Format v2 mit `categories`/`poses`, v1 transparent gelesen |
+| `g1pilot/g1pilot/manipulation/arm_command.py` *(neu)* | Wire-Format der Live-Pose-Schnittstelle: Parsen/Validieren von `{type,left,right,hands,...}` + Status-Zustaende. ROS-frei, von Controller UND HTTP-Bruecke benutzt (siehe ARM_API.md) |
+| `g1pilot/g1pilot/manipulation/arm_api.py` *(neu)* | HTTP-JSON-Bruecke (Default `127.0.0.1:8770`) -> `/g1pilot/arm_command`; wartet optional bis zum Endzustand, liefert Ablehnungsgrund/IK-Restfehler zurueck |
+| `g1pilot/g1pilot/utils/ik_solver.py` *(Erweiterung)* | `solve_pose()`: EINMAL auskonvergierte IK auf eigenen Buffern (thread-sicher, ruehrt `set_goal`/`self.data` des Servoings nicht an) -- Basis fuer kartesische Live-Ziele |
 | `g1pilot/g1pilot/manipulation/arm_planner.py` *(Backend OMPL, Multi-Arm)* | `plan_arms_joint_path` plant EINEN oder BEIDE Arme (7/14 DOF) via OMPL RRTConnect gegen den bestehenden Pinocchio-Check als `StateValidityChecker`; eingebauter RRT-Connect als Fallback; Shortcut |
 | `g1pilot/docker/Dockerfile.sim`, `g1pilot/docker/Dockerfile` | `pip install ompl` (Planer-Backend; reines manylinux-Wheel cp310, x86_64+aarch64, keine ROS-/MoveIt-Abhängigkeit) |
 | `g1pilot/g1pilot/manipulation/arm_controller.py` | `/scene_markers`-Abo → `sync_environment`; Kollisions-Gate; Auswahl-Save (JSON inkl. `category`, Hände gemeinsam *oder* seitenweise); **gleichzeitige** 14-DOF-Planung + synchrone Wegpunkt-Zustandsmaschine; `hand_state`-Abo/`hand_goal`-Publish |
@@ -461,6 +464,35 @@ Modell tut es. Damit ist der LiDAR-Plan voll kompatibel.
 - **Editor-Umbau:** **nicht** angefasst (kein Klassen-Dropdown im Browser-
   Editor) — die Namenskonvention macht das unnötig; Objekte werden im Editor
   ganz normal umbenannt (Feld existiert bereits).
+
+---
+
+## 14a · Live-Pose-Schnittstelle (fremde Projekte)
+
+Eigenes Dokument: **[`ARM_API.md`](ARM_API.md)**. Kurz die Entscheidungen:
+
+- **Kanonischer Eingang ist ein ROS-Topic** (`/g1pilot/arm_command`,
+  `std_msgs/String` mit JSON) — **kein eigenes `.msg`-Interface-Paket**, gleiche
+  Regel wie beim `/scene_markers`-Wire-Format (§14). Status zurück auf
+  `/g1pilot/arm_command/status`.
+- **HTTP-JSON-Brücke als EIGENER Node** (`arm_api.py`), nicht im
+  `arm_controller`: der regelt mit 250 Hz, dort hat kein Webserver etwas zu
+  suchen (dieselbe Trennung wie bei der `scene_bridge`). Der Aufrufer braucht so
+  **kein ROS/DDS** — das ist der eigentliche Zweck, denn das fremde Projekt soll
+  nicht den halben Container nachbauen müssen.
+- **Kein neuer Ausführungspfad:** eingespielte Ziele laufen durch **dieselbe**
+  Plan-Execute-Maschinerie und dieselben Gates wie „POSE ANFAHREN"
+  (`_start_planned_motion`). Ein fremdes Projekt kann sich nicht an E-Stop,
+  `arms_enabled`, Kollisions-Gate oder Gelenklimits vorbeischreiben.
+- **Kartesische Ziele brauchten neue IK-Semantik:** `solve()` ist ein
+  Servo-Schritt auf geteiltem Zustand; für ein einmalig auskonvergiertes Ziel
+  gibt es jetzt `solve_pose()` (eigene `pin.Data`, kein `set_goal`) — läuft im
+  Planungs-Thread, ohne das Marker-Servoing zu stören. Nicht erreichbare Ziele
+  werden mit **Restfehler** abgelehnt statt näherungsweise angefahren.
+- **Nichts wird gespeichert** — bewusst getrennt vom Positionsspeicher (§9).
+- **Bind auf `127.0.0.1`** als Default (Token optional): der Container läuft mit
+  `network_mode: host`, ein Host-Prozess erreicht die API also lokal, ohne dass
+  sie im Netz hängt.
 
 ---
 

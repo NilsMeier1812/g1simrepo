@@ -29,6 +29,7 @@ from g1pilot.utils.joints_names import (
 from g1pilot.utils.ik_solver import G1IKSolver
 from g1pilot.navigation import scene_markers as sm
 from g1pilot.manipulation.pose_store import PoseStore
+from g1pilot.manipulation import arm_command as ac
 from g1pilot.manipulation.arm_planner import plan_arms_joint_path, shortcut_path
 
 from unitree_sdk2py.core.channel import ChannelPublisher, ChannelSubscriber
@@ -269,6 +270,12 @@ class ArmController(Node):
         # Ablage liegt im bind-gemounteten Repo -> ueberlebt Container-Neustarts
         # (siehe pose_store.default_store_path); Pfad loggen, damit man beim
         # Backup/Umzug weiss, wo die Posen liegen.
+        # Live-Schnittstelle: Vorgangs-ID/Quelle der AKTUELL laufenden Bewegung
+        # (nur eine gleichzeitig -- durchgesetzt ueber _arms_not_ready_reason),
+        # damit Status-Meldungen dem richtigen Aufrufer zuordenbar sind.
+        self._cmd_req_id = ""
+        self._cmd_source = "pose_store"
+        self._cmd_ik_detail = None      # IK-Restfehler der laufenden Bewegung
         self._pose_store = PoseStore()
         self.get_logger().info(f"Positionsspeicher: {self._pose_store.path}")
         self._planned_motion_active = False
@@ -398,6 +405,16 @@ class ArmController(Node):
         self.create_subscription(String, "/g1pilot/pose_store/save", self._on_pose_save, 10)
         self.create_subscription(String, "/g1pilot/pose_store/goto", self._on_pose_goto, 10)
         self.create_subscription(Bool, "/g1pilot/pose_store/cancel", self._on_pose_cancel, 10)
+
+        # Live-Pose-Schnittstelle (siehe g1pilot/ARM_API.md): fremde Projekte
+        # spielen ein Ziel ein, das DIREKT ausgefuehrt wird -- nichts wird
+        # gespeichert. JSON-Wire-Format in manipulation/arm_command.py; die
+        # HTTP-Bruecke (arm_api.py) ist nur ein Adapter auf genau dieses Topic.
+        self.create_subscription(String, "/g1pilot/arm_command", self._on_arm_command, 10)
+        # Abbruch-Alias: gleiche Wirkung wie pose_store/cancel, aber ohne dass
+        # ein API-Nutzer den Positionsspeicher-Namensraum kennen muss.
+        self.create_subscription(Bool, "/g1pilot/arm_command/cancel", self._on_pose_cancel, 10)
+        self.pub_cmd_status = self.create_publisher(String, "/g1pilot/arm_command/status", 10)
 
         # Hand-Ist-Zustand von der inspire-Bridge (nur zum SPEICHERN der
         # Handposition) und Hand-Ziel zurueck (zum Wiederherstellen). Laeuft die
@@ -1308,21 +1325,203 @@ class ArmController(Node):
             return
         self._abort_planned_motion("POSE ABBRECHEN")
 
+    def _arms_not_ready_reason(self):
+        """-> Klartext-Grund, warum jetzt KEINE Bewegung starten darf, oder None.
+        Eine Stelle fuer alle Eingaenge (Positionsspeicher UND eingespielte
+        Kommandos), damit die Schranken nicht auseinanderlaufen."""
+        if self.estop_active:
+            return "E-Stop aktiv (mit START quittieren)."
+        if not self.arms_enabled:
+            return "Arme nicht aktiviert (ENABLE MANIPULATION)."
+        if self.homing_active:
+            return "Homing laeuft."
+        if self.walk_mode:
+            return "WALK aktiv -- Arme haengen in der Lauf-Pose."
+        if self._planning_thread is not None and self._planning_thread.is_alive():
+            return "Es laeuft bereits eine Planung."
+        return None
+
+    def _start_planned_motion(self, label: str, sides: list, goals: dict,
+                              hand_goals: dict, *, req_id: str = "",
+                              source: str = "pose_store", ik_targets: dict = None):
+        """Gemeinsamer Einstieg in die geplante Bewegung -- benutzt von
+        POSE ANFAHREN und von der Live-Schnittstelle (arm_command). `goals` sind
+        Gelenkziele je Seite; sind statt dessen `ik_targets` (SE3 je Seite)
+        gesetzt, loest der Worker sie ZUERST per IK auf. Die Planung laeuft immer
+        im Hintergrund-Thread, damit der 250-Hz-Tick nie blockiert."""
+        # Faehrt noch eine aeltere Bewegung, wird sie SAUBER abgebrochen (mit
+        # Status 'cancelled' unter ihrer alten ID -- deshalb VOR dem Umsetzen von
+        # _cmd_req_id). Sonst uebernaehme die neue Bahn stillschweigend und ein
+        # wartender Aufrufer (arm_api) liefe in seinen Timeout.
+        if self._planned_motion_active:
+            self._abort_planned_motion("neues Ziel angefordert")
+        self._cmd_req_id = req_id
+        self._cmd_source = source
+        self._cmd_ik_detail = None
+        # 'accepted' erst HIER (nach dem Abbruch der alten Bewegung), damit die
+        # Statusfolge fuer einen Mitleser chronologisch stimmt: erst wird die
+        # alte Bewegung abgeraeumt, dann die neue angenommen.
+        self._publish_cmd_status(ac.ST_ACCEPTED, sides=sides)
+        # Hand-Ziele fahren beim START der Armbewegung mit los (gemeinsam).
+        self._pending_hand_goals = hand_goals or {}
+        self._plan_gen += 1                    # neue Planungs-Generation
+        gen = self._plan_gen
+        self.get_logger().info(f"Plane Weg zu {label} ({'+'.join(sides)}) ...")
+        self._planning_thread = threading.Thread(
+            target=self._plan_pose_worker, args=(label, gen, sides, goals),
+            kwargs={"ik_targets": ik_targets}, daemon=True)
+        self._planning_thread.start()
+
+    def _publish_cmd_status(self, state: str, *, reason: str = "", sides=None,
+                            detail=None, req_id=None, source=None) -> None:
+        """Status einer eingespielten/geplanten Bewegung veroeffentlichen
+        (/g1pilot/arm_command/status). Auch fuer Positionsspeicher-Bewegungen --
+        ein externer Beobachter sieht damit, was der Arm gerade tut. Wird auch
+        aus dem Planungs-Thread aufgerufen (rclpy-publish ist thread-sicher)."""
+        self.pub_cmd_status.publish(String(data=ac.status_message(
+            req_id if req_id is not None else self._cmd_req_id,
+            state, reason=reason, sides=sides, detail=detail,
+            source=source or self._cmd_source)))
+
+    def _on_arm_command(self, msg: String):
+        """Live eingespielte Zielpose DIREKT ausfuehren (nichts speichern) --
+        siehe g1pilot/ARM_API.md. Zwei Varianten: Gelenkwinkel ('joints') oder
+        kartesische Hand-Pose ('pose', wird per IK aufgeloest).
+
+        Bewusst dieselben Schranken wie POSE ANFAHREN: E-Stop, ENABLE
+        MANIPULATION, kein Homing/WALK, Gelenklimits, Kollisionscheck in der
+        Planung, Marker-Vorrang, abbrechbar. Ein fremdes Projekt darf sich hier
+        NICHT an den Sicherheitsgates vorbeischreiben koennen."""
+        try:
+            cmd = ac.parse_command(msg.data)
+        except ac.CommandError as e:
+            # Ohne gueltiges JSON gibt es keine ID -- Status trotzdem senden,
+            # damit die HTTP-Bruecke den Grund weitergeben kann.
+            self._publish_cmd_status(ac.ST_REJECTED, reason=str(e), req_id="",
+                                     source="arm_command")
+            self.get_logger().warn(f"arm_command abgelehnt: {e}")
+            return
+
+        req_id, sides = cmd["id"], cmd["sides"]
+        def reject(why):
+            self._publish_cmd_status(ac.ST_REJECTED, reason=why, sides=sides,
+                                     req_id=req_id, source="arm_command")
+            self.get_logger().warn(f"arm_command '{req_id}' abgelehnt: {why}")
+
+        not_ready = self._arms_not_ready_reason()
+        if not_ready:
+            reject(not_ready)
+            return
+
+        goals, ik_targets = {}, None
+        if cmd["type"] == ac.TYPE_JOINTS:
+            for side in sides:
+                q7 = np.asarray(cmd["targets"][side], dtype=float)
+                bad = self._joint_limit_violation(side, q7)
+                if bad:
+                    reject(bad)
+                    return
+                goals[side] = q7
+        else:
+            # Kartesisch: SE3 je Seite bauen (TF -> IK-World-Frame, optional
+            # dieselbe EE-Offset-Konvention wie der RViz-Marker). Die IK selbst
+            # laeuft im Planungs-Thread -- sie kostet zu viel fuer diesen
+            # Callback, der im 250-Hz-Executor liegt.
+            try:
+                ik_targets = {s: self._command_pose_to_se3(s, cmd["targets"][s],
+                                                           cmd["apply_ee_offset"])
+                              for s in sides}
+            except ValueError as e:
+                reject(str(e))
+                return
+
+        label = f"eingespielter Pose '{req_id}' ({cmd['type']})"
+        self._start_planned_motion(label, sides, goals, cmd["hands"],
+                                   req_id=req_id, source="arm_command",
+                                   ik_targets=ik_targets)
+
+    def _joint_limit_violation(self, side: str, q7: np.ndarray):
+        """-> Klartext, welches Gelenk ausserhalb seines Limits liegt, sonst None.
+        Ein eingespieltes Ziel jenseits der Limits wuerde die Planung ohnehin
+        scheitern lassen -- hier gibt es dafuer einen brauchbaren Grund."""
+        idx_list = LEFT_JOINT_INDICES_LIST if side == "left" else RIGHT_JOINT_INDICES_LIST
+        for i, jidx in enumerate(idx_list):
+            lo, hi = JOINT_LIMITS_RAD[jidx]
+            if not (lo <= float(q7[i]) <= hi):
+                return (f"{side} Gelenk {i} ({JOINT_NAMES_ROS[jidx]}) = "
+                        f"{float(q7[i]):.3f} rad liegt ausserhalb "
+                        f"[{lo:.3f}, {hi:.3f}].")
+        return None
+
+    def _command_pose_to_se3(self, side: str, target: dict, apply_offset: bool) -> SE3:
+        """Kartesisches Ziel eines eingespielten Kommandos -> SE3 im IK-World-
+        Frame. `frame` leer = schon im IK-World-Frame (Default 'pelvis'), sonst
+        wird per TF transformiert (schlaegt der Lookup fehl, wird abgelehnt --
+        stillschweigend im falschen Frame zu fahren waere gefaehrlich)."""
+        ps = PoseStamped()
+        ps.header.frame_id = target["frame"] or self.frame
+        p = target["position"]
+        ps.pose.position.x, ps.pose.position.y, ps.pose.position.z = p
+        qx, qy, qz, qw = target["quat_xyzw"]
+        ps.pose.orientation.x = qx
+        ps.pose.orientation.y = qy
+        ps.pose.orientation.z = qz
+        ps.pose.orientation.w = qw
+        if ps.header.frame_id != self.frame:
+            try:
+                tf = self.tf_buffer.lookup_transform(
+                    self.frame, ps.header.frame_id, Time(), timeout=Duration(seconds=0.2))
+                ps = do_transform_pose(ps, tf)
+            except Exception as e:  # noqa: BLE001
+                raise ValueError(
+                    f"{side}: TF {ps.header.frame_id} -> {self.frame} nicht "
+                    f"verfuegbar ({e}). Ziel bitte in '{self.frame}' angeben.")
+        o, p = ps.pose.orientation, ps.pose.position
+        T = SE3(pin.Quaternion(o.w, o.x, o.y, o.z).matrix(),
+                np.array([p.x, p.y, p.z]))
+        if apply_offset:
+            # Gleiche Konvention wie der RViz-Marker: das Ziel beschreibt die
+            # Marker-/Greifpunkt-Pose, der statische EE-Offset rechnet auf den
+            # IK-Frame um. Die AUTO-Kalibrierung bleibt bewusst aussen vor --
+            # die richtet den Marker auf die Ist-Hand aus und wuerde ein absolut
+            # gemeintes Ziel verschieben.
+            T = T * (self._T_off_right_static if side == "right"
+                     else self._T_off_left_static)
+        return T
+
+    def _resolve_ik_targets(self, sides: list, ik_targets: dict,
+                            base_current_all: np.ndarray):
+        """Kartesische Ziele -> Gelenkziele (7 DOF je Seite). Laeuft im
+        Planungs-Thread; solve_pose() ist dafuer gebaut (eigene Buffer, kein
+        gemeinsamer Solver-Zustand). -> (goals, detail) oder (None, detail) wenn
+        eine Seite unerreichbar ist."""
+        goals, detail, failed = {}, {}, []
+        for side in sides:
+            res = self.ik_solver.solve_pose(side, ik_targets[side], base_current_all)
+            detail[side] = {
+                "pos_err_m": round(float(res["pos_err_m"]), 5),
+                "ori_err_deg": round(float(res["ori_err_deg"]), 2),
+                "converged": bool(res["converged"]),
+            }
+            if res["q"] is None or not res["converged"]:
+                failed.append(side)
+            else:
+                goals[side] = np.asarray(res["q"], dtype=float)
+        if failed:
+            return None, detail
+        return goals, detail
+
     def _on_pose_goto(self, msg: String):
         name = (msg.data or "").strip()
         if not name:
             return
-        if self.estop_active or not self.arms_enabled or self.homing_active or self.walk_mode:
-            self.get_logger().warn(
-                f"POSE ANFAHREN '{name}' ignoriert: Arme nicht bereit "
-                f"(E-Stop quittiert? ENABLE MANIPULATION? nicht am Homen/Laufen?).")
+        not_ready = self._arms_not_ready_reason()
+        if not_ready:
+            self.get_logger().warn(f"POSE ANFAHREN '{name}' ignoriert: {not_ready}")
             return
         entry = self._pose_store.get(name)
         if entry is None:
             self.get_logger().warn(f"Pose '{name}' nicht gefunden.")
-            return
-        if self._planning_thread is not None and self._planning_thread.is_alive():
-            self.get_logger().warn("Es laeuft bereits eine Planung -- bitte warten.")
             return
 
         # Welche Arme sind gespeichert? Reihenfolge fix (links, dann rechts) --
@@ -1342,26 +1541,44 @@ class ArmController(Node):
             self.get_logger().info(f"Pose '{name}': nur Handposition wiederhergestellt.")
             return
 
-        # Hand-Ziele fahren beim START der Armbewegung mit los (gemeinsam).
-        self._pending_hand_goals = hand_goals
-        self._plan_gen += 1                    # neue Planungs-Generation
-        gen = self._plan_gen
-        self.get_logger().info(
-            f"Plane Weg zu Pose '{name}' ({'+'.join(sides)}) ...")
-        self._planning_thread = threading.Thread(
-            target=self._plan_pose_worker, args=(name, gen, sides, goals), daemon=True)
-        self._planning_thread.start()
+        self._start_planned_motion(f"Pose '{name}'", sides, goals, hand_goals,
+                                   req_id="", source="pose_store")
 
-    def _plan_pose_worker(self, name: str, gen: int, sides: list, goals: dict):
+    def _plan_pose_worker(self, name: str, gen: int, sides: list, goals: dict,
+                          ik_targets: dict = None):
         """Laeuft in einem Hintergrund-Thread (Planung kann Sekunden dauern) --
         blockt NIE den 250-Hz-Regelkreis. Plant die AUSGEWAEHLTEN Arme
         GEMEINSAM (7 DOF je Seite -> bei beiden Armen ein 14-DOF-Problem), sodass
         Arm-zu-Arm an jedem Zwischenzustand geprueft ist und beide Arme spaeter
         SYNCHRON abgefahren werden koennen (siehe main_loop). Ergebnis (mit
-        Generation `gen`) geht per DataBuffer (thread-sicher) an main_loop."""
+        Generation `gen`) geht per DataBuffer (thread-sicher) an main_loop.
+
+        Sind `ik_targets` (SE3 je Seite) gesetzt, wird ZUERST die IK geloest --
+        auch das gehoert hierher und nicht in den Callback: eine auskonvergierte
+        IK kostet zu viel fuer den 250-Hz-Tick."""
         try:
             base_current_all = (self.get_current_motor_q() if self.use_robot
                                 else self._assemble_full_from_last())
+
+            if ik_targets:
+                goals, ik_detail = self._resolve_ik_targets(
+                    sides, ik_targets, base_current_all)
+                if goals is None:
+                    why = ("Ziel-Pose fuer " + "/".join(
+                        s for s in sides if not ik_detail[s]["converged"])
+                        + " nicht erreichbar (IK konvergiert nicht -- "
+                          "Restfehler siehe detail).")
+                    self._plan_result.SetData(("failed", name, gen, sides, why))
+                    self._publish_cmd_status(ac.ST_FAILED, reason=why, sides=sides,
+                                             detail=ik_detail)
+                    self.get_logger().warn(f"IK fuer {name} fehlgeschlagen: {why}")
+                    return
+                self.get_logger().info(
+                    f"IK fuer {name} geloest: "
+                    + ", ".join(f"{s}: {ik_detail[s]['pos_err_m'] * 1000:.1f} mm / "
+                                f"{ik_detail[s]['ori_err_deg']:.1f} deg" for s in sides))
+                self._cmd_ik_detail = ik_detail
+
             # Start/Ziel/Limits ueber die Seiten in FESTER Reihenfolge konkatenieren.
             q_start, q_goal, limits = [], [], []
             for side in sides:
@@ -1377,17 +1594,20 @@ class ArmController(Node):
                 self.ik_solver, sides, base_current_all, q_start, q_goal, limits)
             if path is None:
                 self._plan_result.SetData(("failed", name, gen, sides, reason))
+                self._publish_cmd_status(ac.ST_FAILED, reason=f"Planung: {reason}",
+                                         sides=sides)
                 self.get_logger().warn(
-                    f"Planung zu Pose '{name}' ({'+'.join(sides)}) fehlgeschlagen: {reason}")
+                    f"Planung zu {name} ({'+'.join(sides)}) fehlgeschlagen: {reason}")
                 return
             waypoints = shortcut_path(self.ik_solver, sides, base_current_all, path)
             self._plan_result.SetData(("ok", name, gen, sides, waypoints))
             self.get_logger().info(
-                f"Planung zu Pose '{name}' erfolgreich ({len(waypoints)} Wegpunkte, "
+                f"Planung zu {name} erfolgreich ({len(waypoints)} Wegpunkte, "
                 f"{'+'.join(sides)}).")
         except Exception as e:
             self._plan_result.SetData(("failed", name, gen, sides, str(e)))
-            self.get_logger().error(f"Planung zu Pose '{name}' abgestuerzt: {e}")
+            self._publish_cmd_status(ac.ST_FAILED, reason=str(e), sides=sides)
+            self.get_logger().error(f"Planung zu {name} abgestuerzt: {e}")
 
     def _poll_plan_result(self):
         """Pro Tick billig pruefen, ob eine Hintergrund-Planung fertig wurde
@@ -1409,9 +1629,13 @@ class ArmController(Node):
         # faengt Restfaelle ab.
         if (self.estop_active or not self.arms_enabled
                 or self.homing_active or self.walk_mode):
+            self._publish_cmd_status(
+                ac.ST_CANCELLED, reason="Arme waehrend der Planung gesperrt "
+                                        "(E-Stop/DISABLE/Homing/WALK).",
+                sides=result[3])
             self.get_logger().info(
-                f"Geplante Bewegung zu Pose '{result[1]}' verworfen "
-                f"(Arme nicht mehr bereit -- erneut POSE ANFAHREN).")
+                f"Geplante Bewegung zu {result[1]} verworfen "
+                f"(Arme nicht mehr bereit -- erneut anfordern).")
             return
         _, name, _gen, sides, waypoints = result
         self._planned_pose_name = name
@@ -1425,7 +1649,9 @@ class ArmController(Node):
         if self._pending_hand_goals:
             self._publish_hand_goals(self._pending_hand_goals)
             self._pending_hand_goals = {}
-        self.get_logger().info(f"Fahre geplante Bewegung zu Pose '{name}' ab.")
+        self._publish_cmd_status(ac.ST_EXECUTING, sides=sides,
+                                 detail=self._cmd_ik_detail or None)
+        self.get_logger().info(f"Fahre geplante Bewegung zu {name} ab.")
 
     def _abort_planned_motion(self, reason: str = "") -> None:
         """Laufende geplante Bewegung abbrechen UND jede noch laufende Planung
@@ -1434,11 +1660,17 @@ class ArmController(Node):
         beim Abbruch noch nicht vorliegen). Wird bei E-Stop, DISABLE, ENABLE,
         HOMING, WALK, Marker-Griff und POSE ABBRECHEN aufgerufen."""
         was_active = self._planned_motion_active
+        was_planning = (self._planning_thread is not None
+                        and self._planning_thread.is_alive())
         self._planned_motion_active = False
         self._planned_sides = []
         self._planned_waypoints = None
         self._pending_hand_goals = {}
         self._plan_gen += 1     # invalidiert jedes in-flight/pending Planungs-Ergebnis
+        if was_active or was_planning:
+            # Wartet ein Aufrufer auf das Ergebnis (arm_api), muss er den Abbruch
+            # erfahren -- sonst laeuft er in seinen Timeout.
+            self._publish_cmd_status(ac.ST_CANCELLED, reason=reason or "abgebrochen")
         if was_active and reason:
             self.get_logger().info(f"Geplante Bewegung abgebrochen ({reason}).")
 
@@ -1771,8 +2003,10 @@ class ArmController(Node):
                 if reached_wp and idx == len(wps) - 1:
                     self._planned_motion_active = False
                     self._align_ik_to_config(q_target[0:7], q_target[7:14])
+                    self._publish_cmd_status(ac.ST_REACHED, sides=sides,
+                                             detail=self._cmd_ik_detail or None)
                     self.get_logger().info(
-                        f"Geplante Bewegung zu Pose '{self._planned_pose_name}' abgeschlossen.")
+                        f"Geplante Bewegung zu {self._planned_pose_name} abgeschlossen.")
 
         else:
             # IK-Seed: Arm-Gelenke aus dem LETZTEN ZIEL (deterministisch), nicht

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import math
 import os
 import numpy as np
 import pinocchio as pin
@@ -516,7 +517,7 @@ class G1IKSolver:
                 out['right'] = q_right
         return out
 
-    def _clamp_goal_to_reach(self, side, goal, q):
+    def _clamp_goal_to_reach(self, side, goal, q, data=None):
         """Ziel-Translation auf die Reichweiten-Kugel um die Schulter klemmen.
         Unerreichbare Ziele (Marker zu weit gezogen) wuerden den DLS-Solver sonst
         durch die gestreckte Singulaeritaet in den gefalteten/ueber-Kopf-Zweig
@@ -525,9 +526,10 @@ class G1IKSolver:
         reach = self._arm_reach.get(side)
         if fid_sh is None or reach is None:
             return goal
-        pin.forwardKinematics(self.model, self.data, q)
-        pin.updateFramePlacements(self.model, self.data)
-        p_sh = self.data.oMf[fid_sh].translation
+        data = data if data is not None else self.data
+        pin.forwardKinematics(self.model, data, q)
+        pin.updateFramePlacements(self.model, data)
+        p_sh = data.oMf[fid_sh].translation
         v = goal.translation - p_sh
         d = float(np.linalg.norm(v))
         r_max = self.reach_margin * reach
@@ -535,37 +537,126 @@ class G1IKSolver:
             return goal
         return SE3(goal.rotation.copy(), p_sh + v * (r_max / d))
 
-    def solve(self, side: str, q_init: np.ndarray, current_all: np.ndarray) -> np.ndarray:
-        """Compute 7-DOF IK solution for one arm (collision-aware)."""
-        fid = self._fid_right if side == 'right' else self._fid_left
-        arm_ids = RIGHT_JOINT_INDICES_LIST if side == 'right' else LEFT_JOINT_INDICES_LIST
-        goal = self._goal_right if side == 'right' else self._goal_left
-        if goal is None:
-            return None
+    # --------------------------------------------------------
+    # Einmaliges (offline) IK -- fuer eingespielte kartesische Ziele
+    # --------------------------------------------------------
+    #
+    # solve() ist auf EINEN Servo-Schritt ausgelegt (Trust-Region pro Iteration,
+    # begrenzter Orientierungsschritt, tiefpassgefiltertes Ziel via set_goal) und
+    # arbeitet auf dem GETEILTEN Zustand `self.data` + `self._goal_{left,right}`.
+    # Fuer die Live-Pose-Schnittstelle (arm_command / arm_api) brauchen wir das
+    # Gegenteil: eine EINMAL auskonvergierte Loesung, berechnet in einem
+    # HINTERGRUND-THREAD, ohne das laufende Marker-Servoing zu stoeren.
+    # Deshalb ist die getunte Iteration hier data-parametriert (_solve_to_goal)
+    # und solve_pose() legt sich eigene Buffer an -- kein gemeinsamer Zustand,
+    # keine Race mit dem 250-Hz-Tick, kein Ueberschreiben des Marker-Ziels.
 
-        # Initialize joint vector
+    def _arm_indices(self, side):
+        return RIGHT_JOINT_INDICES_LIST if side == 'right' else LEFT_JOINT_INDICES_LIST
+
+    def _q_full_from(self, q_init, current_all):
+        """Vollen Konfigurationsvektor aus dem Messvektor aufbauen."""
         q = q_init.copy() if q_init is not None else pin.neutral(self.model)
         for jid_idx, ros_name in enumerate(self._ros_joint_names):
             if ros_name in self._name_to_q_index:
                 q[self._name_to_q_index[ros_name]] = float(current_all[jid_idx])
+        return q
 
+    def _set_arm_in_q(self, q_full, side, q7):
+        for i, arm_i in enumerate(self._arm_indices(side)):
+            q_full[self._name_to_q_index[self._ros_joint_names[arm_i]]] = float(q7[i])
+
+    def _frame_placement(self, side, q_full, data):
+        fid = self._fid_right if side == 'right' else self._fid_left
+        pin.forwardKinematics(self.model, data, q_full)
+        pin.updateFramePlacements(self.model, data)
+        return data.oMf[fid]
+
+    def solve_pose(self, side: str, T_goal: SE3, current_all: np.ndarray, *,
+                   rounds: int = 12, pos_tol: float = 0.005,
+                   ori_tol_rad: float = 0.05, clamp_reach: bool = True) -> dict:
+        """Kartesische Ziel-Pose EINMAL auskonvergieren (kein Servo-Schritt).
+
+        Ruft die getunte DLS-Iteration mehrfach auf -- ein einzelner Aufruf ist
+        durch Trust-Region und `max_ori_step_rad` absichtlich gedeckelt und
+        erreicht ein weit entferntes Ziel nicht. Nach jeder Runde wird der
+        tatsaechliche Rest-Fehler gemessen und die BESTE Konfiguration behalten
+        (die Iteration kann sich in Grenzlagen verschlechtern).
+
+        THREAD-SICHER: eigene pin.Data-Buffer, kein Zugriff auf self.data und
+        kein set_goal -- das Marker-Ziel des laufenden Servoings bleibt intakt.
+
+        Returns
+        -------
+        dict mit 'q' (7 DOF oder None), 'pos_err_m', 'ori_err_deg', 'converged',
+        'rounds_used'. `converged=False` heisst: Ziel nicht (genau) erreichbar --
+        der Aufrufer entscheidet, ob er die Naeherung trotzdem anfahren will.
+        """
+        data = pin.Data(self.model)
+        q_full = self._q_full_from(None, current_all)
+        goal = (self._clamp_goal_to_reach(side, T_goal, q_full, data)
+                if clamp_reach else T_goal)
+
+        best_q, best_pos, best_ori, used = None, float("inf"), float("inf"), 0
+        for r in range(max(1, int(rounds))):
+            q7 = self._solve_to_goal(side, goal, q_full, data)
+            if q7 is None:
+                break
+            self._set_arm_in_q(q_full, side, q7)
+            M = self._frame_placement(side, q_full, data)
+            pos_err = float(np.linalg.norm(M.translation - T_goal.translation))
+            ori_err = float(np.linalg.norm(pin.log3(M.rotation.T @ T_goal.rotation)))
+            used = r + 1
+            # "Besser" = naeher an der Position; die Orientierung laeuft im
+            # Nullraum der Position (siehe _solve_to_goal) und ist zweitrangig.
+            if (pos_err, ori_err) < (best_pos, best_ori):
+                best_q, best_pos, best_ori = np.array(q7, dtype=float), pos_err, ori_err
+            if pos_err <= pos_tol and ori_err <= ori_tol_rad:
+                break
+
+        return {
+            "q": best_q,
+            "pos_err_m": best_pos if best_q is not None else float("inf"),
+            "ori_err_deg": math.degrees(best_ori) if best_q is not None else float("inf"),
+            "converged": bool(best_q is not None and best_pos <= pos_tol
+                              and best_ori <= ori_tol_rad),
+            "rounds_used": used,
+        }
+
+    def solve(self, side: str, q_init: np.ndarray, current_all: np.ndarray) -> np.ndarray:
+        """Compute 7-DOF IK solution for one arm (collision-aware).
+
+        EIN Servo-Schritt gegen das per set_goal gesetzte Ziel (Marker-Pfad,
+        250-Hz-Tick). Fuer ein einmalig auskonvergiertes Ziel: solve_pose()."""
+        goal = self._goal_right if side == 'right' else self._goal_left
+        if goal is None:
+            return None
+        q = self._q_full_from(q_init, current_all)
         # Unerreichbare Ziele auf die Reichweiten-Kugel klemmen (s.o.).
         goal = self._clamp_goal_to_reach(side, goal, q)
+        return self._solve_to_goal(side, goal, q, self.data)
+
+    def _solve_to_goal(self, side: str, goal: SE3, q: np.ndarray, data) -> np.ndarray:
+        """Getunte DLS-Iteration auf `goal`, auf den uebergebenen Buffern.
+        `q` (voller Konfigurationsvektor) wird in place iteriert; zurueck kommt
+        die Arm-Teilmenge (7 DOF)."""
+        fid = self._fid_right if side == 'right' else self._fid_left
+        arm_ids = self._arm_indices(side)
 
         # Startfehler merken: falls die Iteration das Ziel VERSCHLECHTERT
         # (Divergenz, z.B. nahe Singulaeritaet), geben wir unten die
         # Ausgangskonfiguration zurueck statt einer wilden Pose.
         q_seed_arm = np.array(
             [q[self._name_to_q_index[self._ros_joint_names[i]]] for i in arm_ids])
-        pin.forwardKinematics(self.model, self.data, q)
-        pin.updateFramePlacements(self.model, self.data)
-        err0 = np.linalg.norm(pin.log(self.data.oMf[fid].inverse() * goal).vector)
+        pin.forwardKinematics(self.model, data, q)
+        pin.updateFramePlacements(self.model, data)
+        err0 = np.linalg.norm(pin.log(data.oMf[fid].inverse() * goal).vector)
 
         # Iterative IK loop
         for _ in range(self.max_iter):
-            pin.forwardKinematics(self.model, self.data, q)
-            pin.updateFramePlacements(self.model, self.data)
-            M_cur = self.data.oMf[fid]
+            pin.forwardKinematics(self.model, data, q)
+            pin.updateFramePlacements(self.model, data)
+            M_cur = data.oMf[fid]
             R_des = self._limit_ori_step(M_cur.rotation, goal.rotation)
             T_des = SE3(R_des, goal.translation)
 
@@ -575,7 +666,7 @@ class G1IKSolver:
             # aktuelle Handrotation gegeneinander verdreht -> der Solver schob
             # den Arm systematisch in die falsche Richtung (nach oben/hinter den
             # Kopf statt zum Marker) und blieb dort haengen.
-            J6 = pin.computeFrameJacobian(self.model, self.data, q, fid, pin.LOCAL)
+            J6 = pin.computeFrameJacobian(self.model, data, q, fid, pin.LOCAL)
             J_eff = J6[:, [self._name_to_v_index[self._ros_joint_names[i]] for i in arm_ids]]
 
             # Pose error (LOCAL-Twist, konsistent zur LOCAL-Jacobian)
@@ -647,9 +738,9 @@ class G1IKSolver:
         # Divergenz-Schutz: hat die Iteration den Pose-Fehler VERGROESSERT
         # (Singulaeritaet/Grenzlage), lieber die Ausgangskonfiguration halten,
         # statt eine entgleiste Loesung zu kommandieren.
-        pin.forwardKinematics(self.model, self.data, q)
-        pin.updateFramePlacements(self.model, self.data)
-        err1 = np.linalg.norm(pin.log(self.data.oMf[fid].inverse() * goal).vector)
+        pin.forwardKinematics(self.model, data, q)
+        pin.updateFramePlacements(self.model, data)
+        err1 = np.linalg.norm(pin.log(data.oMf[fid].inverse() * goal).vector)
         if err1 > err0 + 1e-6:
             if self.debug:
                 print(f"[IK] {side}: divergiert (err {err0:.4f} -> {err1:.4f}), halte Pose.",

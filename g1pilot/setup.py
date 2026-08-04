@@ -79,6 +79,8 @@ setup(
             'arm_controller = g1pilot.manipulation.arm_controller:main',
             # Inspire-FTP-Hand: GUI-WebSocket-Bridge + DDS-Backend (rt/inspire/cmd|state).
             'inspire_hand = g1pilot.manipulation.inspire_ftp.bridge:main',
+            # Live-Pose-Schnittstelle: HTTP-JSON -> /g1pilot/arm_command (ARM_API.md).
+            'arm_api = g1pilot.manipulation.arm_api:main',
 
             # Teleoperation Nodes
             'joystick = g1pilot.teleoperation.joystick:main',
