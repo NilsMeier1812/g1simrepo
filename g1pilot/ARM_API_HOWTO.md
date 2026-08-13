@@ -1,7 +1,8 @@
 # ARM_API_HOWTO.md — Befehle senden, Schritt für Schritt
 
 Praktische Anleitung zum Einspielen von Armposen. Die **Referenz** (jedes Feld,
-jeder Zustand, jeder HTTP-Code) steht in [`ARM_API.md`](ARM_API.md) — hier geht
+jeder Zustand, jeder HTTP-Code) steht in [`ARM_API.md`](ARM_API.md), alle Befehle
+kompakt auf einem Blatt in [`ARM_API_REFCARD.md`](ARM_API_REFCARD.md) — hier geht
 es darum, *wie man es tatsächlich macht*.
 
 Fertiges Werkzeug dazu: **[`examples/arm_api/arm_cli.py`](examples/arm_api/arm_cli.py)**
@@ -68,7 +69,7 @@ Kommt beim ersten Fahrbefehl `409` mit `"Arme nicht aktiviert"`, fehlt Schritt 3
 
 ---
 
-## 3 · Die drei Arten von Befehlen
+## 3 · Die vier Arten von Befehlen
 
 ### a) Gelenkwinkel — wenn dein Projekt die Gelenkstellung schon kennt
 
@@ -230,6 +231,14 @@ curl -sS -X POST http://localhost:8770/arm/joints \
 ros2 topic pub --once /g1pilot/arm_command std_msgs/msg/String \
   '{data: "{\"type\":\"joints\",\"right\":[0.3,-0.2,0.0,0.5,0.0,0.0,0.0]}"}'
 ros2 topic echo /g1pilot/arm_command/status
+```
+
+Speichern ebenso:
+
+```bash
+ros2 topic pub --once /g1pilot/pose_store/save std_msgs/msg/String \
+  '{data: "{\"name\":\"Regal oben\",\"category\":\"Greifen\",\"components\":[\"arms\"]}"}'
+ros2 topic echo /g1pilot/pose_store/save/status
 ```
 
 Gleiches JSON wie im HTTP-Body, plus `"type"` (bei HTTP bestimmt der Pfad den
@@ -397,6 +406,9 @@ ros2 topic echo /g1pilot/arm_command/status
 
 # Kommt mein Kommando überhaupt an?
 ros2 topic echo /g1pilot/arm_command
+
+# Ergebnis von Speicher-Vorgängen (auch die aus der GUI)
+ros2 topic echo /g1pilot/pose_store/save/status
 
 # Läuft der Controller?
 ros2 node list | grep arm_

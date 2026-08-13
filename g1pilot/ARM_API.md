@@ -8,7 +8,8 @@
 >
 > **Diese Datei ist die Referenz** (jedes Feld, jeder Zustand, jeder Code).
 > Schritt-für-Schritt-Anleitung mit Rezepten und fertigem CLI:
-> **[`ARM_API_HOWTO.md`](ARM_API_HOWTO.md)**.
+> **[`ARM_API_HOWTO.md`](ARM_API_HOWTO.md)**. Alles auf einem Blatt, ohne
+> Erklärungen: **[`ARM_API_REFCARD.md`](ARM_API_REFCARD.md)**.
 
 Zwei Varianten, je nachdem was das aufrufende Projekt ausrechnet:
 
