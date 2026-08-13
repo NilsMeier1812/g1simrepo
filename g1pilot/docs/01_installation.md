@@ -152,11 +152,20 @@ Alternativ direkt über `make` bzw. `docker compose`:
 |---|---|
 | `make sim` | Stack im Vordergrund starten (Ctrl-C stoppt) |
 | `make sim-bg` | Stack im Hintergrund |
-| `make real ROBOT_INTERFACE=<nic>` | Echten Roboter starten |
+| `make real ROBOT_INTERFACE=<nic>` | Echten Roboter starten (schlank: Arme + Hände + Loco) |
+| `make real-full ROBOT_INTERFACE=<nic>` | Echten Roboter mit Livox/MOLA/Navigation starten |
 | `make stop` | Stack stoppen |
 | `make logs` / `make status` | Logs folgen / Container-Status |
-| `make shell-sim` / `make shell-mujoco` | Shell im jeweiligen Container |
+| `make shell-sim` / `make shell-mujoco` / `make shell-real` | Shell im jeweiligen Container |
 | `make clean` | Container + Images entfernen |
+
+Jedes `make sim`/`make real`/`make real-full` baut das benötigte Image bei
+Bedarf automatisch nach — ein separater `make build-*`-Aufruf ist nur nötig,
+um das Bauen vom Starten zu trennen (z. B. um vorab zu bauen, ohne den Stack
+gleich hochzufahren). Intern ist `make` nur ein dünner Wrapper um
+`docker compose --profile <sim|real|real-full>` auf der einen
+`docker-compose.yml` — es gibt bewusst keine separaten
+`docker-compose.*.yaml`-Dateien mehr.
 
 ```bash
 # Simulation: MuJoCo-G1 + g1pilot (robot_state, Arme, RViz, Teleop)
