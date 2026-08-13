@@ -133,3 +133,255 @@ Exit-Code `0` = `reached`/`saved`/Abfrage ok, sonst `1`.
 Vor dem ersten Fahrbefehl: `START` → `START BALANCING` → `ENABLE MANIPULATION`; kein Homing/WALK, E-Stop quittiert. (Sim: automatisch ~3 s nach Start.) Speichern braucht das nicht.
 
 Launch-Argumente: `enable_arm_api` (`true`) · `arm_api_host` (`127.0.0.1`) · `arm_api_port` (`8770`) · `arm_api_token` (leer). Token gesetzt → Header `X-Auth-Token`.
+
+---
+
+# Beispiele
+
+Alle Antworten unten sind echte Ausgaben der Schnittstelle (Feldnamen und
+Struktur 1:1). `history` ist im Beispiel gekürzt.
+
+## Bewegen: Gelenkwinkel
+
+**Vollständig** — `POST /arm/joints`, beide Arme, Finger, eigene ID, wartet bis zum Ende:
+
+```json
+{
+  "id": "hebe-links-rechts",
+  "left":  [0.30,  0.20, 0.00, 0.50, 0.00, 0.00, 0.00],
+  "right": [0.30, -0.20, 0.00, 0.50, 0.00, 0.00, 0.00],
+  "hands": {"left": [0, 0, 0, 0, 0, 0], "right": [1000, 1000, 1000, 1000, 1000, 1000]},
+  "wait": 60
+}
+```
+
+Antwort `200`:
+
+```json
+{
+  "id": "hebe-links-rechts",
+  "state": "reached",
+  "reason": "",
+  "detail": null,
+  "sides": ["left", "right"],
+  "history": [
+    {"id": "hebe-links-rechts", "state": "accepted",  "source": "arm_command", "sides": ["left", "right"], "received_at": 1786000000.0},
+    {"id": "hebe-links-rechts", "state": "executing", "source": "arm_command", "sides": ["left", "right"], "received_at": 1786000000.4},
+    {"id": "hebe-links-rechts", "state": "reached",   "source": "arm_command", "sides": ["left", "right"], "received_at": 1786000004.1}
+  ]
+}
+```
+
+**Minimal** — `POST /arm/joints`, ein Arm, ohne Warten (Antwort `202`, `state: "accepted"`):
+
+```json
+{"right": [0.30, -0.20, 0.00, 0.50, 0.00, 0.00, 0.00]}
+```
+
+## Bewegen: kartesische Pose
+
+**Vollständig** — `POST /arm/pose`, beide Arme, links per Quaternion, rechts per RPY, Finger mit:
+
+```json
+{
+  "id": "greifen-regal",
+  "left":  {"position": [0.35,  0.20, 0.10], "orientation": [0.0, 0.0, 0.0, 1.0], "frame": "pelvis"},
+  "right": {"position": [0.35, -0.20, 0.10], "rpy_deg": [0, 0, 0]},
+  "hands": {"right": [800, 800, 800, 800, 800, 500]},
+  "apply_ee_offset": true,
+  "wait": 90
+}
+```
+
+Antwort `200` (`detail` = IK-Restfehler je Seite):
+
+```json
+{
+  "id": "greifen-regal",
+  "state": "reached",
+  "reason": "",
+  "detail": {"right": {"pos_err_m": 0.0004, "ori_err_deg": 0.12, "converged": true}},
+  "sides": ["left", "right"],
+  "history": ["..."]
+}
+```
+
+**Minimal** — `POST /arm/pose`:
+
+```json
+{"right": {"position": [0.35, -0.20, 0.10], "rpy_deg": [0, 0, 0]}}
+```
+
+**Ziel in Weltkoordinaten** — `POST /arm/pose`, Frame wird per TF umgerechnet:
+
+```json
+{"right": {"position": [1.20, 0.30, 0.90], "rpy_deg": [0, 0, 0], "frame": "map"}, "wait": 90}
+```
+
+## Speichern
+
+**Vollständig** — `POST /arm/save`:
+
+```json
+{"name": "Regal oben", "category": "Greifen", "components": ["arms", "hands"]}
+```
+
+Antwort `200` — Inspire-Bridge lief nicht, deshalb `skipped`:
+
+```json
+{
+  "id": "bad037326be6",
+  "state": "saved",
+  "name": "Regal oben",
+  "category": "Greifen",
+  "requested": ["left_arm", "right_arm", "left_hand", "right_hand"],
+  "components": ["left_arm", "right_arm"],
+  "skipped": ["left_hand", "right_hand"],
+  "reason": ""
+}
+```
+
+**Minimal** — beide Arme in die Default-Kategorie `Allgemein`:
+
+```json
+{"name": "Zwischenstellung"}
+```
+
+## Abfragen
+
+Antwort `GET /arm/state`:
+
+```json
+{
+  "last_status": {"id": "3f9a1c4e77b2", "state": "reached", "source": "arm_command", "sides": ["right"], "received_at": 1786000000.0},
+  "joints": {"left": [0.301, 0.198, 0.0, 0.502, 0.0, 0.0, 0.0],
+             "right": [0.298, -0.201, 0.0, 0.499, 0.0, 0.0, 0.0],
+             "stamp": 1786000000.0},
+  "open": []
+}
+```
+
+Antwort `GET /arm/status/<id>`:
+
+```json
+{"id": "hebe-links-rechts", "state": "reached", "history": ["..."]}
+```
+
+Antwort `GET /arm/health` · `POST /arm/cancel`:
+
+```json
+{"ok": true, "node": "arm_api"}
+```
+
+```json
+{"cancelled": true}
+```
+
+## Fehlerantworten
+
+`400` — Kommando kaputt, nichts wurde publiziert:
+
+```json
+{"error": "right (Gelenkwinkel): erwarte 7 Werte, bekam 3."}
+```
+
+`409` — verstanden, aber jetzt nicht ausführbar:
+
+```json
+{
+  "id": "355c5686037d",
+  "state": "rejected",
+  "reason": "Arme nicht aktiviert (ENABLE MANIPULATION).",
+  "detail": null,
+  "sides": ["right"],
+  "history": ["..."]
+}
+```
+
+`422` — Ziel unerreichbar (Arm bewegt sich nicht):
+
+```json
+{
+  "id": "9ebecee3384a",
+  "state": "failed",
+  "reason": "Ziel-Pose fuer right nicht erreichbar (IK konvergiert nicht -- Restfehler siehe detail).",
+  "detail": {"right": {"pos_err_m": 1.60312, "ori_err_deg": 12.4, "converged": false}},
+  "sides": ["right"],
+  "history": ["..."]
+}
+```
+
+`504` — `arm_controller` läuft nicht:
+
+```json
+{"id": "5f1c0f0a9b31", "state": "unknown", "error": "Keine Antwort vom arm_controller -- laeuft der Node?"}
+```
+
+## curl
+
+```bash
+A=http://localhost:8770; H='Content-Type: application/json'
+
+curl -sS -X POST $A/arm/joints -H "$H" \
+  -d '{"right":[0.30,-0.20,0.00,0.50,0.00,0.00,0.00],"wait":60}'
+
+curl -sS -X POST $A/arm/pose -H "$H" \
+  -d '{"right":{"position":[0.35,-0.20,0.10],"rpy_deg":[0,0,0]},"wait":90}'
+
+curl -sS -X POST $A/arm/save -H "$H" \
+  -d '{"name":"Regal oben","category":"Greifen","components":["arms","hands"]}'
+
+curl -sS -X POST $A/arm/cancel -H "$H" -d '{}'
+curl -sS $A/arm/state
+curl -sS $A/arm/status/hebe-links-rechts
+curl -sS -H 'X-Auth-Token: geheim' $A/arm/state      # nur wenn Token konfiguriert
+```
+
+## CLI (dieselben Vorgänge)
+
+```bash
+cd g1pilot/examples/arm_api
+python3 arm_cli.py joints --right 0.30 -0.20 0.00 0.50 0.00 0.00 0.00 --wait 60
+python3 arm_cli.py pose --right 0.35 -0.20 0.10 --rpy 0 0 0 --wait 90
+python3 arm_cli.py pose --left 0.35 0.20 0.10 --quat 0 0 0 1 --frame map --wait 90
+python3 arm_cli.py save "Regal oben" --category Greifen --components arms hands
+python3 arm_cli.py state && python3 arm_cli.py cancel
+```
+
+## Python (fahren, prüfen, speichern)
+
+```python
+import requests
+A = "http://localhost:8770"
+
+start = requests.get(f"{A}/arm/state", timeout=5).json()["joints"]["right"]
+
+r = requests.post(f"{A}/arm/pose", timeout=120, json={
+    "right": {"position": [0.35, -0.20, 0.10], "rpy_deg": [0, 0, 0]}, "wait": 90})
+res = r.json()
+if r.status_code != 200 or res["state"] != "reached":
+    raise RuntimeError(f"{r.status_code} {res.get('state')}: "
+                       f"{res.get('reason') or res.get('detail') or res.get('error')}")
+
+s = requests.post(f"{A}/arm/save", timeout=15, json={
+    "name": "Regal oben", "category": "Greifen", "components": ["arms", "hands"]}).json()
+if s.get("skipped"):
+    print("nicht mitgespeichert:", s["skipped"])
+```
+
+## ROS (ohne HTTP)
+
+```bash
+ros2 topic pub --once /g1pilot/arm_command std_msgs/msg/String \
+  '{data: "{\"type\":\"joints\",\"right\":[0.3,-0.2,0.0,0.5,0.0,0.0,0.0]}"}'
+
+ros2 topic pub --once /g1pilot/arm_command std_msgs/msg/String \
+  '{data: "{\"type\":\"pose\",\"right\":{\"position\":[0.35,-0.2,0.1],\"rpy_deg\":[0,0,0]}}"}'
+
+ros2 topic pub --once /g1pilot/pose_store/save std_msgs/msg/String \
+  '{data: "{\"name\":\"Regal oben\",\"category\":\"Greifen\",\"components\":[\"arms\"]}"}'
+
+ros2 topic pub --once /g1pilot/arm_command/cancel std_msgs/msg/Bool '{data: true}'
+ros2 topic echo /g1pilot/arm_command/status
+ros2 topic echo /g1pilot/pose_store/save/status
+```
