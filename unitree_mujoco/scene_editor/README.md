@@ -32,7 +32,7 @@ Generator sie beim Kombinieren automatisch raus.)
 
 ### Hindernis vs. Greif-Objekt (fuer Nav/IK)
 
-Objekte werden nach RViz uebertragen (siehe `g1pilot/SCENE_BRIDGE.md`) und dort
+Objekte werden nach RViz uebertragen (siehe `g1pilot/docs/51_navigation_technik.md`) und dort
 in zwei Klassen unterschieden — **Hindernis** (der Arm weicht aus) und
 **Greif-Objekt** (die Hand darf ran, das Objekt bewegt sich beim Anfassen mit).
 Klassifikation per **Namenskonvention**: benennst du ein Objekt (im Editor

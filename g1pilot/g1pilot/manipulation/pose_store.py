@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 pose_store.py — einfache, dateibasierte Ablage fuer gespeicherte Oberkoerper-/
-Armposen (siehe g1pilot/SCENE_BRIDGE.md Abschnitt 9: Positionsspeicher).
+Armposen (siehe g1pilot/docs/11_arm_manipulation_technik.md (Positionsspeicher): Positionsspeicher).
 
 Bewusst lokal-first (JSON-Datei, kein Datenbank-Server): offline-faehig, keine
 Netzabhaengigkeit beim Pose-Recall am echten Roboter. Gespeichert wird NUR der

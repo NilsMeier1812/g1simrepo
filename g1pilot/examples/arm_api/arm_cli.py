@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 arm_cli.py — Kommandozeilen-Client fuer die Live-Pose-Schnittstelle.
-Anleitung: g1pilot/ARM_API_HOWTO.md   ·   Referenz: g1pilot/ARM_API.md
+Anleitung: g1pilot/g1pilot/docs/20_arm_api_anleitung.md   ·   Referenz: g1pilot/docs/21_arm_api_technik.md
 
 NUR STANDARD-BIBLIOTHEK (urllib) -- absichtlich: dieses Skript soll auf einem
 fremden Rechner ohne ROS und ohne `pip install` sofort laufen. Es ist zugleich
@@ -133,7 +133,7 @@ def cmd_pose(args) -> int:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
-        description="Zielposen an g1pilot schicken (siehe ARM_API_HOWTO.md).")
+        description="Zielposen an g1pilot schicken (siehe g1pilot/docs/20_arm_api_anleitung.md).")
     ap.add_argument("--url", default=DEFAULT_URL, help=f"Default {DEFAULT_URL}")
     ap.add_argument("--token", default="", help="X-Auth-Token, falls konfiguriert")
     sub = ap.add_subparsers(dest="cmd", required=True)

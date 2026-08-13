@@ -13,7 +13,7 @@ Aufruf (MuJoCo muss laufen):
     # oder, nach colcon build + source:
     G1_SIM_MODE=true ros2 run g1pilot sim_dds_check
 
-ECHTER ROBOTER (Alias `dds_check`, erster Verbindungstest — s. REAL_TESTING.md):
+ECHTER ROBOTER (Alias `dds_check`, erster Verbindungstest — s. g1pilot/docs/70_echtroboter_anleitung.md):
     G1_SIM_MODE=false ros2 run g1pilot dds_check --interface <NIC>
 Erwartung: rt/lowstate mit ~500 Hz und plausiblen Gelenkwinkeln.
 """

@@ -92,7 +92,7 @@ def generate_launch_description():
         #    IMMER gestartet (nicht an G1_ENABLE_NAV gekoppelt!): der IK-Solver
         #    (arm_controller.py, Schritt 2) braucht die Umgebung genauso wie
         #    die Nav-Karte weiter unten -- Manipulation soll auch OHNE
-        #    aktivierte Navigation um Hindernisse wissen. Siehe SCENE_BRIDGE.md.
+        #    aktivierte Navigation um Hindernisse wissen. Siehe g1pilot/docs/51_navigation_technik.md.
         Node(
             package='g1pilot', executable='scene_bridge', name='scene_bridge',
             output='screen'

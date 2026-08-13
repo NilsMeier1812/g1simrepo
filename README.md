@@ -1,375 +1,98 @@
-# G1Pilot · MuJoCo-Simulation für den Unitree G1
+# G1Pilot — MuJoCo-Simulation & Steuerungsstack für den Unitree G1
 
-Eine **drag-and-drop Simulationsumgebung** für den Unitree G1 (29 DoF): der komplette
-G1Pilot-ROS2-Stack — Arm-IK, Teleoperation, Locomotion, Visualisierung — läuft
-**unverändert** gegen MuJoCo statt gegen die echte Hardware. Gesprochen wird über
-dieselbe Unitree-DDS-Schnittstelle wie auf dem realen Roboter, sodass derselbe Code
-in Sim und Real läuft.
+G1Pilot ist ein ROS-2-Steuerungsstack für den humanoiden Roboter Unitree G1
+(29 Freiheitsgrade, optional Inspire-FTP-Hände). Er läuft **unverändert**
+sowohl gegen eine MuJoCo-Simulation als auch gegen den echten Roboter — beide
+sprechen dieselbe Unitree-DDS-Schnittstelle, sodass derselbe Code in Sim und
+Real läuft.
 
 | | |
 |---|---|
-| **Roboter** | Unitree G1, 29 DoF (Inspire-FTP-Hände) |
-| **Simulator** | MuJoCo (Python-Bindings), 1 kHz Physik |
-| **Middleware** | Unitree SDK2 (CycloneDDS, Domain 1) + ROS 2 Humble (Domain 0) |
-| **Laufzeit** | zwei Docker-Container, `network_mode: host` |
+| Roboter | Unitree G1, 29 DOF, optional Inspire-FTP-Hände |
+| Simulator | MuJoCo (Python-Bindings), 1 kHz Physik |
+| Middleware | Unitree SDK2 (CycloneDDS) + ROS 2 Humble |
+| Laufzeit | Docker-Container, `network_mode: host` |
 
----
+## Funktionsumfang
 
-## Was kann es?
-
-- 🦾 **Arm-Manipulation** – kartesische Ziele per Interactive-Marker in RViz, gelöst
-  über Pinocchio-IK, gesendet als `rt/arm_sdk`.
-- 🚶 **Locomotion & Balance** *(`loco_sim`)* – ersetzt in der Sim das Unitree-Onboard-
-  High-Level. Eine vortrainierte RL-Policy läuft, ein modellbasierter PD-Regler steht
-  und balanciert. Zyklus **Stehen → Laufen → Stehen** über Joystick/Buttons.
-- 🧍 **Freie Arme beim Balancieren** – die Arme werden *nicht* zum Balancieren
-  gebraucht; sie bleiben für Manipulation frei (z. B. eine leichte Kiste tragen).
-- 🕹️ **Teleoperation** – Bildschirm-Joystick + Buttons (Streamdeck-Node) und ein
-  CLI-Interface über ROS-Topics.
-- 🔁 **Sim ↔ Real ohne Code-Änderung** – Umschalten allein über Env-Variablen.
-
----
-
-## Ersteinrichtung (frisches System)
-
-Anleitung für ein **frisches Linux** (getestet auf Ubuntu 22.04 / 24.04) ohne
-Vorinstallationen. Auf dem Host wird **nur Docker, Git und ein X11-Display**
-gebraucht — der gesamte ROS-2-/MuJoCo-Stack steckt in den Container-Images.
-
-**1 · System-Pakete (Git + X11-Tools)**
-
-```bash
-sudo apt update
-sudo apt install -y git x11-xserver-utils ca-certificates curl
-```
-
-> Ein laufender grafischer Desktop (X11) wird für RViz und die Teleop-GUI
-> benötigt. Unter reinem Wayland hilft meist `xhost` aus dem XWayland-Layer;
-> über SSH mit `ssh -X` verbinden.
-
-**2 · Docker Engine + Compose-Plugin installieren** (offizielles Repo)
-
-```bash
-# Docker-Repo eintragen
-sudo install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
-  sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-  https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" | \
-  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-sudo apt update
-sudo apt install -y docker-ce docker-ce-cli containerd.io \
-  docker-buildx-plugin docker-compose-plugin
-```
-
-**3 · Docker ohne `sudo` nutzbar machen** (einmalig, dann neu einloggen)
-
-```bash
-sudo usermod -aG docker $USER
-newgrp docker          # oder: ab-/wieder anmelden
-docker run --rm hello-world   # Test: muss ohne sudo durchlaufen
-```
-
-**4 · Repository klonen**
-
-```bash
-git clone https://github.com/nilsmeier1812/g1simrepo.git
-cd g1simrepo/g1pilot
-```
-
-> Das Repo ist **eigenständig** (keine Git-Submodule) — die Unitree-Abhängigkeiten
-> `unitree_mujoco`, `unitree_ros2`, `unitree_sdk2_python` liegen mit im Baum.
-
-**5 · Images bauen** (erstmalig, ~8 min; lädt ROS 2 Humble, MuJoCo, Pinocchio …)
-
-```bash
-make build-sim         # baut g1pilot-sim:v1.1.0 + g1pilot-mujoco:v1.0
-```
-
-**6 · Starten**
-
-```bash
-make sim               # baut bei Bedarf nach und startet den Stack
-```
-
-Beim ersten `make sim` wird zusätzlich `xhost +local:docker` gesetzt, damit die
-Container auf das Display zugreifen dürfen. Erscheinen das MuJoCo-Fenster und
-RViz, steht die Umgebung. Weiter geht es bei
-[Bedienung](#bedienung-der-stehen--laufen--stehen-zyklus).
-
-> **Hardware-Hinweis:** rein CPU-basiert (keine GPU/CUDA nötig). Empfohlen
-> ≥ 8 GB RAM und ~10 GB freier Plattenplatz für die Images.
-
-### Windows (WSL2)
-
-Läuft auf Windows — aber **innerhalb von WSL2**, nicht über „Docker Desktop für
-Windows" pur. Zwei Dinge im Setup sind Linux-spezifisch: `network_mode: host`
-(trägt die DDS-Kommunikation der beiden Container über `lo`) und die X11-GUIs
-(RViz + MuJoCo-Viewer). Beides funktioniert in WSL2 sauber, in Docker Desktop pur
-dagegen nicht zuverlässig. **GPU/CUDA wird nicht gebraucht** — der größte
-Windows-Docker-Schmerz entfällt damit.
-
-Empfohlen: **Windows 11** (WSLg für die GUIs ist eingebaut).
-
-```powershell
-# 1) In PowerShell (als Admin): WSL2 + Ubuntu installieren, dann neu starten
-wsl --install -d Ubuntu
-```
-
-Danach **im Ubuntu-Terminal (WSL)** weiter — ab hier ist alles **identisch zur
-Linux-Anleitung oben**:
-
-```bash
-# 2) Docker-Engine NATIV in der WSL-Distro installieren (Schritte 1–3 oben).
-#    Native Engine statt Docker-Desktop-Integration -> host-Networking klappt
-#    ohne Tricks. Docker-Dienst in WSL starten:
-sudo service docker start
-
-# 3) Repo INS WSL-Dateisystem klonen (NICHT nach /mnt/c/... — das ist lahm)
-cd ~
-git clone https://github.com/nilsmeier1812/g1simrepo.git
-cd g1simrepo/g1pilot
-make build-sim && make sim
-```
-
-WSLg setzt `DISPLAY` automatisch und stellt den X11-Socket bereit — MuJoCo-Fenster
-und RViz öffnen sich direkt auf dem Windows-Desktop.
-
-> **Windows 10:** geht ebenfalls über WSL2, aber WSLg ist nicht überall dabei —
-> dann einen X-Server (VcXsrv/X410) starten und `DISPLAY` von Hand setzen.
-> **Docker Desktop** statt nativer Engine ist möglich, aber `network_mode: host`
-> ist dort nur als (zu aktivierendes) Beta-Feature neuerer Versionen verfügbar.
-
----
+- **Arm-Manipulation** — kartesische Zielposen per interaktivem RViz-Marker,
+  gelöst über eine Pinocchio-basierte inverse Kinematik, mit
+  Kollisionsprüfung und Positionsspeicher.
+- **Arm-API** — eine HTTP/JSON-Schnittstelle, über die auch Projekte ohne
+  ROS Zielposen einspielen können.
+- **Locomotion** — Stehen und Laufen; in der Simulation über einen
+  RL-basierten Lauf-Regler plus modellbasierten Stand-Regler, auf echter
+  Hardware über Unitrees Onboard-Controller.
+- **Teleoperation** — grafische Bedienoberfläche (Streamdeck) und
+  Unterstützung für einen physischen Gamepad.
+- **Autonome Navigation** — Punkt-zu-Punkt-Fahrt mit Pfadplanung und
+  Hindernisvermeidung.
+- **Inspire-FTP-Hände** — Fingersteuerung mit Kraft- und Tastsinn-Rückmeldung,
+  in Simulation und auf echter Hardware.
+- **Sim ↔ Real ohne Code-Änderung** — Umschalten allein über
+  Umgebungsvariablen.
 
 ## Schnellstart
 
-> Setzt eine abgeschlossene [Ersteinrichtung](#ersteinrichtung-frisches-system)
-> voraus (Docker + X11-Display vorhanden).
-
 ```bash
-cd g1pilot
-make sim          # baut beide Images (bei Bedarf) und startet den Stack
+git clone https://github.com/nilsmeier1812/g1simrepo.git
+cd g1simrepo/g1pilot
+make build-sim
+make sim
 ```
 
-`make sim` baut das g1pilot- **und** das MuJoCo-Image (Letzteres enthält die
-DDS-Bridge — Bridge-Änderungen werden also hier übernommen) und startet
-`docker-compose.sim.yaml`.
+Ausführliche Installationsanleitung (Linux, Windows/WSL2, Voraussetzungen):
+[g1pilot/docs/01_installation.md](g1pilot/docs/01_installation.md).
 
-| Befehl | Wirkung |
-|---|---|
-| `make sim` | Stack im Vordergrund starten (Ctrl-C stoppt) |
-| `make sim-bg` | Stack im Hintergrund |
-| `make stop` | Stack stoppen |
-| `make logs` / `make status` | Logs folgen / Container-Status |
-| `make shell-sim` / `make shell-mujoco` | Shell im jeweiligen Container |
-| `make clean` | Container + Images entfernen |
+Nach dem Start öffnet sich ein grafisches Startmenü (`./start.sh`), über das
+sich sowohl die Simulation als auch der echte Roboter starten lassen, und
+über das die gesamte Dokumentation erreichbar ist (Menüpunkt
+„Dokumentation").
 
-Beim Start wird einmalig `xhost +local:docker` gesetzt, damit die Container auf das
-Display kommen.
+## Dokumentation
 
----
+Die vollständige Dokumentation liegt in [g1pilot/docs/](g1pilot/docs/README.md)
+und ist nach Themen gegliedert. Jedes Thema hat zwei Dokumente: eine
+**Anleitung** für Anwender und ein **Technik**-Dokument für Entwickler.
 
-## Bedienung: der Stehen → Laufen → Stehen-Zyklus
-
-`loco_sim` ist eine kleine FSM. Gesteuert wird sie über die Buttons/den
-Bildschirm-Joystick der Teleop-GUI **oder** über ROS-Topics (siehe
-[`g1pilot/CHEATS.md`](g1pilot/CHEATS.md)).
-
-| Zustand | Was passiert | Auslöser |
+| Thema | Anleitung | Technik |
 |---|---|---|
-| **HOLD** | Standby: steifer Stand, Basis gehalten | Start / `…/start` |
-| **BALANCE** | Modellbasierter PD-Stand am Platz, Oberkörper frei | **START BALANCING** / `…/start_balancing` |
-| **RUN** | RL-Walking-Policy; Geschwindigkeit per Joystick | **WALK** + `…/loco_cmd_vel` |
-| **DAMP** | Not-Aus: alle Motoren weich | **EMERGENCY** / `…/emergency_stop` |
-
-**Typischer Ablauf:**
-
-1. **START BALANCING** → der Roboter steht frei und balanciert; die Arme lassen sich
-   parallel über die Marker bewegen.
-2. **WALK** → Joystick gibt Vorwärts/Seitwärts/Drehen vor.
-3. **Joystick loslassen** → `loco_sim` bremst über die Policy ab und übergibt im
-   Doppelstütz sanft zurück an den PD-Stand (Stepping-Stop).
-
-CLI-Kurzform:
-
-```bash
-ros2 topic pub --once /g1pilot/start_balancing std_msgs/msg/Bool "{data: true}"
-ros2 topic pub --once /g1pilot/start_walking   std_msgs/msg/Bool "{data: true}"
-ros2 topic pub /g1pilot/loco_cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.6}}"   # vorwärts
-ros2 topic pub --once /g1pilot/loco_cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0}}"  # Stop
-```
-
-> **Hinweis:** `loco_sim` ist ein **Sim-only-Stellvertreter** für den Onboard-Loco-
-> Regler des echten G1. Auf der echten Hardware übernimmt weiterhin Unitrees
-> Onboard-High-Level (`loco_client`). Details & Tuning-Parameter in
-> [`CHEATS.md`](g1pilot/CHEATS.md).
-
----
-
-## Architektur
-
-```
-┌─ HOST (network_mode: host) ────────────────────────────────────────────┐
-│                                                                        │
-│  Container: g1_mujoco_sim              Container: g1pilot_sim           │
-│  ┌──────────────────────────┐          ┌────────────────────────────┐  │
-│  │ MuJoCo Physics (1 kHz)    │          │ ROS 2 Humble               │  │
-│  │ unitree_sdk2py_bridge     │          │  robot_state · arm_ctrl    │  │
-│  │   (DDS ↔ MuJoCo)          │          │  interactive_marker        │  │
-│  └────────────┬─────────────┘          │  loco_sim · teleop · rviz   │  │
-│               │                        └─────────────┬──────────────┘  │
-│               │     DDS  Domain 1 / lo  (CycloneDDS) │                  │
-│               └──────────────────────────────────────┘                  │
-└────────────────────────────────────────────────────────────────────────┘
-```
-
-Zwei Kommunikationsebenen:
-
-- **DDS (Unitree SDK2), Domain 1 über Loopback `lo`** — zwischen den Containern,
-  identisch zum echten Roboter. Bridge → `rt/lowstate` (Gelenke, IMU); Stack →
-  `rt/lowcmd` (Beine, von `loco_sim`) und `rt/arm_sdk` (Arme, von `arm_controller`).
-- **ROS 2, Domain 0** — innerhalb des g1pilot-Containers (`/joint_states`, `/tf`,
-  Hand-Targets, RViz, Teleop).
-
-Die Bridge merged beide Befehls-Quellen pro Motor (Beine/Taille aus `rt/lowcmd`,
-Arme gewichtet aus `rt/arm_sdk`) und wendet je Physik-Schritt
-`ctrl = τ + kp·(q−q_ist) + kd·(dq−dq_ist)` an.
-
-<details>
-<summary>DDS-Topics &amp; Nachrichten-Layout</summary>
-
-| Topic | Typ | Richtung | Inhalt |
-|---|---|---|---|
-| `rt/lowstate` | `LowState_` | MuJoCo → Stack | Gelenk q/dq/τ, IMU; (Sim) Fußkraft + Basis-v in `reserve[]` |
-| `rt/lowcmd` | `LowCmd_` | Stack → MuJoCo | Bein-/Taillen-Befehle (`loco_sim`) |
-| `rt/arm_sdk` | `LowCmd_` | Stack → MuJoCo | Arm-Befehle (`arm_controller`) |
-| `rt/sportmodestate` | `SportModeState_` | MuJoCo → Stack | Odometrie |
-| `rt/wirelesscontroller` | `WirelessController_` | MuJoCo → Stack | Gamepad-State |
-
-```
-LowCmd_.motor_cmd[i]:  q, dq, tau, kp, kd      → ctrl = tau + kp·(q−q_ist) + kd·(dq−dq_ist)
-LowState_.motor_state[i]: q, dq, tau_est
-LowState_.imu_state:   quaternion[w,x,y,z], gyroscope[xyz], accelerometer[xyz]
-```
-</details>
-
-<details>
-<summary>Joint-Layout (29 DoF)</summary>
-
-| Index | Gruppe | Gelenke |
-|---|---|---|
-| 0–5 | Bein links | hip_pitch, hip_roll, hip_yaw, knee, ankle_pitch, ankle_roll |
-| 6–11 | Bein rechts | (dito) |
-| 12–14 | Taille | waist_yaw, waist_roll, waist_pitch |
-| 15–21 | Arm links | shoulder_pitch/roll/yaw, elbow, wrist_roll/pitch/yaw |
-| 22–28 | Arm rechts | (dito) |
-
-Reine Drehmoment-Aktuatoren, je Gelenk drehmomentbegrenzt (z. B. Knöchel ±50 Nm).
-MuJoCo-`qpos` (nq=36): `[0:3]` Pelvis-Position, `[3:7]` Pelvis-Quaternion,
-`[7:36]` die 29 Gelenkwinkel.
-</details>
-
----
+| Installation | [g1pilot/docs/01_installation.md](g1pilot/docs/01_installation.md) | — |
+| Architektur | — | [g1pilot/docs/02_architektur.md](g1pilot/docs/02_architektur.md) |
+| Arm-Manipulation | [10_arm_manipulation_anleitung.md](g1pilot/docs/10_arm_manipulation_anleitung.md) | [11_arm_manipulation_technik.md](g1pilot/docs/11_arm_manipulation_technik.md) |
+| Arm-API (externe Projekte) | [20_arm_api_anleitung.md](g1pilot/docs/20_arm_api_anleitung.md) | [21_arm_api_technik.md](g1pilot/docs/21_arm_api_technik.md) |
+| Locomotion | [30_loco_anleitung.md](g1pilot/docs/30_loco_anleitung.md) | [31_loco_technik.md](g1pilot/docs/31_loco_technik.md) |
+| Teleoperation | [40_teleoperation_anleitung.md](g1pilot/docs/40_teleoperation_anleitung.md) | [41_teleoperation_technik.md](g1pilot/docs/41_teleoperation_technik.md) |
+| Navigation | [50_navigation_anleitung.md](g1pilot/docs/50_navigation_anleitung.md) | [51_navigation_technik.md](g1pilot/docs/51_navigation_technik.md) |
+| Inspire-FTP-Hände | [60_inspire_haende_anleitung.md](g1pilot/docs/60_inspire_haende_anleitung.md) | [61_inspire_haende_technik.md](g1pilot/docs/61_inspire_haende_technik.md) |
+| Echter Roboter (Sicherheit) | [70_echtroboter_anleitung.md](g1pilot/docs/70_echtroboter_anleitung.md) | — |
 
 ## Projektstruktur
 
 ```
 .
-├── g1pilot/                     ← ROS 2-Package + Docker/Compose/Makefile (Hauptprojekt)
-│   ├── Makefile                 ← make sim | stop | build-* | shell-* | clean
-│   ├── docker-compose.sim.yaml  ← Sim-Stack (zwei Container)
-│   ├── docker/                  ← Dockerfile.sim · Dockerfile.mujoco · cyclonedds.xml
-│   ├── launch/bringup_sim.launch.py   ← startet robot_state, arm, teleop, loco_sim
-│   ├── policies/g1_wholebody/   ← RL-Policy (policy.onnx) + deploy.yaml (Obs/Gains/Scales)
-│   ├── g1pilot/
-│   │   ├── state/robot_state.py        ← LowState_ → /joint_states + /tf
-│   │   ├── manipulation/arm_controller.py · interactive_marker.py
-│   │   ├── navigation/loco_sim.py       ← ★ RL-Walking + PD-Balance + Stepping-Stop
-│   │   ├── teleoperation/ui_interface.py ← Buttons + Bildschirm-Joystick
-│   │   └── utils/                       ← IK-Solver, Joint-Namen, common
-│   ├── CHEATS.md                ← Befehls-Referenz (Topics, Tuning-Parameter)
-│   └── TESTING_SIM.md           ← Test-Ablauf
-└── unitree_mujoco/              ← MuJoCo-Sim (Unitree, modifiziert)
-    └── simulate_python/
-        ├── unitree_mujoco.py            ← Sim-Loop + Viewer
-        ├── unitree_sdk2py_bridge.py     ← ★ DDS ↔ MuJoCo, Befehls-Merge
-        └── config.py                    ← ROBOT, Domain, HOLD_BASE_MODE, dt
+├── g1pilot/                     ROS-2-Package + Docker/Compose/Makefile (Hauptprojekt)
+│   ├── docs/                    vollständige Dokumentation
+│   ├── g1pilot/                 Node-Quellcode (state, manipulation, navigation, teleoperation, utils)
+│   ├── launch/                  ROS-2-Launchdateien
+│   ├── policies/g1_wholebody/   RL-Lauf-Policy (ONNX)
+│   └── docker/, docker-compose.yml
+├── unitree_mujoco/               MuJoCo-Simulation (Unitree, angepasst)
+├── unitree_ros2/                 Unitree-ROS-2-Abhängigkeiten
+└── unitree_sdk2_python/          Unitree-SDK (Python-Bindings)
 ```
 
-`unitree_ros2/` und `unitree_sdk2_python/` sind die Unitree-Abhängigkeiten.
-
----
-
-## Konfiguration
-
-<details>
-<summary>Wichtige Schalter</summary>
-
-**`unitree_mujoco/simulate_python/config.py`**
-
-| Parameter | Default | Bedeutung |
-|---|---|---|
-| `DOMAIN_ID` / `INTERFACE` | `1` / `lo` | DDS-Domain & Interface (muss zum Stack passen) |
-| `SIMULATE_DT` | `0.001` | Physik-Schritt (1 kHz); Loco-Regelrate 50 Hz (Decimation 20) |
-| `HOLD_BASE_MODE` | `weld` (env) | `weld` = Basis fix (Arm-only); `off` = Basis frei (Loco regelt Beine) |
-| `USE_JOYSTICK` | `0` | **muss 0 sein**, wenn kein Gamepad im Container hängt |
-| `PUSH_UDP_PORT` | `47900` | Port für den Stoß-Test (`/g1pilot/push`) |
-
-**Env-Variablen (`docker-compose.sim.yaml`)**
-
-| Variable | Wert | Zweck |
-|---|---|---|
-| `G1_SIM_MODE` | `true` | aktiviert den Sim-Pfad (DDS Domain 1 / `lo`) |
-| `ROS_DOMAIN_ID` / `UNITREE_DOMAIN_ID` | `0` / `1` | ROS-Graph bzw. Unitree-DDS getrennt |
-| `USE_RVIZ` | `false` | RViz optional dazuschalten |
-</details>
-
----
-
-## Sim ↔ Real
-
-Derselbe Code, anderes Verhalten — gesteuert über `G1_SIM_MODE`:
-
-```python
-sim = os.environ.get('G1_SIM_MODE', 'false').lower() == 'true'
-domain, iface = (int(os.environ.get('UNITREE_DOMAIN_ID', 1)), 'lo') if sim \
-                else (0, os.environ.get('INTERFACE', 'eth0'))
-ChannelFactoryInitialize(domain, iface)
-```
-
-| Aspekt | Simulation | Echter Roboter |
-|---|---|---|
-| Start | `make sim` | `make real ROBOT_INTERFACE=<eth>` |
-| Compose | `docker-compose.sim.yaml` | `docker-compose.real.yaml` |
-| Launch | `bringup_sim.launch.py` | `bringup_launcher.launch.py` |
-| DDS-Interface | `lo` | Ethernet zum Roboter |
-| Locomotion | `loco_sim` (Sim-Stellvertreter) | Unitree-Onboard (`loco_client`, `use_robot=true`) |
-| LiDAR / SLAM | aus | Livox + MOLA an |
-
-> ⚠️ **Vor jedem Real-Start:** E-Stop erreichbar, ≥ 2 m Freifläche, erst in Sim
-> validieren, Arm-Befehle klein anfangen, Drehmoment-Limits beachten. Abhak-
-> Checkliste: [`g1pilot/PREFLIGHT.md`](g1pilot/PREFLIGHT.md), Runbook:
-> [`g1pilot/REAL_TESTING.md`](g1pilot/REAL_TESTING.md).
-
----
+Das Repository ist eigenständig (keine Git-Submodule) — alle Abhängigkeiten
+liegen mit im Baum.
 
 ## Bekannte Einschränkungen
 
-- **`loco_sim` ist sim-only.** Es bildet das Verhalten des Onboard-Reglers nach (u. a.
-  mithilfe sim-interner Größen wie Basis-Geschwindigkeit/Fußkontakt) und ist **nicht**
-  für den Realeinsatz gedacht — dort läuft Unitrees Onboard-Loco.
-- **Walking-Policy** ist die kanonische `unitree_rl_gym`-G1-Policy (velocity-getaktet,
-  ohne explizites Stand-Verhalten); der driftfreie Stand kommt vom modellbasierten PD.
-- **`USE_JOYSTICK=0`** zwingend ohne Gamepad, sonst stirbt der Sim-Thread.
+- Der Simulations-Lauf-Regler (`loco_sim`) ist ein reiner Sim-Stellvertreter
+  für den Onboard-Regler des echten G1 und nicht für den Realeinsatz gedacht
+  — Details in [g1pilot/docs/31_loco_technik.md](g1pilot/docs/31_loco_technik.md).
+- Autonome Navigation hat keine Live-Perzeption; Hindernisvermeidung gilt
+  nur für die beim Start geladene Umgebung.
 
----
+## Lizenz
 
-## Weiterführende Doku
-
-- [`g1pilot/CHEATS.md`](g1pilot/CHEATS.md) — alle Steuer-Topics + Live-Tuning-Parameter
-- [`g1pilot/TESTING_SIM.md`](g1pilot/TESTING_SIM.md) — Test-Ablauf
-- [`g1pilot/NAVIGATION.md`](g1pilot/NAVIGATION.md) — autonome Punkt-zu-Punkt-Navigation (Start, Bedienung, Aufbau)
-- [`g1pilot/PREFLIGHT.md`](g1pilot/PREFLIGHT.md) — Abnahme-Checkliste erster Real-Stand/-Gang
-- [`g1pilot/REAL_TESTING.md`](g1pilot/REAL_TESTING.md) — Hardware-Runbook
+Siehe [g1pilot/LICENSE](g1pilot/LICENSE).

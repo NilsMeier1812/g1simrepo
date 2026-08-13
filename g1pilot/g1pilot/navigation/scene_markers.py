@@ -11,7 +11,7 @@ abonnieren, statt Szenen-Daten mehrfach zu parsen/uebertragen.
 Kontrakt pro Marker:
   - ns    = NS_OBSTACLE oder NS_GRASP                  (Hindernis vs. Greif-
             Objekt -- steuert im IK-Solver die Kollisions-Ausnahme, siehe
-            g1pilot/SCENE_BRIDGE.md Abschnitt 6)
+            g1pilot/docs/11_arm_manipulation_technik.md (Umgebungs-Kollisionsgate))
   - id    = stable_id(name)                            (bleibt ueber Ticks
             stabil, damit RViz Marker nicht staendig neu anlegt)
   - text  = encode_text(name, aabb_half) / decode_text(...)  (wiederverwendetes
@@ -162,7 +162,7 @@ def footprint_xy(marker):
 
 def world_xy_half_extent(quat_wxyz, local_half):
     """Welt-achsenparallele XY-Halbextents einer (evtl. gedrehten) lokalen Box
-    -- konservative AABB-Naeherung (siehe g1pilot/SCENE_BRIDGE.md, Mesh-
+    -- konservative AABB-Naeherung (siehe g1pilot/docs/51_navigation_technik.md, Mesh-
     Handling: 'Bounding-Box statt exaktem Konvex-Huelle-Fussabdruck')."""
     hx, hy, hz = local_half
     xs = []

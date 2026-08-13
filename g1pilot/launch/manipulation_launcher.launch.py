@@ -31,11 +31,11 @@ def generate_launch_description():
         # Selbstkollisions-Gate (kommandierte Pose wird vor dem Senden geprueft).
         DeclareLaunchArgument("self_collision_gate", default_value="true"),
         # Umgebungs-Kollisions-Gate (Hindernisse/Greif-Objekte aus /scene_markers,
-        # siehe SCENE_BRIDGE.md Abschnitt 6). Eigener Schalter, unabhaengig vom
+        # siehe g1pilot/docs/11_arm_manipulation_technik.md (Umgebungs-Kollisionsgate)). Eigener Schalter, unabhaengig vom
         # Selbstkollisions-Gate oben.
         DeclareLaunchArgument("environment_collision_gate", default_value="true"),
         # Toleranz [rad] fuer die geplante Bewegung (Positionsspeicher, siehe
-        # SCENE_BRIDGE.md Abschnitt 9), ab der ein Wegpunkt als erreicht gilt.
+        # g1pilot/docs/11_arm_manipulation_technik.md (Positionsspeicher)), ab der ein Wegpunkt als erreicht gilt.
         DeclareLaunchArgument("planned_motion_tolerance", default_value="0.02"),
         # PD-Gains des arm_controller. Defaults = Sim-Tuning (MuJoCo braucht
         # hohe Daempfung); bringup_real ueberschreibt mit den Unitree-
@@ -56,7 +56,7 @@ def generate_launch_description():
         DeclareLaunchArgument("marker_publish_default", default_value="true"),
         # Leader-Follower: Marker folgt der Hand im Idle (per Streamdeck/Topic schaltbar).
         DeclareLaunchArgument("marker_follow_ee", default_value="true"),
-        # Live-Pose-Schnittstelle (siehe ARM_API.md): HTTP-JSON-Bruecke, damit
+        # Live-Pose-Schnittstelle (siehe g1pilot/docs/21_arm_api_technik.md): HTTP-JSON-Bruecke, damit
         # fremde Projekte OHNE ROS Zielposen einspielen koennen. Bind bewusst auf
         # 127.0.0.1 -- der Container laeuft mit network_mode: host, ein Prozess
         # auf dem Host erreicht die API also ueber localhost, das Netz nicht.

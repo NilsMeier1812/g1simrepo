@@ -179,7 +179,7 @@ if [ "$G1_MODE" = "real" ]; then
   echo -e "   ${DIM}Kein Auto-Start: Der Roboter bewegt sich erst nach STREAMDECK-${R}"
   echo -e "   ${DIM}Kommandos (START -> START BALANCING -> ...).${R}"
   echo -e "   ${Y}E-STOP (Streamdeck) = Damp = Roboter sackt ZUSAMMEN (sichern!).${R}"
-  echo -e "   ${DIM}Checkliste vor dem ersten Lauf: g1pilot/REAL_TESTING.md${R}"
+  echo -e "   ${DIM}Checkliste vor dem ersten Lauf: g1pilot/docs/70_echtroboter_anleitung.md${R}"
   echo
   if [ "$ASSUME_YES" = "1" ]; then
     if [ "${G1_REAL_CONFIRM:-0}" != "1" ]; then
@@ -255,7 +255,7 @@ else
 
   # ── 2c) Navigation (g1pilot-Ansatz) mitstarten ───────────────────────
   ask_menu "2c) Navigation mitstarten? (dijkstra_planner + nav2point + Sim-Glue)" 2 "${G1_ENABLE_NAV:-}" \
-    "Ja  — Nav-Stack an (Ziel per RViz/CLI; siehe NAVIGATION.md)|1" \
+    "Ja  — Nav-Stack an (Ziel per RViz/CLI; siehe g1pilot/docs/50_navigation_anleitung.md)|1" \
     "Nein — ohne Navigation (nur Teleop/Loco)|0"
   export G1_ENABLE_NAV="$REPLY_VALUE"
 

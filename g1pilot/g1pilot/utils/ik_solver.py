@@ -360,7 +360,7 @@ class G1IKSolver:
         Umgebungs-Objekt bringt (hard=True: echte Durchdringung, margin=0;
         hard=False: Sicherheitsmarge collision_margin).
 
-        ACM (Allowed-Collision, siehe g1pilot/SCENE_BRIDGE.md Abschnitt 6):
+        ACM (Allowed-Collision, siehe g1pilot/docs/11_arm_manipulation_technik.md (Umgebungs-Kollisionsgate)):
         fuer Greif-Objekte (cls='grasp') wird NUR die Hand-TCP-Kombination
         ausgenommen (die Hand darf ans Greifziel heran) -- der Ellbogen bleibt
         gegen JEDES Objekt (auch Greif-Objekte) geprueft, und Hindernisse
