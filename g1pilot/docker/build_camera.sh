@@ -1,1 +1,0 @@
-docker build -t g1pilot_camera -f camera.Dockerfile .
