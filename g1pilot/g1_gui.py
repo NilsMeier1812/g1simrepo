@@ -58,13 +58,28 @@ LAUNCH_SH = SCENE_DIR / "launch.sh"
 SETUP_SH = SCENE_DIR / "setup.sh"
 SCENE_VENV = SCENE_DIR / ".venv" / "bin" / "python"
 
-# Dokumente, die aus dem Menue heraus geoeffnet werden koennen.
+# Dokumente, die aus dem Menue heraus geoeffnet werden koennen. Vollstaendige
+# Uebersicht: docs/README.md. Jedes Thema hat eine Anleitung (Anwender) und
+# ein Technik-Dokument (Entwickler) -- siehe g1pilot/docs/.
+DOCS_DIR = HERE / "docs"
 DOCS = [
+    ("Dokumentation — Uebersicht", DOCS_DIR / "README.md"),
     ("README (G1Pilot)", HERE / "README.md"),
-    ("Sim testen", HERE / "TESTING_SIM.md"),
-    ("Realer Roboter — Checkliste", HERE / "REAL_TESTING.md"),
-    ("Navigation", HERE / "NAVIGATION.md"),
-    ("Preflight", HERE / "PREFLIGHT.md"),
+    ("Installation & Ersteinrichtung", DOCS_DIR / "01_installation.md"),
+    ("Architektur (Entwickler)", DOCS_DIR / "02_architektur.md"),
+    ("Arm-Manipulation — Anleitung", DOCS_DIR / "10_arm_manipulation_anleitung.md"),
+    ("Arm-Manipulation — Technik", DOCS_DIR / "11_arm_manipulation_technik.md"),
+    ("Arm-API — Anleitung", DOCS_DIR / "20_arm_api_anleitung.md"),
+    ("Arm-API — Technik", DOCS_DIR / "21_arm_api_technik.md"),
+    ("Locomotion — Anleitung", DOCS_DIR / "30_loco_anleitung.md"),
+    ("Locomotion — Technik", DOCS_DIR / "31_loco_technik.md"),
+    ("Teleoperation — Anleitung", DOCS_DIR / "40_teleoperation_anleitung.md"),
+    ("Teleoperation — Technik", DOCS_DIR / "41_teleoperation_technik.md"),
+    ("Navigation — Anleitung", DOCS_DIR / "50_navigation_anleitung.md"),
+    ("Navigation — Technik", DOCS_DIR / "51_navigation_technik.md"),
+    ("Inspire-FTP-Haende — Anleitung", DOCS_DIR / "60_inspire_haende_anleitung.md"),
+    ("Inspire-FTP-Haende — Technik", DOCS_DIR / "61_inspire_haende_technik.md"),
+    ("Echter Roboter — Sicherheit & Ablauf", DOCS_DIR / "70_echtroboter_anleitung.md"),
 ]
 
 # ── Farb-/Stilkonstanten ────────────────────────────────────────────────
