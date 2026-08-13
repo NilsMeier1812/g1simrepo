@@ -87,7 +87,7 @@ To run the docker image in the robot with the following command:
 - **create_map**: Dummy node to create a 2D occupancy grid map from the robot's sensors, used for navigation and obstacle avoidance. 
 - **mola_fixed**: Node to interface with the MOLA odometry system, transform the odometry data into g1 frame.
 - **arm_controller**: Node to control the upper body of the robot, providing joint and cartesian control modes for the arms.
-- **arm_api**: HTTP/JSON bridge so *other* projects can inject arm targets that are executed right away — joint angles or a cartesian hand pose (solved by IK here, then planned collision-free). Nothing is stored; the same safety gates as the Streamdeck apply. Bound to `127.0.0.1:8770` by default. Reference: [`g1pilot/ARM_API.md`](g1pilot/ARM_API.md); step-by-step guide + ready-made CLI: [`g1pilot/ARM_API_HOWTO.md`](g1pilot/ARM_API_HOWTO.md) / [`g1pilot/examples/arm_api/arm_cli.py`](g1pilot/examples/arm_api/arm_cli.py).
+- **arm_api**: HTTP/JSON bridge so *other* projects can inject arm targets that are executed right away — joint angles or a cartesian hand pose (solved by IK here, then planned collision-free). Nothing is stored; the same safety gates as the Streamdeck apply. Bound to `127.0.0.1:8770` by default. Reference: [`g1pilot/ARM_API.md`](g1pilot/ARM_API.md); one-page cheat sheet: [`g1pilot/ARM_API_REFCARD.md`](g1pilot/ARM_API_REFCARD.md); step-by-step guide + ready-made CLI: [`g1pilot/ARM_API_HOWTO.md`](g1pilot/ARM_API_HOWTO.md) / [`g1pilot/examples/arm_api/arm_cli.py`](g1pilot/examples/arm_api/arm_cli.py).
 - **ui_interface**: Node to provide a user interface to control the main functionalities of the robot.
 ## Usage
 
