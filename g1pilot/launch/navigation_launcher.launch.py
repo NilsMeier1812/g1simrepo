@@ -81,7 +81,7 @@ def generate_launch_description():
 
         # Umgebungs-Objekte aus der MuJoCo-Sim (Hindernisse + Greif-Objekte)
         # -> /scene_markers. Quelle fuer create_map (/map) UND den IK-Solver
-        # (Umgebungs-Kollision, siehe arm_controller.py). Siehe SCENE_BRIDGE.md.
+        # (Umgebungs-Kollision, siehe arm_controller.py). Siehe g1pilot/docs/51_navigation_technik.md.
         Node(
             package='g1pilot',
             executable='scene_bridge',

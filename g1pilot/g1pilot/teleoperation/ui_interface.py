@@ -289,7 +289,7 @@ class StreamDeck(Node):
         self.pub_push = self.create_publisher(Bool, '/g1pilot/push', 10)
         self.pub_grasp_box = self.create_publisher(Bool, '/g1pilot/grasp_box', 10)
         self.pub_catch_falls = self.create_publisher(Bool, '/g1pilot/catch_falls', 10)
-        # Positionsspeicher (plan-execute), siehe g1pilot/SCENE_BRIDGE.md Abschnitt 9.
+        # Positionsspeicher (plan-execute), siehe g1pilot/docs/11_arm_manipulation_technik.md (Positionsspeicher).
         self.pub_pose_save = self.create_publisher(String, '/g1pilot/pose_store/save', 10)
         self.pub_pose_goto = self.create_publisher(String, '/g1pilot/pose_store/goto', 10)
         self.pub_pose_cancel = self.create_publisher(Bool, '/g1pilot/pose_store/cancel', 10)
@@ -378,7 +378,7 @@ class ButtonGUI(QWidget):
             # die Bahn wird bei ANFAHREN jedes Mal neu geplant (arm_planner.py,
             # kollisionsfrei um Hindernisse). ABBRECHEN bricht eine laufende
             # geplante Bewegung ab (dasselbe passiert automatisch, sobald ein
-            # Marker angefasst wird -- siehe SCENE_BRIDGE.md Abschnitt 8).
+            # Marker angefasst wird -- siehe g1pilot/docs/11_arm_manipulation_technik.md (Mode-Mux Marker vs. Positionsspeicher)).
             (3, 0): ("POSE\nSPEICHERN", self._pose_save),
             (3, 1): ("POSE\nANFAHREN", self._pose_goto),
             (3, 2): ("POSE\nABBRECHEN", self._pose_cancel),

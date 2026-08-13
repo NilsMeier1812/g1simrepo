@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-arm_command.py — Wire-Format der Live-Pose-Schnittstelle (siehe g1pilot/ARM_API.md).
+arm_command.py — Wire-Format der Live-Pose-Schnittstelle (siehe g1pilot/docs/21_arm_api_technik.md).
 
 BEWUSST OHNE ROS-/Pinocchio-Import: hier steckt nur das Parsen und Validieren
 der eingespielten Kommandos. Dadurch ist das Format (a) an EINER Stelle
@@ -38,7 +38,7 @@ TYPE_JOINTS = "joints"
 TYPE_POSE = "pose"
 COMMAND_TYPES = (TYPE_JOINTS, TYPE_POSE)
 
-# Status-Zustaende auf /g1pilot/arm_command/status (ARM_API.md dokumentiert sie).
+# Status-Zustaende auf /g1pilot/arm_command/status (g1pilot/docs/21_arm_api_technik.md dokumentiert sie).
 ST_ACCEPTED = "accepted"     # angenommen, Planung laeuft
 ST_REJECTED = "rejected"     # abgelehnt (Format, Limits, Arme nicht bereit) -- Endzustand
 ST_EXECUTING = "executing"   # Bahn wird abgefahren

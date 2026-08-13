@@ -756,7 +756,7 @@ class RealFrame(tk.Frame):
         tk.Label(gate,
                  text=("Kein Auto-Start: der Roboter bewegt sich erst nach Streamdeck-\n"
                        "Kommandos. E-STOP = Damp = Roboter sackt ZUSAMMEN (sichern!).\n"
-                       "Checkliste vorher: g1pilot/REAL_TESTING.md"),
+                       "Checkliste vorher: g1pilot/docs/70_echtroboter_anleitung.md"),
                  bg="#3a2326", fg=FG, justify="left",
                  font=("TkDefaultFont", 9)).pack(anchor="w", padx=12, pady=(2, 6))
         tk.Checkbutton(gate,

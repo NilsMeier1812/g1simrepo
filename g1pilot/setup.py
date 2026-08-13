@@ -79,7 +79,7 @@ setup(
             'arm_controller = g1pilot.manipulation.arm_controller:main',
             # Inspire-FTP-Hand: GUI-WebSocket-Bridge + DDS-Backend (rt/inspire/cmd|state).
             'inspire_hand = g1pilot.manipulation.inspire_ftp.bridge:main',
-            # Live-Pose-Schnittstelle: HTTP-JSON -> /g1pilot/arm_command (ARM_API.md).
+            # Live-Pose-Schnittstelle: HTTP-JSON -> /g1pilot/arm_command (g1pilot/docs/21_arm_api_technik.md).
             'arm_api = g1pilot.manipulation.arm_api:main',
 
             # Teleoperation Nodes
@@ -94,7 +94,7 @@ setup(
             'nav2point = g1pilot.navigation.nav2point:main',
             'create_map = g1pilot.navigation.create_map:main',
             # Umgebungs-Objekte (Hindernisse + Greif-Objekte) aus der MuJoCo-Sim
-            # -> /scene_markers (RViz + Nav + IK-Kollision). Siehe SCENE_BRIDGE.md.
+            # -> /scene_markers (RViz + Nav + IK-Kollision). Siehe g1pilot/docs/51_navigation_technik.md.
             'scene_bridge = g1pilot.navigation.scene_bridge:main',
             'mola_fixed = g1pilot.navigation.fix_mola_odometry:main',
             # Sim-Nav-Glue (nur Sim): Ersatz fuer MOLA (Pose aus rt/sportmodestate)
@@ -105,7 +105,7 @@ setup(
             # Diagnostics / sim tools
             'sim_dds_check = g1pilot.tools.sim_dds_check:main',
             # Alias: dasselbe Tool ist mode-agnostisch (resolve_dds) und dient
-            # auf real als erster Verbindungstest zum G1 (s. REAL_TESTING.md):
+            # auf real als erster Verbindungstest zum G1 (s. g1pilot/docs/70_echtroboter_anleitung.md):
             #   G1_SIM_MODE=false ros2 run g1pilot dds_check --interface <NIC>
             'dds_check = g1pilot.tools.sim_dds_check:main',
             'sim_arm_wiggle = g1pilot.tools.sim_arm_wiggle:main',

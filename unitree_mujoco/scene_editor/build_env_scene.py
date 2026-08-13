@@ -19,7 +19,7 @@ Dieses Skript erzeugt die kombinierte Szene  unitree_robots/g1/scene_env_<name>.
 umgerechnet, damit sie auf dem Host UND im read-only gemounteten Docker-Container
 stimmen.
 
-Hindernis vs. Greif-Objekt (fuer Nav/IK, siehe g1pilot/SCENE_BRIDGE.md):
+Hindernis vs. Greif-Objekt (fuer Nav/IK, siehe g1pilot/docs/51_navigation_technik.md):
 Klassifikation per Namenskonvention -- ein Objekt-Name, der mit "grasp_"
 beginnt, wird HIER automatisch von einem statischen <geom> in einen FREIEN
 Koerper umgewandelt (<body><freejoint/><geom/></body>): nur so kann MuJoCo es

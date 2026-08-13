@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 arm_planner.py — Wegplaner im 7-DOF-Gelenkraum EINES Arms, fuer den GEPLANTEN
-Positionsspeicher-Modus (siehe g1pilot/SCENE_BRIDGE.md Abschnitt 9:
+Positionsspeicher-Modus (siehe g1pilot/docs/11_arm_manipulation_technik.md (Positionsspeicher):
 "Positionsspeicher (Oberkoerper/Arm) — plan-execute").
 
 PLANER-BACKEND: OMPL (RRTConnect) mit einem SCHLANKEN, HANDGESCHRIEBENEN

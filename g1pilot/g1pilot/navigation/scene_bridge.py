@@ -6,7 +6,7 @@ Objekte) vom MuJoCo-Container per UDP (siehe unitree_mujoco/simulate_python/
 scene_state_publisher.py, der Sender) und veroeffentlicht sie als
 visualization_msgs/MarkerArray auf /scene_markers.
 
-/scene_markers ist das EINE geteilte Weltmodell (siehe g1pilot/SCENE_BRIDGE.md):
+/scene_markers ist das EINE geteilte Weltmodell (siehe g1pilot/docs/51_navigation_technik.md):
   - RViz zeigt es direkt an (MarkerArray-Display in nav.rviz).
   - create_map.py rastert daraus die 2D-Hindernis-/Nav-Karte (/map).
   - arm_controller.py/ik_solver.py speisen daraus die Umgebungs-Kollision

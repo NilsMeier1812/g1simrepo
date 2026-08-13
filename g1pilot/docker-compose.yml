@@ -49,7 +49,7 @@ services:
       # bisheriges Terrain (scene.xml). Sonst laedt config.py die von start.sh
       # erzeugte kombinierte Szene scene_env_<G1_ENV>.xml. Siehe scene_editor/.
       - G1_ENV=${G1_ENV:-}
-      # Szenen-Bruecke (Umgebungs-Objekte -> RViz/Nav/IK, siehe SCENE_BRIDGE.md):
+      # Szenen-Bruecke (Umgebungs-Objekte -> RViz/Nav/IK, siehe g1pilot/docs/51_navigation_technik.md):
       # UDP-Port MUSS mit g1pilot-sim uebereinstimmen (unten dieselbe Variable).
       - SIM_SCENE_PORT=${SIM_SCENE_PORT:-47902}
     volumes:
@@ -96,9 +96,9 @@ services:
       # robot_state publish_hand_joints:=false (sonst doppelte Finger-/joint_states).
       - G1_INSPIRE_HANDS=${G1_INSPIRE_HANDS:-0}
       # Navigation (g1pilot-Ansatz) in der Sim mitstarten: dijkstra_planner +
-      # nav2point + Sim-Glue (sim_localization, joy_to_cmdvel). Siehe NAVIGATION.md.
+      # nav2point + Sim-Glue (sim_localization, joy_to_cmdvel). Siehe g1pilot/docs/50_navigation_anleitung.md.
       - G1_ENABLE_NAV=${G1_ENABLE_NAV:-0}
-      # Szenen-Bruecke (siehe SCENE_BRIDGE.md): MUSS zum mujoco-sim-Wert oben passen.
+      # Szenen-Bruecke (siehe g1pilot/docs/51_navigation_technik.md): MUSS zum mujoco-sim-Wert oben passen.
       - SIM_SCENE_PORT=${SIM_SCENE_PORT:-47902}
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw

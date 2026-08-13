@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 arm_api.py — HTTP-JSON-Bruecke fuer die Live-Pose-Schnittstelle.
-Vollstaendige Doku inkl. Beispielen: g1pilot/ARM_API.md
+Vollstaendige Doku inkl. Beispielen: g1pilot/docs/21_arm_api_technik.md
 
 WOZU: Ein fremdes Projekt berechnet eine Armposition und will sie ausfuehren
 lassen. Ueber ROS geht das schon (`/g1pilot/arm_command`), aber der Aufrufer
@@ -382,7 +382,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def _describe(self) -> dict:
         return {
             "service": "g1pilot arm API",
-            "doc": "g1pilot/ARM_API.md",
+            "doc": "g1pilot/docs/21_arm_api_technik.md",
             "endpoints": {
                 "POST /arm/joints": "Gelenkwinkel (7 je Arm, rad) direkt anfahren",
                 "POST /arm/pose": "Kartesische Hand-Pose anfahren (IK + Planung)",
@@ -419,7 +419,7 @@ def main():
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     node.get_logger().info(
         f"Arm-API auf http://{host}:{port} (POST /arm/joints | /arm/pose, "
-        f"Doku: ARM_API.md)"
+        f"Doku: g1pilot/docs/21_arm_api_technik.md)"
         + ("" if node.token else "  [ohne Token -- nur fuer lokalen Zugriff]"))
 
     try:

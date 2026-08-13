@@ -6,7 +6,7 @@ create_map — Belegungskarte (/map) aus den echten Umgebungs-Objekten.
 Fruehere Version: ein leerer Dummy (Hindernisse fest im Code auskommentiert,
 siehe Git-Historie) -- der Planer plante faktisch geradeaus. Jetzt rastert
 dieser Node die Objekte, die scene_bridge aus der laufenden MuJoCo-Sim als
-/scene_markers veroeffentlicht (siehe g1pilot/SCENE_BRIDGE.md), in eine
+/scene_markers veroeffentlicht (siehe g1pilot/docs/51_navigation_technik.md), in eine
 2D-Belegungskarte. Das sind GENAU die Objekte, die im Scene-Editor gebaut und
 beim Sim-Start als G1_ENV geladen wurden.
 
