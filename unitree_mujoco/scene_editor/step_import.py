@@ -198,6 +198,23 @@ def available_backends() -> list[str]:
     return [name for name, have, _fn in BACKENDS if have()]
 
 
+def backend_installed() -> bool:
+    """Schnell-Check, ob ueberhaupt ein Backend-Paket im venv liegt.
+
+    Nutzt find_spec statt eines echten Imports - OCP zu importieren dauert
+    spuerbar. Fuer launch.sh/setup.sh, die das bei jedem Start pruefen.
+    """
+    from importlib.util import find_spec
+
+    for mod in ("OCP", "OCC", "gmsh"):
+        try:
+            if find_spec(mod) is not None:
+                return True
+        except (ImportError, ValueError):
+            continue
+    return False
+
+
 def convert_step_to_stl(
     src,
     dest=None,
@@ -280,7 +297,13 @@ def main(argv=None) -> int:
                     help="Feinheit der Tesselierung (Default: %(default)s)")
     ap.add_argument("--force", action="store_true",
                     help="vorhandene STLs neu erzeugen (nur im Ordner-Modus relevant)")
+    ap.add_argument("--check", action="store_true",
+                    help="nur pruefen, ob ein STEP-Backend installiert ist "
+                         "(Exit 0 = ja, 2 = nein); von launch.sh/setup.sh genutzt")
     args = ap.parse_args(argv)
+
+    if args.check:
+        return 0 if backend_installed() else 2
 
     backends = available_backends()
     if not backends:

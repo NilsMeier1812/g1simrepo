@@ -28,8 +28,7 @@ echo ">> Installiere mujoco-scene-editor (+ yourdfpy, + STEP-Import) ... das dau
 
 # STEP-Import pruefen (cadquery-ocp ist ein grosses Wheel; wenn es fehlt, soll
 # das hier auffallen und nicht erst beim Hochladen einer CAD-Datei).
-if "$VENV/bin/python" step_import.py --help >/dev/null 2>&1 \
-   && "$VENV/bin/python" -c "import sys; sys.path.insert(0,'.'); import step_import; sys.exit(0 if step_import.available_backends() else 1)"; then
+if "$VENV/bin/python" step_import.py --check >/dev/null 2>&1; then
   echo ">> STEP/STP-Import ist aktiv."
 else
   echo ">> WARNUNG: STEP-Import inaktiv (cadquery-ocp fehlt)."

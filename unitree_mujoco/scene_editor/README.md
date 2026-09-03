@@ -87,6 +87,15 @@ cd unitree_mujoco/scene_editor
 Das legt ein eigenes `.venv/` an und installiert den Editor dort hinein
 (die Systemumgebung wird nicht angefasst).
 
+> **Der Editor laeuft bewusst auf dem Host, nicht im Docker-Stack.** Docker
+> mountet von hier nur `meshes/` (read-only) und laedt die fertige Szenen-XML.
+> Dieses `setup.sh` ist also das einzige Setup, das der Editor braucht – einmal,
+> danach nie wieder.
+>
+> Fehlt in einem **aelteren** `.venv` ein spaeter dazugekommenes Paket (z.B.
+> `cadquery-ocp` fuer den STEP-Import), installiert `launch.sh` es beim naechsten
+> Start **automatisch nach** – `setup.sh` musst du dafuer nicht erneut aufrufen.
+
 Warum ein eigenes venv? Der Editor zieht `GPUtil` mit, das sich mit dem
 alten System-`setuptools` **nicht bauen** laesst. Im frischen venv mit
 aktuellem `setuptools` klappt es. Ausserdem fehlt dem Editor-Paket die
@@ -361,8 +370,12 @@ Mehr dazu in `meshes/README.md`.
   (installiert es); oder `.venv/bin/pip install yourdfpy`.
 - **Build-Fehler bei `GPUtil` / `install_layout`** – passiert nur bei
   Installation in die Systemumgebung. Immer das venv aus `setup.sh` nutzen.
-- **STEP-Import inaktiv / „Kein STEP-Backend installiert"** –
-  `.venv/bin/pip install cadquery-ocp` (oder `./setup.sh` erneut laufen lassen).
+- **STEP-Import inaktiv / „Kein STEP-Backend installiert"** – `launch.sh` holt
+  das Paket beim naechsten Start automatisch nach (braucht einmalig Internet).
+  Steht es danach immer noch da: **Editor neu starten** (der Ordner
+  „STEP/CAD-Import" wird nur beim Start aufgebaut). Von Hand geht auch
+  `.venv/bin/pip install cadquery-ocp`; pruefen mit
+  `.venv/bin/python step_import.py --check` (Exit 0 = alles da).
 - **STEP-Teil ist 1000x zu gross/klein** – Skalierung: CAD in mm braucht `0.001`
   (Default), CAD in m braucht `1`. Im Ordner „STEP/CAD-Import" umstellen und neu
   konvertieren, oder das Mesh mit „Mesh skalieren" nachziehen.
