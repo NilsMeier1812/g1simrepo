@@ -28,11 +28,17 @@ fehlt - ohne das Paket zu patchen:
    Default ~/temp/ArmarXObjects existiert nicht - dann wirkt der Ordner-Scan,
    als gaebe es keinen Import).
 
-3. STEP/STP-IMPORT (CAD). MuJoCo und der Editor koennen nur Dreiecksnetze,
+6. STEP/STP-IMPORT (CAD). MuJoCo und der Editor koennen nur Dreiecksnetze,
    kein CAD-BRep - darum wird STEP beim Import automatisch nach STL tesseliert
    (siehe step_import.py). Das gilt fuer den Upload-Button, fuer den Ordner
    meshes/ (STEPs dort werden beim Start konvertiert) und ueber den GUI-Ordner
    "STEP/CAD-Import" (Skalierung/Genauigkeit + Sammel-Konvertierung).
+
+7. MESH-TUERSTEHER. Jedes Mesh wird geprueft, BEVOR es in die Szene kommt:
+   ASCII-STL wird binaer neu geschrieben, zu feine CAD-Netze werden beim
+   Konvertieren vergroebert, und was MuJoCo trotzdem nicht laden koennte
+   (> 200000 Dreiecke, fremdes Format), wird gar nicht erst eingefuegt. Sonst
+   steckt ein unladbares Objekt in der Szene und auch das Speichern scheitert.
 
 Aufruf wie die normale CLI:
     python run_editor.py new
@@ -513,12 +519,14 @@ import step_import
 # STEP/STP wird dabei automatisch nach STL konvertiert (MuJoCo und der Editor
 # koennen nur Dreiecksnetze, kein CAD-BRep) - siehe step_import.py.
 # ---------------------------------------------------------------------------
-_MESH_EXTS = ".stl,.obj,.ply,.glb,.gltf"
-_STEP_EXTS = ".step,.stp"
-_UPLOAD_EXTS = ",".join(
-    [e for e in (_MESH_EXTS + "," + _STEP_EXTS).split(",")]
-    + [e.upper() for e in (_MESH_EXTS + "," + _STEP_EXTS).split(",")]
-)
+# Nur, was MuJoCo spaeter auch laden kann - der Editor selbst wuerde mehr
+# rendern (PLY/GLB), beim Export in die Szene faellt das aber durch.
+_MESH_EXTS = ",".join(step_import.MJ_MESH_SUFFIXES)
+_STEP_EXTS = ",".join(step_import.STEP_SUFFIXES)
+# Datei-Dialoge filtern nach exakter Endung - Gross- und Kleinschreibung
+# beide anbieten, CAD-Programme schreiben gern ".STEP".
+_ALL_EXTS = (_MESH_EXTS + "," + _STEP_EXTS).split(",")
+_UPLOAD_EXTS = ",".join(_ALL_EXTS + [e.upper() for e in _ALL_EXTS])
 
 
 # Konvertier-Einstellungen fuer STEP (im GUI-Ordner "STEP/CAD-Import" aenderbar)
@@ -531,16 +539,35 @@ _STEP_OPTS = {
 def _prepare_upload(name: str, content: bytes):
     """Hochgeladene Datei nach meshes/ schreiben, STEP dabei nach STL wandeln.
 
-    Gibt (mesh_pfad, hinweistext) zurueck.
+    Gibt (mesh_pfad, hinweistext) zurueck. Das Ergebnis ist garantiert etwas,
+    das MuJoCo laden kann - sonst RuntimeError mit Klartext. Wichtig, weil ein
+    unbrauchbares Mesh sonst erst tief im Editor beim Kompilieren knallt
+    ("stl_decoder: number of faces should be between 1 and 200000").
     """
     dest = MESHES_DIR / Path(name).name
     dest.write_bytes(content)
-    if not step_import.is_step_file(dest):
-        return dest, f"{dest.name} nach meshes/ gespeichert."
-    stl = step_import.convert_step_to_stl(
-        dest, scale=_STEP_OPTS["scale"], quality=_STEP_OPTS["quality"])
-    return stl, (f"{dest.name} ist eine CAD-Datei und wurde nach {stl.name} "
-                 f"konvertiert (Skalierung {_STEP_OPTS['scale']}).")
+    notes = []
+    if step_import.is_step_file(dest):
+        mesh = step_import.convert_step_to_stl(
+            dest, scale=_STEP_OPTS["scale"], quality=_STEP_OPTS["quality"],
+            notes=notes)
+        info = (f"{dest.name} ist eine CAD-Datei und wurde nach {mesh.name} "
+                f"konvertiert (Skalierung {_STEP_OPTS['scale']}, "
+                f"{step_import.stl_face_count(mesh)} Dreiecke).")
+    else:
+        mesh = dest
+        problem = step_import.make_mujoco_ready(mesh, notes)
+        if problem:
+            raise RuntimeError(
+                f"{problem}\n"
+                "Das Mesh in einem CAD-/Mesh-Programm vereinfachen (Ziel: unter "
+                f"{step_import.MJ_MAX_FACES} Dreiecke) und binaer als STL "
+                "exportieren - oder gleich die STEP-Datei hochladen, die wird "
+                "hier automatisch passend tesseliert.")
+        info = f"{mesh.name} nach meshes/ gespeichert."
+    if notes:
+        info += " " + " ".join(notes)
+    return mesh, info
 
 
 def _install_upload_button(editor) -> None:
@@ -578,6 +605,49 @@ def _install_upload_button(editor) -> None:
             _notify(event, "Import fehlgeschlagen", str(exc))
             return
         _notify(event, "Mesh eingefuegt", f"{info} In die Szene gelegt.")
+
+
+def _broadcast(editor, title, body) -> None:
+    """Meldung an alle offenen Browser-Tabs (fuer Stellen ohne GUI-Event)."""
+    try:
+        for client in editor.layout.server.get_clients().values():
+            client.add_notification(title=title, body=body, loading=False)
+    except Exception:
+        pass
+
+
+def _guard_create_mesh(editor) -> None:
+    """Kein Mesh in die Szene lassen, das MuJoCo nicht laden kann.
+
+    Alle Wege, ein Mesh einzufuegen (Upload-Knopf, "Add Assets from File" ->
+    "Scan assets", Objaverse), laufen durch controller.create_mesh(). Das legt
+    das Blueprint erst in den Szenen-Zustand und rendert es dann - fliegt beim
+    Rendern ein Fehler ("stl_decoder: number of faces should be between 1 and
+    200000"), steckt das kaputte Objekt schon in der Szene und auch das
+    Speichern geht nicht mehr. Darum wird hier VORHER geprueft (und ASCII-STL
+    gleich repariert).
+    """
+    ctrl = editor.controller
+    orig = ctrl.create_mesh
+
+    def create_mesh(parent_name, mesh_path, *args, **kwargs):
+        notes = []
+        try:
+            problem = step_import.make_mujoco_ready(Path(mesh_path), notes)
+        except Exception as exc:  # pragma: no cover - Laufzeit
+            problem = f"{Path(mesh_path).name}: Pruefung fehlgeschlagen ({exc})"
+        for note in notes:
+            print(f"[run_editor] {note}")
+        if problem:
+            msg = (f"{problem} Das Objekt wurde NICHT eingefuegt (die Szene "
+                   "bliebe sonst kaputt). Mesh vereinfachen oder die STEP-Datei "
+                   "laden - die wird beim Import automatisch passend tesseliert.")
+            print(f"[run_editor] Mesh abgelehnt: {problem}", file=sys.stderr)
+            _broadcast(editor, "Mesh nicht verwendbar", msg)
+            raise RuntimeError(msg)
+        return orig(parent_name, mesh_path, *args, **kwargs)
+
+    ctrl.create_mesh = create_mesh
 
 
 def _install_mesh_scale_control(editor) -> None:
@@ -686,9 +756,10 @@ def _install_step_controls(editor) -> None:
 
     @btn.on_click
     def _convert_all(event) -> None:
+        notes = []
         try:
             made = step_import.convert_folder(
-                MESHES_DIR, overwrite=True,
+                MESHES_DIR, overwrite=True, notes=notes,
                 scale=_STEP_OPTS["scale"], quality=_STEP_OPTS["quality"])
         except Exception as exc:  # pragma: no cover - Laufzeit
             print(f"[run_editor] STEP-Konvertierung fehlgeschlagen: {exc}",
@@ -699,9 +770,12 @@ def _install_step_controls(editor) -> None:
             _notify(event, "Nichts zu konvertieren",
                     "Keine STEP/STP-Dateien in meshes/ gefunden.")
             return
-        _notify(event, f"{len(made)} STEP konvertiert",
-                ", ".join(p.name for p in made)
+        body = (", ".join(f"{p.name} ({step_import.stl_face_count(p)} Dreiecke)"
+                          for p in made)
                 + " - jetzt unter 'Add Assets from File' -> 'Scan assets'.")
+        if notes:
+            body += "\n" + "\n".join(notes)
+        _notify(event, f"{len(made)} STEP konvertiert", body)
 
 
 def _convert_steps_at_startup() -> None:
@@ -710,16 +784,77 @@ def _convert_steps_at_startup() -> None:
     So findet der eingebaute Ordner-Scan sie sofort, ohne dass man erst einen
     Knopf druecken muss. Bereits konvertierte (STL neuer als STEP) bleiben.
     """
-    if not step_import.available_backends():
-        return
-    try:
-        made = step_import.convert_folder(MESHES_DIR, overwrite=False)
-    except Exception as exc:  # pragma: no cover - Laufzeit
-        print(f"[run_editor] STEP-Vorkonvertierung fehlgeschlagen: {exc}",
+    if step_import.available_backends():
+        notes = []
+        try:
+            made = step_import.convert_folder(MESHES_DIR, overwrite=False, notes=notes)
+        except Exception as exc:  # pragma: no cover - Laufzeit
+            print(f"[run_editor] STEP-Vorkonvertierung fehlgeschlagen: {exc}",
+                  file=sys.stderr)
+            made = []
+        for out in made:
+            print(f"[run_editor] STEP konvertiert -> {out.name} "
+                  f"({step_import.stl_face_count(out)} Dreiecke)")
+        for note in notes:
+            print(f"[run_editor] {note}")
+    _check_meshes_at_startup()
+
+
+def _check_meshes_at_startup() -> None:
+    """Alle STL in meshes/ vorab pruefen (ASCII reparieren, zu grosse melden).
+
+    Der eingebaute Ordner-Scan ("Add Assets from File") bietet blind alles an,
+    was in meshes/ liegt - ein ASCII-STL oder ein Netz mit ueber 200000
+    Dreiecken laesst den Editor dann beim Einfuegen mit
+    "stl_decoder: number of faces ..." abbrechen. Lieber vorher wissen.
+    """
+    for stl in sorted(MESHES_DIR.glob("*.stl")):
+        notes = []
+        try:
+            problem = step_import.make_mujoco_ready(stl, notes)
+        except Exception as exc:  # pragma: no cover - Laufzeit
+            print(f"[run_editor] {stl.name}: Pruefung fehlgeschlagen ({exc})",
+                  file=sys.stderr)
+            continue
+        for note in notes:
+            print(f"[run_editor] {note}")
+        if not problem:
+            continue
+        # Gibt es die CAD-Quelle noch, wird einfach groeber neu tesseliert -
+        # damit repariert sich ein zu feines STL aus einer aelteren Sitzung
+        # beim naechsten Start von allein.
+        if _reconvert_from_step(stl):
+            continue
+        print(f"[run_editor] WARNUNG: {problem}\n"
+              f"             MuJoCo kann '{stl.name}' nicht laden - bitte "
+              "nicht in die Szene einfuegen (Editor bricht sonst ab).",
               file=sys.stderr)
-        return
-    for out in made:
-        print(f"[run_editor] STEP konvertiert -> {out.name}")
+
+
+def _reconvert_from_step(stl: Path) -> bool:
+    """Zu feines/kaputtes STL aus der zugehoerigen STEP-Datei neu bauen."""
+    if not step_import.available_backends():
+        return False
+    for suffix in step_import.STEP_SUFFIXES:
+        for src in (stl.with_suffix(suffix), stl.with_suffix(suffix.upper())):
+            if not src.is_file():
+                continue
+            notes = []
+            try:
+                step_import.convert_step_to_stl(
+                    src, stl, scale=_STEP_OPTS["scale"],
+                    quality=_STEP_OPTS["quality"], notes=notes)
+            except Exception as exc:  # pragma: no cover - Laufzeit
+                print(f"[run_editor] {stl.name}: Neu-Konvertierung aus "
+                      f"{src.name} fehlgeschlagen: {exc}", file=sys.stderr)
+                return False
+            print(f"[run_editor] {stl.name} war fuer MuJoCo unbrauchbar und "
+                  f"wurde aus {src.name} neu erzeugt "
+                  f"({step_import.stl_face_count(stl)} Dreiecke).")
+            for note in notes:
+                print(f"[run_editor] {note}")
+            return True
+    return False
 
 
 _orig_get_scene_editor = _editor_cli.get_scene_editor
@@ -727,6 +862,7 @@ _orig_get_scene_editor = _editor_cli.get_scene_editor
 
 def _get_scene_editor_with_extras(blueprints=None):
     editor = _orig_get_scene_editor(blueprints)
+    _guard_create_mesh(editor)
     _install_save_control(editor)
     _install_rename_control(editor)
     _install_upload_button(editor)

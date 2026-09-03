@@ -62,6 +62,13 @@ from pathlib import Path
 GRASP_PREFIX_RE = re.compile(r"^grasp_", re.IGNORECASE)
 
 HERE = Path(__file__).resolve().parent          # .../unitree_mujoco/scene_editor
+
+# STL-Pruefung/ASCII-Reparatur liegt in step_import.py (haengt selbst an nichts
+# ausser der Standardbibliothek, laeuft also auch unter dem System-python3, mit
+# dem start.sh dieses Skript aufruft).
+sys.path.insert(0, str(HERE))
+import step_import  # noqa: E402
+
 MJ_ROOT = HERE.parent                            # .../unitree_mujoco
 G1_DIR = MJ_ROOT / "unitree_robots" / "g1"
 G1_MESHDIR = G1_DIR / "meshes"                    # meshdir des Robotermodells
@@ -369,60 +376,58 @@ def _make_grasp_body(geom_el, name, pos, quat):
 
 # MuJoCos eigene Grenze fuer die Face-Anzahl in binaeren STL-Dateien (siehe
 # dessen Fehlermeldung "number of faces should be between 1 and 200000").
-_MJ_STL_MAX_FACES = 200000
+_MJ_STL_MAX_FACES = step_import.MJ_MAX_FACES
 
 
 def is_valid_binary_stl(path: Path) -> bool:
     """True, wenn MuJoCo diese Datei als binaere STL laden kann.
 
     MuJoCo lehnt ASCII-STL beim Kompilieren ab ("stl_decoder: ... perhaps this
-    is an ASCII file?"). Binaeres STL hat einen festen Aufbau: 80-Byte-Header +
-    4-Byte-Face-Anzahl + Face-Anzahl*50 Bytes, exakt passend zur Dateigroesse.
-    ASCII-STL (beginnt meist mit "solid") erfuellt das praktisch nie.
+    is an ASCII file?") und ebenso Netze mit mehr als 200000 Dreiecken.
     """
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return False
-    if len(data) < 84:
-        return False
-    ntri = struct.unpack_from("<I", data, 80)[0]
-    if not (1 <= ntri <= _MJ_STL_MAX_FACES):
-        return False
-    return len(data) == 84 + ntri * 50
+    faces = step_import.stl_face_count(path)
+    return faces is not None and 1 <= faces <= _MJ_STL_MAX_FACES
 
 
 def convert_stl_to_binary(path: Path, warnings) -> bool:
-    """Versucht, eine ASCII-/kaputte STL mit trimesh binaer neu zu schreiben.
+    """Versucht, eine ASCII-/kaputte STL binaer neu zu schreiben.
 
     Rueckgabe: True, wenn `path` danach eine gueltige binaere STL ist.
-    trimesh ist eine Abhaengigkeit von mujoco-scene-editor - im Editor-venv
-    also immer da; unter dem blanken System-python3 (start.sh-Aufruf) evtl.
-    nicht, dann bleibt es bei einer klaren Warnung statt eines Absturzes.
+    Erst der eingebaute (abhaengigkeitsfreie) ASCII-Parser, dann - falls
+    vorhanden - trimesh fuer exotischere Faelle. Zu grosse Netze kann keiner
+    von beiden retten; dann gibt es eine Warnung mit klarer Ansage.
     """
+    notes = []
     try:
-        import trimesh
-    except ImportError:
-        warnings.append(
-            f"  ! '{path.name}' ist keine binaere STL-Datei (MuJoCo laedt nur "
-            "binaeres STL) und 'trimesh' fehlt hier zum Reparieren -> Objekt(e) "
-            "damit werden weggelassen. Im Editor einmal speichern behebt das "
-            "automatisch, oder die Datei in Blender/MeshLab als binaeres STL "
-            "neu exportieren.")
-        return False
-    try:
-        mesh = trimesh.load_mesh(str(path), file_type="stl")
-        path.write_bytes(trimesh.exchange.stl.export_stl(mesh))
+        step_import.ascii_stl_to_binary(path)
     except Exception as exc:
-        warnings.append(f"  ! '{path.name}' laesst sich nicht als STL lesen/reparieren "
-                        f"({exc}) -> Objekt(e) damit werden weggelassen.")
+        first_error = exc
+        try:
+            import trimesh
+            mesh = trimesh.load_mesh(str(path), file_type="stl")
+            path.write_bytes(trimesh.exchange.stl.export_stl(mesh))
+        except Exception:
+            warnings.append(f"  ! '{path.name}' laesst sich nicht als STL "
+                            f"lesen/reparieren ({first_error}) -> Objekt(e) damit "
+                            "werden weggelassen.")
+            return False
+    else:
+        notes.append("war eine ASCII-STL -> automatisch binaer neu geschrieben")
+
+    faces = step_import.stl_face_count(path)
+    if faces is not None and faces > _MJ_STL_MAX_FACES:
+        warnings.append(
+            f"  ! '{path.name}' hat {faces} Dreiecke, MuJoCo kann hoechstens "
+            f"{_MJ_STL_MAX_FACES} -> Objekt(e) damit werden weggelassen. "
+            "Mesh vereinfachen oder die STEP-Datei mit Genauigkeit 'coarse' "
+            "neu konvertieren (Editor: Ordner 'STEP/CAD-Import').")
         return False
     if not is_valid_binary_stl(path):
         warnings.append(f"  ! '{path.name}' bleibt nach der Reparatur ungueltig "
                         "-> Objekt(e) damit werden weggelassen.")
         return False
-    warnings.append(f"  i '{path.name}' war eine ASCII-STL (MuJoCo kann nur binaeres STL) "
-                    "-> automatisch binaer neu geschrieben.")
+    warnings.append(f"  i '{path.name}' {', '.join(notes) or 'wurde repariert'} "
+                    "(MuJoCo kann nur binaeres STL).")
     return True
 
 

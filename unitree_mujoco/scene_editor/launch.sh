@@ -20,6 +20,7 @@
 #   ./launch.sh list            vorhandene Umgebungen auflisten
 #   ./launch.sh view-g1         statisches Beispiel scene_g1_playground.xml
 #   ./launch.sh convert [datei] STEP/STP -> STL (ohne Datei: alle in meshes/)
+#   ./launch.sh check-meshes    STLs in meshes/ auf MuJoCo-Tauglichkeit pruefen
 #
 # <name> darf "kueche", "kueche.xml", "scenes/kueche.xml" oder ein absoluter
 # Pfad sein - es wird immer in scenes/ nachgeschaut.
@@ -201,12 +202,13 @@ case "$CMD" in
   with-g1) ENV_FILE=$(need_env "${1:-}") || exit 1; view_with_g1 "$ENV_FILE" ;;
   view-g1) view_scene "$G1_PLAYGROUND" ;;
   convert) ensure_step_backend; exec "$PY" step_import.py "$@" ;;
+  check-meshes) exec "$PY" step_import.py --check-meshes "$@" ;;
   -h|--help|help)
     sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
     ;;
   *)
     echo "Unbekanntes Kommando: $CMD" >&2
-    echo "Benutze: (ohne Argument) | new | edit [name] | prompt \"text\" | view [name] | with-g1 [name] | list | view-g1 | convert [datei]" >&2
+    echo "Benutze: (ohne Argument) | new | edit [name] | prompt \"text\" | view [name] | with-g1 [name] | list | view-g1 | convert [datei] | check-meshes" >&2
     exit 1
     ;;
 esac
