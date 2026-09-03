@@ -4,7 +4,8 @@
 #
 # Zentraler Umgebungs-Ordner:  scene_editor/scenes/
 #   -> Dieselben Umgebungen sind hier UND beim G1-Start (g1pilot/start.sh)
-#      waehlbar. Neue Umgebungen einfach im Editor unter scenes/ speichern.
+#      waehlbar. Neue Umgebungen einfach im Editor speichern (dort wird nur
+#      noch der NAME gefragt, siehe run_editor.py).
 #
 # Ohne Argument -> interaktives Menue: listet alle Umgebungen nummeriert auf;
 # pro Umgebung kannst du: bearbeiten (Editor), allein ansehen, oder MIT dem
@@ -12,15 +13,19 @@
 #
 #   ./launch.sh                 interaktives Menue (empfohlen)
 #   ./launch.sh new             leere Umgebung im Editor starten
-#   ./launch.sh edit <datei>    bestimmte Umgebung im Editor oeffnen
+#   ./launch.sh edit <name>     bestimmte Umgebung im Editor oeffnen
 #   ./launch.sh prompt "text"   Umgebung per Text-Prompt generieren (API-Key)
-#   ./launch.sh view <datei>    Umgebung allein im MuJoCo-Viewer ansehen
-#   ./launch.sh with-g1 <datei> Umgebung + G1 im MuJoCo-Viewer ansehen
+#   ./launch.sh view <name>     Umgebung allein im MuJoCo-Viewer ansehen
+#   ./launch.sh with-g1 <name>  Umgebung + G1 im MuJoCo-Viewer ansehen
+#   ./launch.sh list            vorhandene Umgebungen auflisten
 #   ./launch.sh view-g1         statisches Beispiel scene_g1_playground.xml
 #   ./launch.sh convert [datei] STEP/STP -> STL (ohne Datei: alle in meshes/)
 #
-# Der Editor oeffnet einen lokalen Webserver (http://127.0.0.1:8080).
-# Exportierte Umgebungen landen automatisch in scenes/ (siehe run_editor.py).
+# <name> darf "kueche", "kueche.xml", "scenes/kueche.xml" oder ein absoluter
+# Pfad sein - es wird immer in scenes/ nachgeschaut.
+#
+# Der Editor oeffnet einen lokalen Webserver (http://127.0.0.1:8080; anderer
+# Port via SCENE_EDITOR_PORT=8081).
 # =====================================================================
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -33,10 +38,13 @@ fi
 
 # RoBits-Config persistent halten
 export ROBITS_CONFIG_DIR="${ROBITS_CONFIG_DIR:-$(pwd)/.robits_config}"
+export SCENE_EDITOR_PORT="${SCENE_EDITOR_PORT:-8080}"
 
 PY="$VENV/bin/python"
 SCENES_DIR="scenes"
 G1_PLAYGROUND="../unitree_robots/g1/scene_g1_playground.xml"
+
+mkdir -p "$SCENES_DIR"
 
 # --- Selbstheilung: fehlende Teile im venv nachinstallieren ------------
 # Aeltere venvs (vor dem STEP-Import) haben cadquery-ocp nicht. Statt den
@@ -58,6 +66,38 @@ ensure_step_backend() {
   fi
 }
 
+# --- alle Umgebungen aus dem zentralen Ordner einsammeln -------------
+collect_envs() {
+  ENVS=()
+  local f
+  for f in "$SCENES_DIR"/*.xml; do
+    [[ -e "$f" ]] || continue
+    ENVS+=("$f")
+  done
+}
+
+# --- Umgebungs-Argument aufloesen: name | name.xml | pfad ------------
+resolve_env() {
+  local arg="$1" c
+  for c in "$arg" "$arg.xml" "$SCENES_DIR/$arg" "$SCENES_DIR/$arg.xml" \
+           "$SCENES_DIR/$(basename "$arg")"; do
+    if [[ -f "$c" ]]; then
+      printf '%s' "$c"
+      return 0
+    fi
+  done
+  echo "Umgebung nicht gefunden: $arg" >&2
+  collect_envs
+  if [[ ${#ENVS[@]} -eq 0 ]]; then
+    echo "In $SCENES_DIR/ liegt noch keine Umgebung - mit './launch.sh new' eine anlegen." >&2
+  else
+    echo "Vorhanden in $SCENES_DIR/:" >&2
+    local e
+    for e in "${ENVS[@]}"; do echo "   - $(basename "$e" .xml)" >&2; done
+  fi
+  return 1
+}
+
 edit_scene() { ensure_step_backend; exec "$PY" run_editor.py edit "$1"; }
 new_scene()  { ensure_step_backend; exec "$PY" run_editor.py new; }
 view_scene() { exec "$PY" -m mujoco.viewer --mjcf="$1"; }
@@ -67,20 +107,20 @@ view_with_g1() {
   local env="$1"
   local out
   if ! out=$("$PY" build_env_scene.py --env "$env" --inspire "${G1_INSPIRE_HANDS:-0}"); then
-    echo "Konnte kombinierte Szene nicht erzeugen." >&2; exit 1
+    echo "Konnte kombinierte Szene nicht erzeugen (Meldung oben)." >&2; exit 1
   fi
   echo "Kombiniert: $out"
   exec "$PY" -m mujoco.viewer --mjcf="$out"
 }
 
-# --- alle Umgebungen aus dem zentralen Ordner einsammeln -------------
-collect_envs() {
-  ENVS=()
-  local f
-  for f in "$SCENES_DIR"/*.xml; do
-    [[ -e "$f" ]] || continue
-    ENVS+=("$f")
-  done
+list_envs() {
+  collect_envs
+  if [[ ${#ENVS[@]} -eq 0 ]]; then
+    echo "(noch keine Umgebungen in $SCENES_DIR/)"
+    return 0
+  fi
+  local e
+  for e in "${ENVS[@]}"; do echo "$(basename "$e" .xml)"; done
 }
 
 # --- interaktives Menue ----------------------------------------------
@@ -136,18 +176,37 @@ menu() {
 # --- Dispatch --------------------------------------------------------
 CMD="${1:-menu}"; shift || true
 
+# Fuer die Kommandos mit Umgebungs-Argument: Default = Starter-Umgebung, und
+# der Name wird nachgeschlagen statt blind durchgereicht.
+need_env() {
+  local arg="${1:-$SCENES_DIR/environment_starter.xml}"
+  resolve_env "$arg"
+}
+
 case "$CMD" in
   menu)    menu ;;
-  new)     ensure_step_backend; exec "$PY" run_editor.py new "$@" ;;
-  edit)    edit_scene "${1:-$SCENES_DIR/environment_starter.xml}" ;;
-  prompt)  ensure_step_backend; exec "$PY" run_editor.py prompt "$@" ;;
-  view)    view_scene "${1:-$SCENES_DIR/environment_starter.xml}" ;;
-  with-g1) view_with_g1 "${1:-$SCENES_DIR/environment_starter.xml}" ;;
+  list)    list_envs ;;
+  new)     new_scene ;;
+  edit)    ENV_FILE=$(need_env "${1:-}") || exit 1; edit_scene "$ENV_FILE" ;;
+  prompt)
+    if [[ $# -eq 0 ]]; then
+      echo "Bitte eine Beschreibung angeben, z.B.:" >&2
+      echo "   ./launch.sh prompt \"a kitchen with a table and two boxes\"" >&2
+      exit 1
+    fi
+    ensure_step_backend
+    exec "$PY" run_editor.py prompt "$@"
+    ;;
+  view)    ENV_FILE=$(need_env "${1:-}") || exit 1; view_scene "$ENV_FILE" ;;
+  with-g1) ENV_FILE=$(need_env "${1:-}") || exit 1; view_with_g1 "$ENV_FILE" ;;
   view-g1) view_scene "$G1_PLAYGROUND" ;;
   convert) ensure_step_backend; exec "$PY" step_import.py "$@" ;;
+  -h|--help|help)
+    sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
   *)
     echo "Unbekanntes Kommando: $CMD" >&2
-    echo "Benutze: (ohne Argument) | new | edit [datei] | prompt \"text\" | view [datei] | with-g1 [datei] | view-g1 | convert [datei]" >&2
+    echo "Benutze: (ohne Argument) | new | edit [name] | prompt \"text\" | view [name] | with-g1 [name] | list | view-g1 | convert [datei]" >&2
     exit 1
     ;;
 esac

@@ -13,3 +13,8 @@ MUJOCO_LOG.TXT
 
 # aus meshes/*.step automatisch erzeugte STLs (werden beim Import neu gebaut)
 meshes/sample_bracket.stl
+
+# Automatisch importierte Meshes (Objekte ausserhalb des Repos, die beim
+# Speichern/Kombinieren nach hierher kopiert werden, siehe run_editor.py /
+# build_env_scene.py)
+meshes/imported/
