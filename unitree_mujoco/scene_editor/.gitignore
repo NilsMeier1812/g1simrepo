@@ -14,6 +14,9 @@ MUJOCO_LOG.TXT
 # aus meshes/*.step automatisch erzeugte STLs (werden beim Import neu gebaut)
 meshes/sample_bracket.stl
 
+# Merker fuer STEP-Dateien, aus denen kein MuJoCo-taugliches STL wird
+meshes/.*.unconvertible
+
 # Automatisch importierte Meshes (Objekte ausserhalb des Repos, die beim
 # Speichern/Kombinieren nach hierher kopiert werden, siehe run_editor.py /
 # build_env_scene.py)

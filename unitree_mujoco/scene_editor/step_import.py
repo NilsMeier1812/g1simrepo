@@ -68,9 +68,16 @@ MJ_MAX_FACES = 200_000
 #: rendert per viser), beim Export in die Szene faellt alles andere durch.
 MJ_MESH_SUFFIXES = (".stl", ".obj", ".msh")
 
-#: Faktoren, mit denen die Tesselierung nacheinander vergroebert wird, wenn ein
-#: Bauteil/eine Baugruppe ueber MJ_MAX_FACES landet.
-_COARSEN_STEPS = (1.0, 2.5, 6.0, 15.0, 40.0, 100.0)
+#: Wie oft hoechstens neu tesseliert wird, wenn ein Netz ueber MJ_MAX_FACES
+#: landet. Der Vergroeberungs-Faktor wird dabei aus der gemessenen Face-Zahl
+#: geschaetzt (die Dreiecks-Zahl waechst ~ 1/Abweichung^2), darum reichen
+#: wenige Anlaeufe - jeder kostet bei einer grossen Baugruppe Zeit.
+_MAX_TESSELLATION_TRIES = 4
+
+
+def _log(msg: str) -> None:
+    """Fortschritt melden - Konvertierungen koennen Minuten dauern."""
+    print(f"[step_import] {msg}", flush=True)
 
 
 def is_step_file(path) -> bool:
@@ -211,16 +218,29 @@ def _have_occ() -> bool:
         return False
 
 
-def _convert_with_occ(src: Path, dest: Path, scale: float, quality: str,
-                      coarsen: float = 1.0) -> None:
+#: Zuletzt eingelesene STEP-Geometrie: (Pfad, mtime, scale) -> Shape.
+#: Das Einlesen einer grossen Baugruppe dauert deutlich laenger als das
+#: Vernetzen - beim Vergroebern (mehrere Anlaeufe hintereinander) wuerde das
+#: sonst jedes Mal von vorn passieren. Genau ein Eintrag: es geht um die
+#: Wiederverwendung innerhalb einer Konvertierung, nicht um einen Cache.
+_OCC_SHAPE = {}
+
+
+def _occ_load_shape(src: Path, scale: float):
+    """STEP einlesen und skalieren. -> (Shape, frisch_eingelesen)
+
+    Ein wiederverwendetes Shape traegt noch das Netz des vorigen Anlaufs; der
+    Aufrufer muss es loeschen, sonst behaelt BRepMesh das feinere Netz und die
+    Vergroeberung bleibt wirkungslos.
+    """
     STEPControl = _occ_module("STEPControl")
     IFSelect = _occ_module("IFSelect")
-    BRepMesh = _occ_module("BRepMesh")
-    StlAPI = _occ_module("StlAPI")
-    Bnd = _occ_module("Bnd")
-    BRepBndLib = _occ_module("BRepBndLib")
     gp = _occ_module("gp")
     BRepBuilderAPI = _occ_module("BRepBuilderAPI")
+
+    key = (str(src), src.stat().st_mtime, float(scale))
+    if key in _OCC_SHAPE:
+        return _OCC_SHAPE[key], False
 
     reader = STEPControl.STEPControl_Reader()
     status = reader.ReadFile(str(src))
@@ -240,6 +260,37 @@ def _convert_with_occ(src: Path, dest: Path, scale: float, quality: str,
         trsf = gp.gp_Trsf()
         trsf.SetScale(gp.gp_Pnt(0.0, 0.0, 0.0), float(scale))
         shape = BRepBuilderAPI.BRepBuilderAPI_Transform(shape, trsf, True).Shape()
+
+    _OCC_SHAPE.clear()
+    _OCC_SHAPE[key] = shape
+    return shape, True
+
+
+def _occ_clean_triangulation(shape) -> None:
+    """Vorhandenes Netz von der Geometrie loesen (vor einem neuen Anlauf)."""
+    BRepTools = _occ_module("BRepTools")
+    for cleaner in (
+        getattr(getattr(BRepTools, "BRepTools", None), "Clean_s", None),
+        getattr(BRepTools, "breptools_Clean", None),
+        getattr(getattr(BRepTools, "breptools", None), "Clean", None),
+    ):
+        if cleaner is not None:
+            cleaner(shape)
+            return
+
+
+def _convert_with_occ(src: Path, dest: Path, scale: float, quality: str,
+                      coarsen: float = 1.0) -> None:
+    BRepMesh = _occ_module("BRepMesh")
+    StlAPI = _occ_module("StlAPI")
+    Bnd = _occ_module("Bnd")
+    BRepBndLib = _occ_module("BRepBndLib")
+
+    shape, fresh = _occ_load_shape(src, scale)
+    if not fresh:
+        # Wiederverwendetes Shape: altes Netz weg, sonst bleibt die feinere
+        # Tesselierung des vorigen Anlaufs stehen.
+        _occ_clean_triangulation(shape)
 
     # Lineare Abweichung relativ zur Bauteilgroesse: sonst ist ein fester Wert
     # bei kleinen Teilen zu grob und bei grossen zu fein (Millionen Dreiecke).
@@ -370,8 +421,13 @@ def _convert_within_limits(fn, src: Path, dest: Path, scale: float,
     stehen zu lassen, wird die Tesselierung schrittweise vergroebert und das
     Ergebnis am Ende gemeldet.
     """
+    size_mb = src.stat().st_size / 1e6
+    _log(f"{src.name} ({size_mb:.1f} MB) wird tesseliert - bei grossen "
+         "Baugruppen dauert das ein paar Minuten ...")
+
     last = None
-    for coarsen in _COARSEN_STEPS:
+    coarsen = 1.0
+    for attempt in range(_MAX_TESSELLATION_TRIES):
         fn(src, dest, float(scale), quality, coarsen)
         if not (dest.is_file() and dest.stat().st_size > 0):
             raise RuntimeError("leere Ausgabedatei")
@@ -383,10 +439,17 @@ def _convert_within_limits(fn, src: Path, dest: Path, scale: float,
                     f"{src.name}: Baugruppe war zu fein fuer MuJoCo - "
                     f"Tesselierung um Faktor {coarsen:g} vergroebert "
                     f"({faces} Dreiecke).")
+            _log(f"{src.name} -> {dest.name} ({faces} Dreiecke).")
             return
         last = problem
         if faces is None:      # kein Face-Problem -> Vergroebern hilft nicht
             break
+        # Die Dreiecks-Zahl haengt ~ quadratisch an der zugelassenen Abweichung.
+        # Also direkt auf das noetige Mass springen (mit etwas Sicherheit),
+        # statt sich in festen Stufen heranzutasten.
+        coarsen *= max(1.5, min((faces / MJ_MAX_FACES) ** 0.5 * 1.3, 12.0))
+        _log(f"{src.name}: {faces} Dreiecke - zu fein fuer MuJoCo, neuer "
+             f"Versuch mit Faktor {coarsen:.1f} ...")
     raise RuntimeError(
         f"{last}\n"
         "  Auch die groebste Tesselierung reicht nicht. Moeglichkeiten:\n"
