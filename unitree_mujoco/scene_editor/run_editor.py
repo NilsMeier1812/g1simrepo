@@ -831,14 +831,32 @@ def _check_meshes_at_startup() -> None:
               file=sys.stderr)
 
 
+def _giveup_marker(stl: Path) -> Path:
+    """Merker: aus dieser STEP-Datei kam schon einmal kein brauchbares STL."""
+    return stl.with_name(f".{stl.name}.unconvertible")
+
+
 def _reconvert_from_step(stl: Path) -> bool:
-    """Zu feines/kaputtes STL aus der zugehoerigen STEP-Datei neu bauen."""
+    """Zu feines/kaputtes STL aus der zugehoerigen STEP-Datei neu bauen.
+
+    Bei einer grossen Baugruppe kostet das Minuten. Scheitert es, wird das
+    vermerkt - sonst wuerde bei JEDEM Editor-Start dieselbe aussichtslose
+    Konvertierung neu laufen und das Starten ewig dauern.
+    """
     if not step_import.available_backends():
         return False
     for suffix in step_import.STEP_SUFFIXES:
         for src in (stl.with_suffix(suffix), stl.with_suffix(suffix.upper())):
             if not src.is_file():
                 continue
+            marker = _giveup_marker(stl)
+            stamp = f"{src.stat().st_mtime}"
+            if marker.is_file() and marker.read_text().strip() == stamp:
+                print(f"[run_editor] {stl.name}: aus {src.name} laesst sich "
+                      "kein MuJoCo-taugliches Netz erzeugen (schon versucht). "
+                      f"Merker loeschen zum erneuten Versuch: {marker.name}",
+                      file=sys.stderr)
+                return False
             notes = []
             try:
                 step_import.convert_step_to_stl(
@@ -847,7 +865,12 @@ def _reconvert_from_step(stl: Path) -> bool:
             except Exception as exc:  # pragma: no cover - Laufzeit
                 print(f"[run_editor] {stl.name}: Neu-Konvertierung aus "
                       f"{src.name} fehlgeschlagen: {exc}", file=sys.stderr)
+                try:
+                    marker.write_text(stamp)
+                except OSError:
+                    pass
                 return False
+            marker.unlink(missing_ok=True)
             print(f"[run_editor] {stl.name} war fuer MuJoCo unbrauchbar und "
                   f"wurde aus {src.name} neu erzeugt "
                   f"({step_import.stl_face_count(stl)} Dreiecke).")
