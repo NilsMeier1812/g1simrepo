@@ -202,11 +202,14 @@ Ganz oben im Editor gibt es den Ordner **„Eigene Datei hochladen"** mit dem
 Knopf **„STL/OBJ/STEP waehlen ..."**:
 
 1. Knopf klicken -> es oeffnet sich der **Datei-Dialog deines Systems**.
-2. Beliebige STL/OBJ/PLY/GLB **oder STEP/STP** aus **irgendeinem Ordner**
-   auswaehlen.
+2. STL/OBJ/MSH **oder STEP/STP** aus **irgendeinem Ordner** auswaehlen (mehr
+   Formate kann MuJoCo spaeter nicht laden – PLY/GLB werden darum gar nicht
+   erst angeboten).
 3. Fertig: die Datei wird nach `scene_editor/meshes/` kopiert (STEP wird dabei
-   automatisch nach STL konvertiert) und **sofort in die Szene eingefuegt**
-   (danach wie jedes Objekt per Maus platzierbar).
+   automatisch nach STL konvertiert, ASCII-STL binaer neu geschrieben) und
+   **sofort in die Szene eingefuegt** (danach wie jedes Objekt per Maus
+   platzierbar). Was MuJoCo nicht laden koennte, wird mit Begruendung
+   abgelehnt, statt die Szene kaputtzumachen.
 
 > Dieser Knopf wird von `run_editor.py` ergaenzt (der eingebaute Editor hat
 > nur den Ordner-Scan unten). `launch.sh` startet den Editor immer darueber.
@@ -388,6 +391,7 @@ Mehr dazu in `meshes/README.md`.
 ./launch.sh with-g1 [name]  # Umgebung + G1 im MuJoCo-Viewer ansehen
 ./launch.sh view-g1         # statisches Beispiel scene_g1_playground.xml
 ./launch.sh convert [datei] # STEP/STP -> STL (ohne Datei: alle in meshes/)
+./launch.sh check-meshes    # alle STL in meshes/ auf MuJoCo-Tauglichkeit pruefen
 ```
 
 `[name]` darf `kueche`, `kueche.xml`, `scenes/kueche.xml` oder ein absoluter
@@ -395,8 +399,9 @@ Pfad sein – es wird immer in `scenes/` nachgeschlagen; bei einem Tippfehler
 listet `launch.sh` die vorhandenen Umgebungen auf. Anderer Port fuer den
 Editor: `SCENE_EDITOR_PORT=8081 ./launch.sh edit kueche`.
 
-Nach Aenderungen an der Normalisierung: `python3 test_build_env_scene.py`
-(braucht nur die Standardbibliothek).
+Nach Aenderungen an der Normalisierung: `python3 test_build_env_scene.py`,
+nach Aenderungen am CAD-Import: `python3 test_step_import.py` (beide brauchen
+nur die Standardbibliothek).
 
 ## Bekannte Stolpersteine
 
@@ -433,6 +438,22 @@ Nach Aenderungen an der Normalisierung: `python3 test_build_env_scene.py`
   „STEP/CAD-Import" wird nur beim Start aufgebaut). Von Hand geht auch
   `.venv/bin/pip install cadquery-ocp`; pruefen mit
   `.venv/bin/python step_import.py --check` (Exit 0 = alles da).
+- **`stl_decoder: number of faces should be between 1 and 200000` /
+  „perhaps this is an ASCII file?"** – MuJoCos zwei STL-Grenzen: es laedt **nur
+  binaeres** STL und **hoechstens 200000 Dreiecke**. Beides faengt der Editor
+  inzwischen selbst ab:
+  * ASCII-STL wird beim Import automatisch binaer neu geschrieben.
+  * Beim STEP-Import wird die Tesselierung so lange vergroebert, bis das Netz
+    unter die Grenze passt (steht danach als Hinweis in der Meldung).
+  * Ein Mesh, das trotzdem nicht passt, wird **nicht** in die Szene gelegt
+    (frueher steckte es dann kaputt in der Szene und blockierte das Speichern).
+  * Liegt zu einem unbrauchbaren STL noch die STEP-Datei in `meshes/`, wird es
+    beim naechsten Editor-Start automatisch neu (groeber) erzeugt.
+
+  Bleibt eine grosse Baugruppe uebrig: Genauigkeit im Ordner „STEP/CAD-Import"
+  auf `coarse`, oder die Baugruppe im CAD in einzelne Bauteile aufteilen und
+  einzeln laden (Innenleben/Schrauben weglassen). Bestand pruefen:
+  `./launch.sh check-meshes`.
 - **STEP-Teil ist 1000x zu gross/klein** – Skalierung: CAD in mm braucht `0.001`
   (Default), CAD in m braucht `1`. Im Ordner „STEP/CAD-Import" umstellen und neu
   konvertieren, oder das Mesh mit „Mesh skalieren" nachziehen.

@@ -289,10 +289,8 @@ class TestSTLBehandlung(unittest.TestCase):
         self.assertTrue(bes.is_valid_binary_stl(result))
         self.assertTrue(any("ASCII-STL" in w for w in warnings))
 
-    def test_convert_ohne_trimesh_laesst_objekt_weg_statt_abzustuerzen(self):
-        p = self._mesh_path(b"solid x\nendsolid x\n")
-        warnings = []
-        # trimesh-Importfehler simulieren, ohne das echte Modul zu deinstallieren.
+    def _without_trimesh(self):
+        """trimesh-Importfehler simulieren (ohne das Modul zu deinstallieren)."""
         import builtins
         real_import = builtins.__import__
 
@@ -302,15 +300,41 @@ class TestSTLBehandlung(unittest.TestCase):
             return real_import(name, *a, **k)
 
         builtins.__import__ = blocked
-        try:
-            ok = bes.convert_stl_to_binary(p, warnings)
-        finally:
-            builtins.__import__ = real_import
-        self.assertFalse(ok)
-        self.assertTrue(any("trimesh" in w for w in warnings))
+        self.addCleanup(lambda: setattr(builtins, "__import__", real_import))
+
+    def test_ascii_reparatur_braucht_kein_trimesh(self):
+        ascii_stl = (b"solid test\n facet normal 0 0 1\n outer loop\n"
+                     b"  vertex 0 0 0\n vertex 1 0 0\n vertex 0 1 0\n"
+                     b" endloop\nendfacet\nendsolid test\n")
+        p = self._mesh_path(ascii_stl, name="ascii_plain.stl")
+        self._without_trimesh()
+        warnings = []
+        self.assertTrue(bes.convert_stl_to_binary(p, warnings))
+        self.assertTrue(bes.is_valid_binary_stl(p))
+        self.assertTrue(any("ASCII-STL" in w for w in warnings))
+
+    def test_leere_stl_laesst_objekt_weg_statt_abzustuerzen(self):
+        p = self._mesh_path(b"solid x\nendsolid x\n")
+        self._without_trimesh()
+        warnings = []
+        self.assertFalse(bes.convert_stl_to_binary(p, warnings))
+        self.assertTrue(any(p.name in w for w in warnings))
+
+    def test_zu_viele_faces_werden_gemeldet(self):
+        # Header behauptet mehr Dreiecke als MuJoCo erlaubt, Groesse passt dazu.
+        n = bes._MJ_STL_MAX_FACES + 1
+        p = self._mesh_path(b"\0" * 80 + struct.pack("<I", n) + b"\0" * (n * 50),
+                            name="riesig.stl")
+        self.assertFalse(bes.is_valid_binary_stl(p))
+        warnings = []
+        self.assertFalse(bes.convert_stl_to_binary(p, warnings))
+        self.assertTrue(any("Dreiecke" in w for w in warnings))
 
     def test_fehlerhaftes_mesh_reisst_nicht_die_ganze_umgebung_mit(self):
         bad = self._mesh_path(b"solid x\nendsolid x\n", name="bad.stl")
+        # Das Mesh liegt ausserhalb des Repos -> merge() kopiert es nach
+        # meshes/imported/. Diese Kopie hinterher wieder wegraeumen.
+        self.addCleanup((bes.IMPORTED_MESHES_DIR / bad.name).unlink, True)
         xml = f"""
         <mujoco>
           <asset><mesh name="bad_mesh" file="{bad}"/></asset>
