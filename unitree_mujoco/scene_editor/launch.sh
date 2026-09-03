@@ -17,6 +17,7 @@
 #   ./launch.sh view <datei>    Umgebung allein im MuJoCo-Viewer ansehen
 #   ./launch.sh with-g1 <datei> Umgebung + G1 im MuJoCo-Viewer ansehen
 #   ./launch.sh view-g1         statisches Beispiel scene_g1_playground.xml
+#   ./launch.sh convert [datei] STEP/STP -> STL (ohne Datei: alle in meshes/)
 #
 # Der Editor oeffnet einen lokalen Webserver (http://127.0.0.1:8080).
 # Exportierte Umgebungen landen automatisch in scenes/ (siehe run_editor.py).
@@ -123,9 +124,10 @@ case "$CMD" in
   view)    view_scene "${1:-$SCENES_DIR/environment_starter.xml}" ;;
   with-g1) view_with_g1 "${1:-$SCENES_DIR/environment_starter.xml}" ;;
   view-g1) view_scene "$G1_PLAYGROUND" ;;
+  convert) exec "$PY" step_import.py "$@" ;;
   *)
     echo "Unbekanntes Kommando: $CMD" >&2
-    echo "Benutze: (ohne Argument) | new | edit [datei] | prompt \"text\" | view [datei] | with-g1 [datei] | view-g1" >&2
+    echo "Benutze: (ohne Argument) | new | edit [datei] | prompt \"text\" | view [datei] | with-g1 [datei] | view-g1 | convert [datei]" >&2
     exit 1
     ;;
 esac
