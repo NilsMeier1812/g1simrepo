@@ -1,17 +1,32 @@
 # Meshes
 
-Hier liegen eigene 3D-Objekte (STL/OBJ) fuer die Szenen.
+Hier liegen eigene 3D-Objekte (STL/OBJ) und CAD-Dateien (STEP/STP) fuer die
+Szenen.
 
-- `sample_crate.stl` – 30 cm Wuerfel (Beispiel-Import)
-- `sample_ramp.stl`  – kleine Rampe/Keil (Beispiel-Import)
+- `sample_crate.stl`     – 30 cm Wuerfel (Beispiel-Import)
+- `sample_ramp.stl`      – kleine Rampe/Keil (Beispiel-Import)
+- `sample_bracket.step`  – Winkel-Halterung in mm (Beispiel fuer den CAD-Import;
+  wird beim Editor-Start automatisch zu `sample_bracket.stl`)
 
 ## Import im Editor
 Zwei Wege:
-- **„Eigene Datei hochladen" -> „STL/OBJ waehlen ..."** (oben im Editor):
+- **„Eigene Datei hochladen" -> „STL/OBJ/STEP waehlen ..."** (oben im Editor):
   Datei-Dialog, beliebiger Ordner; die Datei wird hierher kopiert und direkt in
   die Szene eingefuegt.
 - **„Add Assets from File" -> „Scan assets" -> „Add asset"**: durchsucht diesen
   `meshes/`-Ordner (STL hier ablegen).
+
+## STEP/STP (CAD)
+MuJoCo kann **kein STEP** lesen – es braucht ein Dreiecksnetz. STEP-Dateien
+werden darum automatisch nach STL tesseliert:
+
+- beim **Hochladen** im Editor,
+- beim **Editor-Start** fuer alles, was hier im Ordner liegt,
+- oder von Hand: `./launch.sh convert sample_bracket.step`.
+
+Dabei wird per Default mit **0.001** skaliert (CAD in mm -> MuJoCo in m). Ist
+die STEP schon in Metern: `--scale 1` bzw. im Editor-Ordner „STEP/CAD-Import"
+umstellen. Details: `../step_import.py`.
 
 ## Eigene Meshes per XML einbinden
 Alternativ direkt in einer Szene referenzieren:

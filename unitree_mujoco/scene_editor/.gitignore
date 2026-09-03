@@ -10,3 +10,6 @@ __pycache__/
 
 # MuJoCo-Log aus Validierungslaeufen
 MUJOCO_LOG.TXT
+
+# aus meshes/*.step automatisch erzeugte STLs (werden beim Import neu gebaut)
+meshes/sample_bracket.stl

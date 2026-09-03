@@ -15,6 +15,12 @@ Zweck (zwei fest verdrahtete Pfade, damit der Editor out-of-the-box passt):
    asset"). Der eingebaute Default (~/temp/ArmarXObjects) existiert sonst nicht,
    dann ist die Liste leer und es wirkt, als gaebe es keinen Import.
 
+3. STEP/STP-IMPORT (CAD). MuJoCo und der Editor koennen nur Dreiecksnetze,
+   kein CAD-BRep - darum wird STEP beim Import automatisch nach STL tesseliert
+   (siehe step_import.py). Das gilt fuer den Upload-Button, fuer den Ordner
+   meshes/ (STEPs dort werden beim Start konvertiert) und ueber den GUI-Ordner
+   "STEP/CAD-Import" (Skalierung/Genauigkeit + Sammel-Konvertierung).
+
 Aufruf wie die normale CLI:
     python run_editor.py new
     python run_editor.py edit scenes/environment_starter.xml
@@ -50,6 +56,10 @@ import mujoco_scene_editor.cli.editor_cli as _editor_cli
 _editor_cli.DEFAULT_EXPORT_TARGET = DEFAULT_TARGET
 
 
+# STEP-Konverter (STEP/STP -> STL). Liegt neben diesem Skript.
+sys.path.insert(0, str(HERE))
+import step_import
+
 # ---------------------------------------------------------------------------
 # Zusaetzlicher Upload-Button: echter Datei-Dialog des Browsers.
 # Der eingebaute Import ("Add Assets from File") scannt nur einen Ordner. Fuer
@@ -57,18 +67,53 @@ _editor_cli.DEFAULT_EXPORT_TARGET = DEFAULT_TARGET
 # einen zweiten Weg an: ausgewaehlte Datei wird nach meshes/ gespeichert und
 # direkt in die Szene eingefuegt. Umgesetzt ohne Aenderung am Fremdpaket, indem
 # wir die Editor-Fabrik umschliessen.
+#
+# STEP/STP wird dabei automatisch nach STL konvertiert (MuJoCo und der Editor
+# koennen nur Dreiecksnetze, kein CAD-BRep) - siehe step_import.py.
 # ---------------------------------------------------------------------------
-_UPLOAD_EXTS = ".stl,.obj,.ply,.glb,.gltf,.STL,.OBJ,.PLY,.GLB,.GLTF"
+_MESH_EXTS = ".stl,.obj,.ply,.glb,.gltf"
+_STEP_EXTS = ".step,.stp"
+_UPLOAD_EXTS = ",".join(
+    [e for e in (_MESH_EXTS + "," + _STEP_EXTS).split(",")]
+    + [e.upper() for e in (_MESH_EXTS + "," + _STEP_EXTS).split(",")]
+)
+
+
+# Konvertier-Einstellungen fuer STEP (im GUI-Ordner "STEP/CAD-Import" aenderbar)
+_STEP_OPTS = {
+    "scale": step_import.DEFAULT_SCALE,     # CAD ist mm, MuJoCo m
+    "quality": step_import.DEFAULT_QUALITY,
+}
+
+
+def _prepare_upload(name: str, content: bytes):
+    """Hochgeladene Datei nach meshes/ schreiben, STEP dabei nach STL wandeln.
+
+    Gibt (mesh_pfad, hinweistext) zurueck.
+    """
+    dest = MESHES_DIR / Path(name).name
+    dest.write_bytes(content)
+    if not step_import.is_step_file(dest):
+        return dest, f"{dest.name} nach meshes/ gespeichert."
+    stl = step_import.convert_step_to_stl(
+        dest, scale=_STEP_OPTS["scale"], quality=_STEP_OPTS["quality"])
+    return stl, (f"{dest.name} ist eine CAD-Datei und wurde nach {stl.name} "
+                 f"konvertiert (Skalierung {_STEP_OPTS['scale']}).")
 
 
 def _install_upload_button(editor) -> None:
     server = editor.layout.server
+    step_ok = bool(step_import.available_backends())
+    label = "STL/OBJ/STEP waehlen ..." if step_ok else "STL/OBJ waehlen ..."
+    hint = ("Datei aus beliebigem Ordner waehlen; wird nach meshes/ kopiert und "
+            "in die Szene eingefuegt.")
+    if step_ok:
+        hint += " STEP/STP wird automatisch nach STL konvertiert."
     try:
         with server.gui.add_folder("Eigene Datei hochladen", expand_by_default=True):
             up = server.gui.add_upload_button(
-                "STL/OBJ waehlen ...", mime_type=_UPLOAD_EXTS,
-                hint="Datei aus beliebigem Ordner waehlen; wird nach meshes/ "
-                     "kopiert und in die Szene eingefuegt.",
+                label, mime_type=_UPLOAD_EXTS if step_ok else _MESH_EXTS,
+                hint=hint,
             )
     except Exception as exc:  # pragma: no cover - GUI-Aufbau
         print(f"[run_editor] Upload-Button nicht verfuegbar: {exc}", file=sys.stderr)
@@ -79,21 +124,17 @@ def _install_upload_button(editor) -> None:
         f = up.value
         if not f or not f.name:
             return
-        dest = MESHES_DIR / Path(f.name).name
-        try:
-            dest.write_bytes(f.content)
-            editor.controller.create_mesh(editor.get_selected_parent(), dest.resolve())
-        except Exception as exc:  # pragma: no cover - Laufzeit
-            print(f"[run_editor] Upload fehlgeschlagen: {exc}", file=sys.stderr)
+        if step_import.is_step_file(f.name) and not step_ok:
+            _notify(event, "STEP nicht moeglich", step_import.NO_BACKEND_HINT)
             return
         try:
-            event.client.add_notification(
-                title="Mesh eingefuegt",
-                body=f"{dest.name} nach meshes/ gespeichert und in die Szene gelegt.",
-                loading=False,
-            )
-        except Exception:
-            pass
+            mesh, info = _prepare_upload(f.name, f.content)
+            editor.controller.create_mesh(editor.get_selected_parent(), mesh.resolve())
+        except Exception as exc:  # pragma: no cover - Laufzeit
+            print(f"[run_editor] Upload fehlgeschlagen: {exc}", file=sys.stderr)
+            _notify(event, "Import fehlgeschlagen", str(exc))
+            return
+        _notify(event, "Mesh eingefuegt", f"{info} In die Szene gelegt.")
 
 
 def _notify(event, title, body):
@@ -159,6 +200,86 @@ def _install_mesh_scale_control(editor) -> None:
         _notify(event, "Mesh skaliert", f"Faktor {factor} angewendet.")
 
 
+def _install_step_controls(editor) -> None:
+    """Ordner "STEP/CAD-Import": Konvertier-Optionen + Sammel-Konvertierung.
+
+    Der eingebaute Ordner-Scan ("Add Assets from File") kennt nur Mesh-Formate.
+    Damit STEP-Dateien, die einfach nach meshes/ kopiert wurden, dort auftauchen,
+    wandelt dieser Knopf sie alle nach STL - danach findet "Scan assets" sie.
+    """
+    server = editor.layout.server
+    if not step_import.available_backends():
+        try:
+            with server.gui.add_folder("STEP/CAD-Import", expand_by_default=False):
+                server.gui.add_markdown(
+                    "STEP-Import inaktiv - kein Backend installiert.\n\n"
+                    "`.venv/bin/pip install cadquery-ocp`")
+        except Exception:
+            pass
+        return
+
+    try:
+        with server.gui.add_folder("STEP/CAD-Import", expand_by_default=False):
+            scale = server.gui.add_number(
+                "Skalierung", initial_value=float(_STEP_OPTS["scale"]),
+                min=0.000001, max=1000.0, step=0.0001,
+                hint="Beim Konvertieren angewendet. CAD ist meist in mm -> 0.001 "
+                     "ergibt Meter. 1 = Einheiten unveraendert.")
+            quality = server.gui.add_dropdown(
+                "Genauigkeit", options=("coarse", "normal", "fine"),
+                initial_value=str(_STEP_OPTS["quality"]),
+                hint="Feinheit der Tesselierung (fine = mehr Dreiecke).")
+            btn = server.gui.add_button("STEP-Dateien in meshes/ konvertieren")
+    except Exception as exc:  # pragma: no cover - GUI-Aufbau
+        print(f"[run_editor] STEP-Controls nicht verfuegbar: {exc}", file=sys.stderr)
+        return
+
+    @scale.on_update
+    def _sync_scale(_evt) -> None:
+        _STEP_OPTS["scale"] = float(scale.value)
+
+    @quality.on_update
+    def _sync_quality(_evt) -> None:
+        _STEP_OPTS["quality"] = str(quality.value)
+
+    @btn.on_click
+    def _convert_all(event) -> None:
+        try:
+            made = step_import.convert_folder(
+                MESHES_DIR, overwrite=True,
+                scale=_STEP_OPTS["scale"], quality=_STEP_OPTS["quality"])
+        except Exception as exc:  # pragma: no cover - Laufzeit
+            print(f"[run_editor] STEP-Konvertierung fehlgeschlagen: {exc}",
+                  file=sys.stderr)
+            _notify(event, "Konvertierung fehlgeschlagen", str(exc))
+            return
+        if not made:
+            _notify(event, "Nichts zu konvertieren",
+                    "Keine STEP/STP-Dateien in meshes/ gefunden.")
+            return
+        _notify(event, f"{len(made)} STEP konvertiert",
+                ", ".join(p.name for p in made)
+                + " - jetzt unter 'Add Assets from File' -> 'Scan assets'.")
+
+
+def _convert_steps_at_startup() -> None:
+    """Neue STEP-Dateien in meshes/ schon beim Start nach STL wandeln.
+
+    So findet der eingebaute Ordner-Scan sie sofort, ohne dass man erst einen
+    Knopf druecken muss. Bereits konvertierte (STL neuer als STEP) bleiben.
+    """
+    if not step_import.available_backends():
+        return
+    try:
+        made = step_import.convert_folder(MESHES_DIR, overwrite=False)
+    except Exception as exc:  # pragma: no cover - Laufzeit
+        print(f"[run_editor] STEP-Vorkonvertierung fehlgeschlagen: {exc}",
+              file=sys.stderr)
+        return
+    for out in made:
+        print(f"[run_editor] STEP konvertiert -> {out.name}")
+
+
 _orig_get_scene_editor = _editor_cli.get_scene_editor
 
 
@@ -166,6 +287,7 @@ def _get_scene_editor_with_extras(blueprints=None):
     editor = _orig_get_scene_editor(blueprints)
     _install_upload_button(editor)
     _install_mesh_scale_control(editor)
+    _install_step_controls(editor)
     return editor
 
 
@@ -173,4 +295,5 @@ _editor_cli.get_scene_editor = _get_scene_editor_with_extras
 
 
 if __name__ == "__main__":
+    _convert_steps_at_startup()
     _editor_cli.cli()
