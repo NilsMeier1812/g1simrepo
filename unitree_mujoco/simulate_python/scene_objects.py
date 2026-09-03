@@ -208,7 +208,11 @@ def _geom_spec(geom_el, meshes: dict, base_pos, base_quat):
     Pose, das Geom selbst liegt bei "0 0 0"/Identity relativ dazu.
     """
     name = geom_el.get("name") or ""
-    gtype = geom_el.get("type", "box")
+    # MuJoCos Default-Geomtyp ist "sphere" (nicht "box") -- der Scene-Editor
+    # laesst type= bei Kugeln weg. build_env_scene.py schreibt den Typ zwar
+    # inzwischen immer explizit hin; der Default hier muss trotzdem stimmen,
+    # damit von Hand geschriebene Szenen nicht als Wuerfel in RViz landen.
+    gtype = geom_el.get("type") or "sphere"
     rgba = _floats(geom_el.get("rgba"), (0.7, 0.7, 0.7, 1.0))
     attrs = {"contype": geom_el.get("contype"), "conaffinity": geom_el.get("conaffinity")}
     if _is_decorative(attrs):
