@@ -76,6 +76,22 @@ DEFAULT_ASSET_DIR = str(MESHES_DIR)
 EDITOR_PORT = int(os.environ.get("SCENE_EDITOR_PORT", "8080"))
 os.environ.setdefault("_VISER_PORT_OVERRIDE", str(EDITOR_PORT))
 
+# Der Editor bindet seinen Webserver fest an 127.0.0.1 (er darf Dateien
+# schreiben - bewusst nur lokal erreichbar). Im Docker-Container ist 127.0.0.1
+# aber das Container-Innere; dort setzt das Image SCENE_EDITOR_HOST=0.0.0.0,
+# und docker-compose veroeffentlicht den Port trotzdem nur auf 127.0.0.1 des
+# Rechners. Ohne die Variable bleibt alles wie gehabt.
+EDITOR_HOST = os.environ.get("SCENE_EDITOR_HOST", "").strip()
+if EDITOR_HOST:
+    import viser as _viser
+
+    _orig_viser_init = _viser.ViserServer.__init__
+
+    def _viser_init_with_host(self, host="127.0.0.1", *args, **kwargs):
+        _orig_viser_init(self, EDITOR_HOST, *args, **kwargs)
+
+    _viser.ViserServer.__init__ = _viser_init_with_host
+
 # Gemeinsame Helfer mit dem Szenen-Generator (liegt im selben Ordner).
 sys.path.insert(0, str(HERE))
 import build_env_scene as bes  # noqa: E402
@@ -114,6 +130,19 @@ import mujoco_scene_editor.cli.editor_cli as _editor_cli  # noqa: E402
 _editor_cli.DEFAULT_EXPORT_TARGET = DEFAULT_TARGET
 
 import mujoco_scene_editor.scene_editor as _scene_editor_mod  # noqa: E402
+
+# robits meldet beim Einlesen JEDES Meshes pauschal "Not fully implemented
+# yet." - bei einer CAD-Zelle 750 Zeilen, zwischen denen echte Warnungen
+# ("Mesh path does not exist.") untergehen. Nur genau diese Meldung weg.
+import logging  # noqa: E402
+
+
+class _DropMeshImportNoise(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.getMessage() != "Not fully implemented yet."
+
+
+logging.getLogger("robits.sim.converters.mujoco_importer").addFilter(_DropMeshImportNoise())
 
 
 # ---------------------------------------------------------------------------

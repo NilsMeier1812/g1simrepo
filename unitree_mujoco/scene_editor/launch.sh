@@ -33,7 +33,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-VENV=".venv"
+VENV="${SCENE_EDITOR_VENV:-.venv}"   # Docker-Image: /opt/scene_editor_venv
 if [[ ! -x "$VENV/bin/python" ]]; then
   echo "Kein virtualenv gefunden. Bitte zuerst  ./setup.sh  ausfuehren." >&2
   exit 1
@@ -107,7 +107,18 @@ new_scene()  { ensure_cad_backend; exec "$PY" run_editor.py new; }
 
 # CAD-/Mesh-Datei direkt als Umgebung importieren (ohne Editor).
 import_file() { ensure_cad_backend; exec "$PY" cad_import.py "$@"; }
-view_scene() { exec "$PY" -m mujoco.viewer --mjcf="$1"; }
+# Der MuJoCo-Viewer ist ein Desktop-Fenster - im Docker-Container (Editor-
+# Profil) gibt es keins. Dann klar sagen statt mit einem GLFW-Fehler abzubrechen.
+need_display() {
+  if [[ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+    echo "Kein Bildschirm verfuegbar (z.B. im Docker-Container) - der MuJoCo-Viewer" >&2
+    echo "braucht ein Desktop-Fenster. Im Container geht der Editor im Browser;" >&2
+    echo "die Umgebung mit dem G1 dann ueber den Sim-Start (g1pilot/start.sh) ansehen." >&2
+    exit 1
+  fi
+}
+
+view_scene() { need_display; exec "$PY" -m mujoco.viewer --mjcf="$1"; }
 
 # Umgebung + G1 kombinieren und im Viewer ansehen (ohne Docker-Stack).
 view_with_g1() {
@@ -117,6 +128,7 @@ view_with_g1() {
     echo "Konnte kombinierte Szene nicht erzeugen (Meldung oben)." >&2; exit 1
   fi
   echo "Kombiniert: $out"
+  need_display       # Szene ist gebaut + geprueft; nur das Fenster fehlt ggf.
   exec "$PY" -m mujoco.viewer --mjcf="$out"
 }
 

@@ -12,7 +12,10 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 PY="${PYTHON:-python3}"
-VENV=".venv"
+# Ort des venv: Default .venv/ hier im Ordner. Das Docker-Image
+# (g1pilot/docker/Dockerfile.scene_editor) legt es nach /opt, damit es nicht im
+# gemounteten Repo landet.
+VENV="${SCENE_EDITOR_VENV:-.venv}"
 
 echo ">> Erstelle virtualenv in $VENV ..."
 "$PY" -m venv "$VENV"

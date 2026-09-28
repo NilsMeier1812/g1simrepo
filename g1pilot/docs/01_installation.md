@@ -125,6 +125,21 @@ setzen. Docker Desktop statt nativer Engine ist möglich, `network_mode: host`
 ist dort aber nur als (zu aktivierendes) Beta-Feature neuerer Versionen
 verfügbar.
 
+### Nur Umgebungen bauen: Scene Editor mit Docker Desktop
+
+Für den Scene Editor (Umgebungen bauen, CAD/STEP importieren) reicht
+**Docker Desktop** – er braucht weder Host-Networking noch X11, die
+Oberfläche läuft im Browser. In PowerShell im Ordner `g1pilot/`:
+
+```powershell
+docker compose --profile editor build scene-editor         # einmalig, ~5 min
+docker compose --profile editor run --rm --service-ports scene-editor
+# -> Menü von launch.sh; Editor im Browser: http://127.0.0.1:8080
+```
+
+Details (CAD-Dateien importieren, Argumente für `launch.sh`) in
+`unitree_mujoco/scene_editor/README.md`, Abschnitt „Setup unter Windows".
+
 ## Starten im Alltag
 
 Der einfachste Einstieg ist `./start.sh`. Ohne Argumente öffnet sich ein

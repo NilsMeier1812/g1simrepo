@@ -115,6 +115,43 @@ alten System-`setuptools` **nicht bauen** laesst. Im frischen venv mit
 aktuellem `setuptools` klappt es. Ausserdem fehlt dem Editor-Paket die
 Abhaengigkeit `yourdfpy` – die installiert `setup.sh` gleich mit.
 
+### Setup unter Windows (oder ohne passendes Python): Docker
+
+`setup.sh`/`launch.sh` brauchen ein Linux mit Python 3.10–3.12. Unter Windows
+(Docker Desktop genuegt, kein WSL-Ubuntu noetig) laeuft beides in einem
+Container: das Image fuehrt beim Bauen genau `setup.sh` aus, beim Start
+`launch.sh`. Code, `scenes/` und `meshes/` werden live aus dem Repo gemountet
+– gespeicherte Umgebungen landen also ganz normal hier im Ordner.
+
+PowerShell, im Ordner `g1pilot/`:
+
+```powershell
+# einmalig bauen (~5 min, ~4.7 GB); nach Aenderungen an requirements.txt neu
+docker compose --profile editor build scene-editor
+
+# Menue von launch.sh (Editor dann im Browser: http://127.0.0.1:8080)
+docker compose --profile editor run --rm --service-ports scene-editor
+
+# direkt ein launch.sh-Kommando
+docker compose --profile editor run --rm --service-ports scene-editor bash launch.sh edit kueche
+
+# CAD-Datei ohne Editor als Umgebung importieren: Ordner als /import mounten
+$env:SCENE_IMPORT_DIR = "C:\Users\<du>\Documents\CAD"
+docker compose --profile editor run --rm scene-editor bash launch.sh import /import/zelle.stp
+```
+
+Unter Linux/WSL geht dasselbe mit `make editor` bzw.
+`make editor ARGS="import /import/zelle.stp"`.
+
+- Der Editor ist nur auf diesem Rechner erreichbar (Port auf `127.0.0.1`).
+  Anderer Port: `$env:SCENE_EDITOR_PORT = "8081"`.
+- Im Browser geht der Upload-Knopf fuer beliebige Windows-Dateien – `/import`
+  braucht man nur fuer `launch.sh import`.
+- Die Viewer-Kommandos (`view`, `with-g1`) brauchen ein Desktop-Fenster und
+  gehen im Container nicht (`with-g1` baut und prueft die Szene trotzdem).
+- **Git Bash** verbiegt Pfade wie `/import/...` zu Windows-Pfaden – dort
+  vorher `export MSYS_NO_PATHCONV=1` setzen (PowerShell/WSL betrifft das nicht).
+
 > **Erster Start braucht Internet:** Der Editor laedt beim allerersten Mal
 > einmalig den Objaverse-Objektkatalog (Online-3D-Bibliothek) herunter und
 > cached ihn. Danach laeuft er offline.
