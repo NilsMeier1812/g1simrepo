@@ -63,11 +63,13 @@ GRASP_PREFIX_RE = re.compile(r"^grasp_", re.IGNORECASE)
 
 HERE = Path(__file__).resolve().parent          # .../unitree_mujoco/scene_editor
 
-# STL-Pruefung/ASCII-Reparatur liegt in step_import.py (haengt selbst an nichts
-# ausser der Standardbibliothek, laeuft also auch unter dem System-python3, mit
-# dem start.sh dieses Skript aufruft).
+# STL-Pruefung/ASCII-Reparatur (mesh_utils) und die Metadaten aus CAD-Importen
+# (cad_import) haengen beim Import an nichts ausser der Standardbibliothek -
+# laufen also auch unter dem System-python3, mit dem start.sh dieses Skript
+# aufruft.
 sys.path.insert(0, str(HERE))
-import step_import  # noqa: E402
+import cad_import  # noqa: E402
+import mesh_utils  # noqa: E402
 
 MJ_ROOT = HERE.parent                            # .../unitree_mujoco
 G1_DIR = MJ_ROOT / "unitree_robots" / "g1"
@@ -376,17 +378,8 @@ def _make_grasp_body(geom_el, name, pos, quat):
 
 # MuJoCos eigene Grenze fuer die Face-Anzahl in binaeren STL-Dateien (siehe
 # dessen Fehlermeldung "number of faces should be between 1 and 200000").
-_MJ_STL_MAX_FACES = step_import.MJ_MAX_FACES
-
-
-def is_valid_binary_stl(path: Path) -> bool:
-    """True, wenn MuJoCo diese Datei als binaere STL laden kann.
-
-    MuJoCo lehnt ASCII-STL beim Kompilieren ab ("stl_decoder: ... perhaps this
-    is an ASCII file?") und ebenso Netze mit mehr als 200000 Dreiecken.
-    """
-    faces = step_import.stl_face_count(path)
-    return faces is not None and 1 <= faces <= _MJ_STL_MAX_FACES
+_MJ_STL_MAX_FACES = mesh_utils.MJ_MAX_FACES
+is_valid_binary_stl = mesh_utils.is_valid_binary_stl
 
 
 def convert_stl_to_binary(path: Path, warnings) -> bool:
@@ -399,7 +392,7 @@ def convert_stl_to_binary(path: Path, warnings) -> bool:
     """
     notes = []
     try:
-        step_import.ascii_stl_to_binary(path)
+        mesh_utils.ascii_stl_to_binary(path)
     except Exception as exc:
         first_error = exc
         try:
@@ -414,13 +407,13 @@ def convert_stl_to_binary(path: Path, warnings) -> bool:
     else:
         notes.append("war eine ASCII-STL -> automatisch binaer neu geschrieben")
 
-    faces = step_import.stl_face_count(path)
+    faces = mesh_utils.stl_face_count(path)
     if faces is not None and faces > _MJ_STL_MAX_FACES:
         warnings.append(
             f"  ! '{path.name}' hat {faces} Dreiecke, MuJoCo kann hoechstens "
             f"{_MJ_STL_MAX_FACES} -> Objekt(e) damit werden weggelassen. "
-            "Mesh vereinfachen oder die STEP-Datei mit Genauigkeit 'coarse' "
-            "neu konvertieren (Editor: Ordner 'STEP/CAD-Import').")
+            "Die Datei ueber den CAD-Import einlesen, der zerlegt sie: "
+            "./launch.sh import <datei>")
         return False
     if not is_valid_binary_stl(path):
         warnings.append(f"  ! '{path.name}' bleibt nach der Reparatur ungueltig "
@@ -533,6 +526,10 @@ def merge_assets(env_root, asset, env_dir, warnings):
 
 def merge_environment(env_root, asset, wb, env_dir, warnings):
     """Mischt die Objekte der Umgebung normalisiert in die Basis ein."""
+    # Meshes aus CAD-Importen: Farbe, "nur Optik", Kollisions-Stuecke und
+    # inertia="shell" (flache Teile) aus dem Import-Manifest nachtragen, falls
+    # die Umgebung sie nicht selbst setzt (z.B. nach einem Editor-Durchlauf).
+    cad_import.apply_mesh_defaults(env_root, env_dir)
     rename_map, dropped_meshes = merge_assets(env_root, asset, env_dir, warnings)
 
     collected = []

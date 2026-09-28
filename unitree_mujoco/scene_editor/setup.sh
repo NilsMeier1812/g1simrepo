@@ -23,16 +23,16 @@ echo ">> Erstelle virtualenv in $VENV ..."
 echo ">> Aktualisiere pip / setuptools / wheel ..."
 "$VENV/bin/pip" install --upgrade pip setuptools wheel
 
-echo ">> Installiere mujoco-scene-editor (+ yourdfpy, + STEP-Import) ... das dauert einen Moment."
+echo ">> Installiere mujoco-scene-editor (+ yourdfpy, + CAD-Import) ... das dauert einen Moment."
 "$VENV/bin/pip" install -r requirements.txt
 
-# STEP-Import pruefen (cadquery-ocp ist ein grosses Wheel; wenn es fehlt, soll
+# CAD-Import pruefen (cadquery-ocp ist ein grosses Wheel; wenn es fehlt, soll
 # das hier auffallen und nicht erst beim Hochladen einer CAD-Datei).
-if "$VENV/bin/python" step_import.py --check >/dev/null 2>&1; then
-  echo ">> STEP/STP-Import ist aktiv."
+if "$VENV/bin/python" cad_import.py --check >/dev/null 2>&1; then
+  echo ">> CAD-Import (STEP/IGES) ist aktiv."
 else
-  echo ">> WARNUNG: STEP-Import inaktiv (cadquery-ocp fehlt)."
-  echo "   Nachinstallieren:  $VENV/bin/pip install cadquery-ocp"
+  echo ">> WARNUNG: CAD-Import inaktiv (cadquery-ocp fehlt)."
+  echo "   Nachinstallieren:  $VENV/bin/pip install cadquery-ocp coacd"
 fi
 
 # Persistente RoBits-Config (sonst meckert der Editor und nutzt /tmp)

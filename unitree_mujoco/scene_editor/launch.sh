@@ -19,7 +19,9 @@
 #   ./launch.sh with-g1 <name>  Umgebung + G1 im MuJoCo-Viewer ansehen
 #   ./launch.sh list            vorhandene Umgebungen auflisten
 #   ./launch.sh view-g1         statisches Beispiel scene_g1_playground.xml
-#   ./launch.sh convert [datei] STEP/STP -> STL (ohne Datei: alle in meshes/)
+#   ./launch.sh import <datei>  CAD/Mesh (STEP, IGES, STL, OBJ, PLY, GLB, ...) als
+#                               Umgebung importieren -> scenes/<name>.xml
+#                               (Optionen: ./launch.sh import --help)
 #   ./launch.sh check-meshes    STLs in meshes/ auf MuJoCo-Tauglichkeit pruefen
 #
 # <name> darf "kueche", "kueche.xml", "scenes/kueche.xml" oder ein absoluter
@@ -48,19 +50,20 @@ G1_PLAYGROUND="../unitree_robots/g1/scene_g1_playground.xml"
 mkdir -p "$SCENES_DIR"
 
 # --- Selbstheilung: fehlende Teile im venv nachinstallieren ------------
-# Aeltere venvs (vor dem STEP-Import) haben cadquery-ocp nicht. Statt den
-# Nutzer im Editor mit "kein Backend installiert" stehen zu lassen, holen wir
-# es hier einmalig nach. Schlaegt das fehl (kein Internet), laeuft der Editor
-# trotzdem - nur eben ohne STEP.
-ensure_step_backend() {
-  if "$PY" step_import.py --check >/dev/null 2>&1; then
+# Aeltere venvs haben die Pakete fuer den CAD-Import nicht (cadquery-ocp =
+# OpenCascade fuer STEP/IGES, coacd = konvexe Zerlegung konkaver Teile). Statt
+# den Nutzer im Editor mit "kein Backend installiert" stehen zu lassen, holen
+# wir sie hier einmalig nach. Schlaegt das fehl (kein Internet), laeuft der
+# Editor trotzdem - nur eben ohne STEP bzw. mit groeberer Kollision.
+ensure_cad_backend() {
+  if "$PY" cad_import.py --check >/dev/null 2>&1; then
     return 0
   fi
-  echo ">> STEP/CAD-Import fehlt im venv - installiere cadquery-ocp nach"
-  echo "   (einmalig, ~70 MB; danach nie wieder)."
-  "$VENV/bin/pip" install cadquery-ocp || true
-  if "$PY" step_import.py --check >/dev/null 2>&1; then
-    echo ">> STEP-Import ist jetzt aktiv."
+  echo ">> CAD-Import fehlt im venv - installiere cadquery-ocp + coacd nach"
+  echo "   (einmalig, ~80 MB; danach nie wieder)."
+  "$VENV/bin/pip" install cadquery-ocp coacd || true
+  if "$PY" cad_import.py --check >/dev/null 2>&1; then
+    echo ">> CAD-Import ist jetzt aktiv."
   else
     echo ">> WARNUNG: Nachinstallation fehlgeschlagen (kein Internet?)." >&2
     echo "   Der Editor startet trotzdem, kann aber nur STL/OBJ - keine STEP." >&2
@@ -99,8 +102,11 @@ resolve_env() {
   return 1
 }
 
-edit_scene() { ensure_step_backend; exec "$PY" run_editor.py edit "$1"; }
-new_scene()  { ensure_step_backend; exec "$PY" run_editor.py new; }
+edit_scene() { ensure_cad_backend; exec "$PY" run_editor.py edit "$1"; }
+new_scene()  { ensure_cad_backend; exec "$PY" run_editor.py new; }
+
+# CAD-/Mesh-Datei direkt als Umgebung importieren (ohne Editor).
+import_file() { ensure_cad_backend; exec "$PY" cad_import.py "$@"; }
 view_scene() { exec "$PY" -m mujoco.viewer --mjcf="$1"; }
 
 # Umgebung + G1 kombinieren und im Viewer ansehen (ohne Docker-Stack).
@@ -141,14 +147,23 @@ menu() {
     done
   fi
   echo "    n) neue leere Umgebung im Editor"
+  echo "    i) CAD-/Mesh-Datei (STEP, STL, ...) als Umgebung importieren"
   echo "    q) beenden"
   echo "----------------------------------------------------------"
   local sel
-  read -rp "Auswahl (Zahl / n / q): " sel
+  read -rp "Auswahl (Zahl / n / i / q): " sel
 
   case "$sel" in
     q|Q|"") exit 0 ;;
     n|N)    new_scene ;;
+    i|I)
+      local file sq="'"
+      read -rp "Pfad zur Datei: " file
+      # Anfuehrungszeichen weg (Drag & Drop ins Terminal setzt sie oft)
+      file="${file%\"}"; file="${file#\"}"; file="${file%$sq}"; file="${file#$sq}"
+      [[ -n "$file" ]] || exit 0
+      import_file "$file"
+      ;;
     *[!0-9]*) echo "Ungueltige Eingabe." >&2; exit 1 ;;
     *)
       local idx=$((sel - 1))
@@ -195,20 +210,28 @@ case "$CMD" in
       echo "   ./launch.sh prompt \"a kitchen with a table and two boxes\"" >&2
       exit 1
     fi
-    ensure_step_backend
+    ensure_cad_backend
     exec "$PY" run_editor.py prompt "$@"
     ;;
   view)    ENV_FILE=$(need_env "${1:-}") || exit 1; view_scene "$ENV_FILE" ;;
   with-g1) ENV_FILE=$(need_env "${1:-}") || exit 1; view_with_g1 "$ENV_FILE" ;;
   view-g1) view_scene "$G1_PLAYGROUND" ;;
-  convert) ensure_step_backend; exec "$PY" step_import.py "$@" ;;
-  check-meshes) exec "$PY" step_import.py --check-meshes "$@" ;;
+  import|convert)
+    if [[ $# -eq 0 ]]; then
+      echo "Bitte eine Datei angeben, z.B.:" >&2
+      echo "   ./launch.sh import ~/Downloads/zelle.stp" >&2
+      echo "   ./launch.sh import --help     (alle Optionen)" >&2
+      exit 1
+    fi
+    import_file "$@"
+    ;;
+  check-meshes) exec "$PY" mesh_utils.py "$@" ;;
   -h|--help|help)
     sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
     ;;
   *)
     echo "Unbekanntes Kommando: $CMD" >&2
-    echo "Benutze: (ohne Argument) | new | edit [name] | prompt \"text\" | view [name] | with-g1 [name] | list | view-g1 | convert [datei] | check-meshes" >&2
+    echo "Benutze: (ohne Argument) | new | edit [name] | prompt \"text\" | view [name] | with-g1 [name] | list | view-g1 | import <datei> | check-meshes" >&2
     exit 1
     ;;
 esac

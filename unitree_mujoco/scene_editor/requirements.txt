@@ -6,8 +6,15 @@ mujoco-scene-editor==0.1.3
 # gebraucht (Laden von robot_descriptions). Ohne das crasht mjcreate/mjedit.
 yourdfpy
 
-# STEP/STP-Import (CAD): OpenCascade-Bindings. MuJoCo kann kein STEP lesen,
-# darum tesseliert step_import.py CAD-Dateien beim Import nach STL. Reines
+# CAD-Import (STEP/IGES/BREP): OpenCascade-Bindings. MuJoCo kann kein CAD
+# lesen - cad_import.py tesseliert die Baugruppe Bauteil fuer Bauteil. Reines
 # pip-Wheel (~70 MB), braucht keine zusaetzlichen System-Bibliotheken.
-# Alternative/Fallback waere 'gmsh' - das braucht aber libGLU/libXft & Co.
 cadquery-ocp
+
+# Konvexe Zerlegung (CoACD): konkave Teile (L-foermige Wand, hohles Gehaeuse)
+# kollidieren in MuJoCo sonst als gefuellter Block (konvexe Huelle).
+coacd
+
+# Mesh-Formate (PLY/GLB/OBJ/...) und Zerlegen zu grosser Netze. Kommt schon
+# mit dem Editor, hier explizit, weil cad_import.py es direkt benutzt.
+trimesh

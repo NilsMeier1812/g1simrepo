@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""Tests fuer step_import.py - Schwerpunkt STL-Pruefung/ASCII-Reparatur.
+"""Tests fuer mesh_utils.py - STL-Pruefung/ASCII-Reparatur (nur Standardbibliothek).
 
-Die eigentliche STEP-Konvertierung braucht ein CAD-Backend (cadquery-ocp) und
-wird hier uebersprungen, wenn keins installiert ist. Die Teile, an denen der
-Editor bisher gescheitert ist (ASCII-STL, zu viele Dreiecke), laufen dagegen
-ohne jede Abhaengigkeit.
+Die Stellen, an denen der Editor frueher gescheitert ist (ASCII-STL, zu viele
+Dreiecke), laufen ohne jede Abhaengigkeit.
 
-    python3 test_step_import.py
+    python3 test_mesh_utils.py
 """
 import struct
 import sys
@@ -15,7 +13,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import step_import as si  # noqa: E402
+import mesh_utils as si  # noqa: E402
 
 
 def binary_stl(n_faces: int) -> bytes:
@@ -126,20 +124,31 @@ class TestSTLPruefung(unittest.TestCase):
         self.assertEqual(len(mesh.faces), 2)
 
 
-class TestKonvertierung(unittest.TestCase):
-    """Nur mit installiertem CAD-Backend - sonst uebersprungen."""
-
-    def setUp(self):
-        if not si.available_backends():
-            self.skipTest("kein STEP-Backend installiert")
-
-    def test_beispiel_step_wird_ladbares_stl(self):
-        src = si.MESHES_DIR / "sample_bracket.step"
-        if not src.is_file():
-            self.skipTest("sample_bracket.step fehlt")
+class TestSchreiben(unittest.TestCase):
+    def test_write_binary_stl_ist_mujoco_tauglich(self):
         with tempfile.TemporaryDirectory() as tmp:
-            out = si.convert_step_to_stl(src, Path(tmp) / "bracket.stl")
-            self.assertIsNone(si.stl_problem(out))
+            p = Path(tmp) / "tri.stl"
+            n = si.write_binary_stl(p, [((0, 0, 0), (1, 0, 0), (0, 1, 0))])
+            self.assertEqual(n, 1)
+            self.assertTrue(si.is_valid_binary_stl(p))
+            normal = struct.unpack_from("<3f", p.read_bytes(), 84)
+            self.assertEqual(normal, (0.0, 0.0, 1.0))
+
+    def test_bounds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "tri.stl"
+            si.write_binary_stl(p, [((0, 0, 0), (2, 0, 0), (0, 3, -1))])
+            lo, hi = si.read_binary_stl_bounds(p)
+            self.assertEqual(lo, (0.0, 0.0, -1.0))
+            self.assertEqual(hi, (2.0, 3.0, 0.0))
+
+    def test_ascii_polygon_wird_trianguliert(self):
+        # manche Exporter schreiben Vierecke statt Dreiecke
+        quad = 'solid q\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 1 1 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid q\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "q.stl"
+            p.write_text(quad)
+            self.assertEqual(si.ascii_stl_to_binary(p), 2)
 
 
 if __name__ == "__main__":

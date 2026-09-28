@@ -21,3 +21,10 @@ meshes/.*.unconvertible
 # Speichern/Kombinieren nach hierher kopiert werden, siehe run_editor.py /
 # build_env_scene.py)
 meshes/imported/
+
+# CAD-/Mesh-Importe (cad_import.py): Einzelteil-Meshes je Import - werden aus
+# der Quelldatei neu erzeugt (./launch.sh import <datei>)
+meshes/cad/
+
+# Im Editor hochgeladene CAD-Quelldateien
+meshes/uploads/

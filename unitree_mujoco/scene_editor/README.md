@@ -1,8 +1,9 @@
 # Scene Editor – MuJoCo-Umgebungen einfach bauen
 
 Kleiner Baukasten, um MuJoCo-Umgebungen fuer den G1 zu bauen: Objekte per
-Maus platzieren, eigene **STL/OBJ-Meshes und STEP/STP-CAD-Dateien importieren**
-und das Ergebnis als MuJoCo-XML exportieren. Grundlage ist der
+Maus platzieren, eigene **Meshes (STL/OBJ/PLY/GLB/...) und CAD-Dateien
+(STEP/IGES) importieren** – auch ganze Anlagen/Roboterzellen – und das Ergebnis
+als MuJoCo-XML exportieren. Grundlage ist der
 [`mujoco-scene-editor`](https://github.com/markusgrotz/mujoco-scene-editor)
 (browserbasierter Editor) plus zwei fertige Beispiel-Szenen und ein paar
 Helfer-Skripte.
@@ -63,15 +64,18 @@ grasp_apfel      -> Greif-Objekt (beweglich, die Hand darf ran)
 scene_editor/
 ├── setup.sh                    # einmaliges Setup (virtualenv + Installation)
 ├── launch.sh                   # Menue / Editor / Viewer starten
-├── run_editor.py               # Editor-Start + Speichern-nur-mit-Name, Umbenennen
-├── step_import.py              # STEP/STP -> STL (CAD-Import, auch als CLI)
+├── run_editor.py               # Editor-Start + Speichern-nur-mit-Name, Umbenennen, Import
+├── cad_import.py               # CAD/Mesh -> Einzelteil-Meshes + Umgebung (auch als CLI)
+├── mesh_utils.py               # STL pruefen/reparieren (nur Standardbibliothek)
 ├── build_env_scene.py          # kombiniert G1 + Umgebung (nutzt start.sh)
-├── test_build_env_scene.py     # Tests der Normalisierung (python3 test_build_env_scene.py)
+├── test_*.py                   # Tests (python3 test_<name>.py)
 ├── requirements.txt
 ├── meshes/
 │   ├── sample_crate.stl        # Beispiel-STL zum Import-Testen
 │   ├── sample_ramp.stl
-│   └── sample_bracket.step     # Beispiel-STEP zum CAD-Import-Testen
+│   ├── sample_bracket.step     # Beispiel-STEP zum CAD-Import-Testen
+│   ├── cad/<name>/             # Einzelteile je CAD-Import (automatisch, nicht im Git)
+│   └── uploads/                # im Editor hochgeladene CAD-Dateien (nicht im Git)
 └── scenes/
     └── environment_starter.xml # Umgebung OHNE Roboter -> das bearbeitest du
 
@@ -102,8 +106,9 @@ Das legt ein eigenes `.venv/` an und installiert den Editor dort hinein
 > danach nie wieder.
 >
 > Fehlt in einem **aelteren** `.venv` ein spaeter dazugekommenes Paket (z.B.
-> `cadquery-ocp` fuer den STEP-Import), installiert `launch.sh` es beim naechsten
-> Start **automatisch nach** – `setup.sh` musst du dafuer nicht erneut aufrufen.
+> `cadquery-ocp`/`coacd` fuer den CAD-Import), installiert `launch.sh` es beim
+> naechsten Start **automatisch nach** – `setup.sh` musst du dafuer nicht erneut
+> aufrufen.
 
 Warum ein eigenes venv? Der Editor zieht `GPUtil` mit, das sich mit dem
 alten System-`setuptools` **nicht bauen** laesst. Im frischen venv mit
@@ -192,24 +197,25 @@ Beim Speichern passiert ausserdem automatisch:
 > skalieren" kommen aus `run_editor.py`; `launch.sh` startet den Editor immer
 > darueber. Der eingebaute Export mit Pfad-Eingabe ist ausgeblendet.
 
-### Eigene STLs / STEP-Dateien in den Editor importieren
+### Eigene Meshes / CAD-Dateien in den Editor importieren
 
 Es gibt zwei Wege – nimm den, der dir lieber ist:
 
 **A) Datei-Dialog (beliebiger Ordner) – am einfachsten**
 
 Ganz oben im Editor gibt es den Ordner **„Eigene Datei hochladen"** mit dem
-Knopf **„STL/OBJ/STEP waehlen ..."**:
+Knopf **„Datei waehlen (STL/OBJ/STEP/...)"**:
 
 1. Knopf klicken -> es oeffnet sich der **Datei-Dialog deines Systems**.
-2. STL/OBJ/MSH **oder STEP/STP** aus **irgendeinem Ordner** auswaehlen (mehr
-   Formate kann MuJoCo spaeter nicht laden – PLY/GLB werden darum gar nicht
-   erst angeboten).
-3. Fertig: die Datei wird nach `scene_editor/meshes/` kopiert (STEP wird dabei
-   automatisch nach STL konvertiert, ASCII-STL binaer neu geschrieben) und
-   **sofort in die Szene eingefuegt** (danach wie jedes Objekt per Maus
-   platzierbar). Was MuJoCo nicht laden koennte, wird mit Begruendung
-   abgelehnt, statt die Szene kaputtzumachen.
+2. Datei aus **irgendeinem Ordner** waehlen: STL, OBJ, **STEP/STP, IGES/IGS,
+   BREP**, PLY, GLB/GLTF, 3MF, OFF, DAE.
+3. Fertig:
+   * **STL/OBJ**, die MuJoCo direkt laden kann, kommen wie bisher als ein
+     Mesh-Objekt in die Szene (ASCII-STL wird dabei binaer neu geschrieben).
+   * **Alles andere** (CAD, fremde Formate, STL ueber 200000 Dreiecke) laeuft
+     durch den CAD-Import (naechster Abschnitt) und kommt als **Gruppe aus
+     Einzelteilen** in die Szene – mit Namen, Farben und Lage aus der Datei.
+     Die ganze Gruppe unter „Elements" waehlen, um sie zu verschieben.
 
 > Dieser Knopf wird von `run_editor.py` ergaenzt (der eingebaute Editor hat
 > nur den Ordner-Scan unten). `launch.sh` startet den Editor immer darueber.
@@ -219,55 +225,72 @@ Knopf **„STL/OBJ/STEP waehlen ..."**:
 Der Editor kann auch einen Ordner nach Mesh-Dateien (STL, OBJ, PLY, GLB/GLTF,
 USD) durchsuchen. Dieser Ordner ist fest auf `scene_editor/meshes/` vorbelegt:
 
-1. STL (oder STEP/STP) nach `scene_editor/meshes/` kopieren.
+1. Mesh nach `scene_editor/meshes/` kopieren.
 2. Ordner **„Add Assets from File"** aufklappen (standardmaessig zugeklappt).
-3. **„Scan assets"** klicken -> STLs erscheinen im Dropdown
+3. **„Scan assets"** klicken -> Meshes erscheinen im Dropdown
    (`sample_crate`/`sample_ramp` sind schon da).
-4. Auswaehlen -> **„Add asset"**.
+4. Auswaehlen -> **„Add asset"**. Zu grosse Netze und Formate, die MuJoCo nicht
+   kann (PLY/GLB), werden dabei automatisch ueber den CAD-Import zerlegt.
 
 > Der eingebaute Editor-Default `~/temp/ArmarXObjects` existiert nicht – darum
 > war die Liste vorher leer und der Import schien zu fehlen.
 
-> STEP-Dateien in `meshes/` werden **beim Start des Editors automatisch** nach
-> STL konvertiert; erst dann findet der Ordner-Scan sie (er kennt nur
-> Mesh-Formate). Wer waehrend der Sitzung eine STEP dazulegt, klickt im Ordner
-> **„STEP/CAD-Import"** auf **„STEP-Dateien in meshes/ konvertieren"**.
+**CAD-Dateien aus `meshes/`** (STEP & Co. kennt der Ordner-Scan nicht): Ordner
+**„CAD-Import"** aufklappen -> **„Liste aktualisieren"** -> Datei waehlen ->
+**„Importieren & einfuegen"**.
 
-### STEP/STP (CAD) importieren
+### CAD-Import: STEP/IGES, ganze Anlagen
 
-**Ja, das geht** – der Editor bekommt es ueber einen automatischen
-Konvertierungsschritt. Hintergrund: **MuJoCo kann kein STEP laden.** STEP ist
-ein CAD-Format mit exakten Flaechen (BRep/NURBS), MuJoCo (und der Editor)
-brauchen ein **Dreiecksnetz** (STL/OBJ/MSH). `step_import.py` **tesseliert**
-die STEP-Datei deshalb beim Import nach binaerem STL – du merkst davon im
-Editor nichts ausser einer kurzen Wartezeit.
+**MuJoCo kann kein CAD laden.** STEP/IGES beschreiben exakte Flaechen
+(BRep/NURBS), MuJoCo braucht Dreiecksnetze (STL/OBJ/MSH). `cad_import.py`
+**tesseliert** die Datei deshalb – und zwar **Bauteil fuer Bauteil**, so wie
+sie im CAD aufgebaut ist:
 
-- **Einheiten:** CAD ist praktisch immer in **Millimetern**, MuJoCo in
-  **Metern**. Darum wird beim Konvertieren per Default mit **0.001** skaliert –
-  das Ergebnis hat direkt die richtige Groesse. Ist deine STEP schon in Metern:
-  im Ordner **„STEP/CAD-Import"** die **Skalierung** auf `1` setzen (oder
-  nachtraeglich „Mesh skalieren" benutzen).
-- **Genauigkeit:** `coarse` / `normal` (Default) / `fine` steuert, wie fein
-  Rundungen in Dreiecke zerlegt werden. `fine` sieht besser aus, kostet aber
-  Dreiecke (und damit Rechenzeit in der Sim).
-- **Kollision:** MuJoCo nutzt fuer Mesh-Kollisionen die **konvexe Huelle** –
-  Bohrungen/Hinterschnitte aus dem CAD-Teil sind physikalisch also „zu".
-  Fuer reine Deko `contype="0" conaffinity="0"` setzen.
+| Was | Warum |
+|---|---|
+| **Je Bauteil (Volumenkoerper) ein Mesh** | MuJoCo kollidiert ueber die konvexe Huelle je Mesh. Eine ganze Zelle als ein Mesh waere ein einziger Klotz – und haette Millionen Dreiecke (MuJoCo-Grenze: 200000 je STL). |
+| **Mehrfach verbaute Teile nur einmal gespeichert** | Profile, Schrauben usw. teilen sich eine Datei. |
+| **Namen, Farben, Lage aus dem CAD** | Die Szene sieht aus wie im CAD; Teile heissen wie dort (`Zellenwand`, `Itemprofil_40x40x2120_3`). |
+| **Einheit automatisch** | mm/inch/m aus der Datei -> Meter. Nur bei Meshes ohne Einheit ggf. Skalierung setzen. |
+| **Kleine Teile nur Optik** | Schrauben, Knoepfe (Diagonale < 3 cm) kollidieren nicht – spart Rechenzeit. |
+| **Konkave Teile konvex zerlegt** | Eine L-foermige Wand oder ein hohles Gehaeuse wuerde als konvexe Huelle die halbe Zelle fuellen. Solche Teile bekommen unsichtbare Kollisions-Stuecke `<teil>__k<n>` (Gruppe 3, braucht `coacd`). |
+| **Offene/flache Teile** | Bleche/Schilder ohne Volumen bekommen `inertia="shell"` (sonst: „mesh volume is too small"). |
+| **Platzierung `auto`** | Boden (bzw. Oberkante einer Bodenplatte) auf z=0; bei begehbaren Modellen steht der G1 (immer im Ursprung) auf einem freien Platz moeglichst mittig, kleine Objekte kommen 1 m vor den G1. Steht der G1 doch in einem Teil, sagt der Import das. |
 
-Auf der Kommandozeile geht es auch ohne Editor:
+Ergebnis: `meshes/cad/<name>/` (Einzelteile + Manifest `cad_import.json`) und –
+beim Import auf der Kommandozeile – direkt eine fertige Umgebung
+`scenes/<name>.xml`. Wird dieselbe Datei mit denselben Einstellungen noch einmal
+importiert, kommt das Ergebnis sofort aus dem Cache.
+
+Beispiel (NX-Export einer Roboterzelle, 43 MB STEP): 698 Teile, 315
+verschiedene Meshes, 4 konkave Teile zerlegt – ca. 20 s Einlesen/Vernetzen plus
+ca. 2 min fuer die konvexe Zerlegung, Laden in MuJoCo 0,3 s.
+
+**Einstellungen** (im Editor Ordner **„CAD-Import"**, auf der Kommandozeile als
+Optionen):
+
+- **Genauigkeit** `coarse` / `normal` (Default) / `fine` – wie fein Rundungen
+  vernetzt werden (mehr Dreiecke = schoener, aber langsamer).
+- **Skalierung** `0` = automatisch, sonst fester Faktor (z.B. `0.001`).
+- **Platzierung** `auto` (Default) / `floor` / `center` / `cad`.
+- **Nur Optik unter (m)** – Grenze fuer „kleine Teile".
+
+Auf der Kommandozeile (ohne Editor) – das Ergebnis ist sofort beim G1-Start
+waehlbar:
 
 ```bash
-./launch.sh convert meshes/sample_bracket.step     # -> meshes/sample_bracket.stl
-./launch.sh convert                                # alle STEPs in meshes/
-./launch.sh convert teil.step --scale 1 --quality fine
+./launch.sh import ~/Downloads/zelle.stp                  # -> scenes/zelle.xml
+./launch.sh import zelle.stp --name demo --quality coarse
+./launch.sh import teil.step --place cad                  # CAD-Koordinaten behalten
+./launch.sh import --help                                 # alle Optionen
 ```
 
-Technisch steckt dahinter **OpenCascade** (`cadquery-ocp`, wird von `setup.sh`
-mitinstalliert, reines pip-Paket). Ist stattdessen `gmsh` installiert, wird das
-als Fallback genommen. Fehlt beides, sagt der Editor das im Ordner
-**„STEP/CAD-Import"** – dann entweder
-`.venv/bin/pip install cadquery-ocp` oder die Datei vorher im CAD als STL
-exportieren.
+Technisch steckt dahinter **OpenCascade** (`cadquery-ocp`) fuer CAD,
+**trimesh** fuer Mesh-Formate und **CoACD** (`coacd`) fuer die konvexe
+Zerlegung – alles reine pip-Pakete, `setup.sh`/`launch.sh` installieren sie.
+Fehlt `coacd`, kollidieren konkave Teile als gefuellter Block (der Import sagt,
+welche). **JT, Parasolid (x_t), SolidWorks, Inventor** kann keine freie
+Bibliothek lesen – im CAD als STEP (AP214/AP242) exportieren.
 
 ### STLs bewegen & skalieren
 
@@ -390,7 +413,7 @@ Mehr dazu in `meshes/README.md`.
 ./launch.sh view [name]     # Umgebung allein im MuJoCo-Viewer ansehen
 ./launch.sh with-g1 [name]  # Umgebung + G1 im MuJoCo-Viewer ansehen
 ./launch.sh view-g1         # statisches Beispiel scene_g1_playground.xml
-./launch.sh convert [datei] # STEP/STP -> STL (ohne Datei: alle in meshes/)
+./launch.sh import <datei>  # CAD/Mesh (STEP, IGES, STL, GLB, ...) -> scenes/<name>.xml
 ./launch.sh check-meshes    # alle STL in meshes/ auf MuJoCo-Tauglichkeit pruefen
 ```
 
@@ -400,8 +423,10 @@ listet `launch.sh` die vorhandenen Umgebungen auf. Anderer Port fuer den
 Editor: `SCENE_EDITOR_PORT=8081 ./launch.sh edit kueche`.
 
 Nach Aenderungen an der Normalisierung: `python3 test_build_env_scene.py`,
-nach Aenderungen am CAD-Import: `python3 test_step_import.py` (beide brauchen
-nur die Standardbibliothek).
+an der STL-Pruefung: `python3 test_mesh_utils.py` (beide nur Standardbibliothek),
+am CAD-Import: `.venv/bin/python test_cad_import.py` (im venv laufen alle Tests,
+mit blankem `python3` werden die Teile ohne numpy/trimesh/OpenCascade
+uebersprungen).
 
 ## Bekannte Stolpersteine
 
@@ -432,31 +457,37 @@ nur die Standardbibliothek).
   (installiert es); oder `.venv/bin/pip install yourdfpy`.
 - **Build-Fehler bei `GPUtil` / `install_layout`** – passiert nur bei
   Installation in die Systemumgebung. Immer das venv aus `setup.sh` nutzen.
-- **STEP-Import inaktiv / „Kein STEP-Backend installiert"** – `launch.sh` holt
-  das Paket beim naechsten Start automatisch nach (braucht einmalig Internet).
-  Steht es danach immer noch da: **Editor neu starten** (der Ordner
-  „STEP/CAD-Import" wird nur beim Start aufgebaut). Von Hand geht auch
-  `.venv/bin/pip install cadquery-ocp`; pruefen mit
-  `.venv/bin/python step_import.py --check` (Exit 0 = alles da).
+- **CAD-Import inaktiv / „OpenCascade fehlt"** – `launch.sh` holt die Pakete
+  beim naechsten Start automatisch nach (braucht einmalig Internet). Steht es
+  danach immer noch da: **Editor neu starten** (der Ordner „CAD-Import" wird nur
+  beim Start aufgebaut). Von Hand: `.venv/bin/pip install cadquery-ocp coacd`;
+  pruefen mit `.venv/bin/python cad_import.py --check` (Exit 0 = alles da).
 - **`stl_decoder: number of faces should be between 1 and 200000` /
   „perhaps this is an ASCII file?"** – MuJoCos zwei STL-Grenzen: es laedt **nur
-  binaeres** STL und **hoechstens 200000 Dreiecke**. Beides faengt der Editor
-  inzwischen selbst ab:
+  binaeres** STL und **hoechstens 200000 Dreiecke** je Datei. Beides faengt der
+  Editor selbst ab:
   * ASCII-STL wird beim Import automatisch binaer neu geschrieben.
-  * Beim STEP-Import wird die Tesselierung so lange vergroebert, bis das Netz
-    unter die Grenze passt (steht danach als Hinweis in der Meldung).
-  * Ein Mesh, das trotzdem nicht passt, wird **nicht** in die Szene gelegt
-    (frueher steckte es dann kaputt in der Szene und blockierte das Speichern).
-  * Liegt zu einem unbrauchbaren STL noch die STEP-Datei in `meshes/`, wird es
-    beim naechsten Editor-Start automatisch neu (groeber) erzeugt.
+  * Zu grosse Netze (auch per „Add asset") werden ueber den CAD-Import in
+    mehrere Meshes geteilt statt abgelehnt; CAD-Baugruppen werden ohnehin
+    Bauteil fuer Bauteil vernetzt.
 
-  Bleibt eine grosse Baugruppe uebrig: Genauigkeit im Ordner „STEP/CAD-Import"
-  auf `coarse`, oder die Baugruppe im CAD in einzelne Bauteile aufteilen und
-  einzeln laden (Innenleben/Schrauben weglassen). Bestand pruefen:
-  `./launch.sh check-meshes`.
-- **STEP-Teil ist 1000x zu gross/klein** – Skalierung: CAD in mm braucht `0.001`
-  (Default), CAD in m braucht `1`. Im Ordner „STEP/CAD-Import" umstellen und neu
-  konvertieren, oder das Mesh mit „Mesh skalieren" nachziehen.
+  Bestand pruefen: `./launch.sh check-meshes`.
+- **`mesh volume is too small ... Try setting inertia to shell`** – ein
+  offenes/flaches Mesh (Blech, Schild). Der CAD-Import setzt dafuer automatisch
+  `inertia="shell"`, auch beim Speichern im Editor und beim Kombinieren. Bei
+  eigenen Meshes: `<mesh ... inertia="shell"/>` von Hand setzen.
+- **CAD-Teil ist 1000x zu gross/klein** – bei STEP/IGES kommt die Einheit aus
+  der Datei; falsch ist sie praktisch nur bei Meshes (STL/OBJ haben keine
+  Einheit) oder BREP (mm angenommen). Im Ordner „CAD-Import" die Skalierung
+  setzen (z.B. `0.001`) und neu importieren, oder `--scale` auf der
+  Kommandozeile.
+- **Der G1 steht beim Start in einem Teil der Anlage** – der Import meldet das
+  („ACHTUNG: Der G1 startet ... IN ..."). Mit Platzierung `auto` importieren
+  (sucht einen freien Platz) oder die Gruppe im Editor verschieben; in der
+  erzeugten XML ist es das `pos` des einen `<body>` direkt unter `<worldbody>`.
+- **Roboter kommt nicht in die Zelle / alles blockiert** – ein konkaves Teil
+  (L-Wand, hohles Gehaeuse) kollidiert als gefuellter Block, weil `coacd` fehlt.
+  Der Import nennt die Teile; `.venv/bin/pip install coacd` und neu importieren.
 - **Absturz beim Start mit `403 Forbidden` / objaverse** – kein/gesperrtes
   Internet beim ersten Start. Der Objaverse-Katalog wird beim ersten Lauf
   einmalig heruntergeladen; mit Internet einmal starten, danach offline ok.
