@@ -61,7 +61,7 @@ ensure_cad_backend() {
   fi
   echo ">> CAD-Import fehlt im venv - installiere cadquery-ocp + coacd nach"
   echo "   (einmalig, ~80 MB; danach nie wieder)."
-  "$VENV/bin/pip" install cadquery-ocp coacd || true
+  "$VENV/bin/pip" install cadquery-ocp coacd trimesh || true
   if "$PY" cad_import.py --check >/dev/null 2>&1; then
     echo ">> CAD-Import ist jetzt aktiv."
   else

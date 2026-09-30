@@ -1537,11 +1537,13 @@ def main(argv=None) -> int:
                     help="nur Meshes erzeugen, keine scenes/<name>.xml")
     ap.add_argument("--force", action="store_true", help="Cache ignorieren")
     ap.add_argument("--check", action="store_true",
-                    help="nur pruefen, ob das CAD-Backend installiert ist (Exit 0/2)")
+                    help="nur pruefen, ob das CAD-Backend installiert ist (inkl. coacd/trimesh; Exit 0/2)")
     args = ap.parse_args(argv)
 
     if args.check:
-        return 0 if occ_available() else 2
+        # Alle drei, sonst holt launch.sh in einem aelteren venv (das von der
+        # frueheren STEP-Konvertierung schon cadquery-ocp hat) coacd nie nach.
+        return 0 if (occ_available() and trimesh_available() and coacd_available()) else 2
     if not args.file:
         ap.error("Datei fehlt")
 
