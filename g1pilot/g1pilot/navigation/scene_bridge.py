@@ -45,9 +45,10 @@ class SceneBridge(Node):
         self.declare_parameter("publish_rate_hz", 10.0)
         self.declare_parameter("frame_id", "map")
         # Fixer, gut bekannter In-Container-Pfad fuer die Mesh-Dateien (siehe
-        # docker-compose.yml: scene_editor/meshes wird read-only genau hierhin
-        # gemountet). RViz laedt MESH_RESOURCE-Marker darueber.
-        self.declare_parameter("mesh_resource_prefix", "file:///scene_meshes/")
+        # docker-compose.yml: unitree_mujoco/scene_editor wird read-only genau
+        # hierhin gemountet; die Sim schickt Pfade relativ dazu, z.B.
+        # scenes/<name>/meshes/teil.stl). RViz laedt MESH_RESOURCE-Marker darueber.
+        self.declare_parameter("mesh_resource_prefix", "file:///scene_editor/")
         # Auch ohne Aenderung spaetestens so oft neu veroeffentlichen (s).
         self.declare_parameter("keepalive_s", 2.0)
 

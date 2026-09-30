@@ -103,12 +103,13 @@ services:
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - .:/ros2_ws/src/g1pilot:rw
-      # Scene-Editor-Meshes read-only mounten, damit RViz MESH_RESOURCE-Marker
+      # Scene Editor read-only mounten, damit RViz MESH_RESOURCE-Marker
       # (/scene_markers, siehe scene_bridge.py) tatsaechlich laden kann -- der
       # g1pilot-Container hat sonst KEINEN Zugriff auf unitree_mujoco/ (das
-      # liegt nur im mujoco-sim-Container). Fixer Pfad, den scene_bridge.py als
-      # mesh_resource_prefix-Default erwartet.
-      - ../unitree_mujoco/scene_editor/meshes:/scene_meshes:ro
+      # liegt nur im mujoco-sim-Container). Ganzer Ordner, weil Umgebungen ihre
+      # Meshes in scenes/<name>/meshes/ mitbringen. Fixer Pfad, den
+      # scene_bridge.py als mesh_resource_prefix-Default erwartet.
+      - ../unitree_mujoco/scene_editor:/scene_editor:ro
     command: >
       bash -c "cd /ros2_ws &&
                source /opt/ros/humble/setup.bash &&

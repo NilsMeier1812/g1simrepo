@@ -31,14 +31,17 @@ Darum wird die Baugruppe hier so zerlegt, wie sie im CAD aufgebaut ist:
   * einzelne Teile ueber MuJoCos Grenze werden erst groeber vernetzt und
     notfalls raeumlich in mehrere Meshes geteilt.
 
-Ergebnis
---------
-  meshes/cad/<name>/*.stl              die Einzelteil-Meshes (binaer, Meter)
-  meshes/cad/<name>/cad_import.json    Manifest: Quelle, Optionen, Teile, Farben
-  scenes/<name>.xml                    fertige Umgebung (beim G1-Start waehlbar)
+Ergebnis (Kommandozeile) - eine eigenstaendige Umgebung, siehe env_store.py:
+  scenes/<name>/umgebung.xml                       fertige Umgebung (beim G1-Start waehlbar)
+  scenes/<name>/meshes/<name>/*.stl                die Einzelteil-Meshes (binaer, Meter)
+  scenes/<name>/meshes/<name>/cad_import.json      Manifest: Quelle, Optionen, Teile, Farben
+
+Im Editor landet der Import erst in der Zwischenablage meshes/cad/<name>/ und
+wird beim Speichern in den Ordner der Umgebung kopiert.
 
 Das Manifest dient zugleich als Cache: wird dieselbe Datei mit denselben
-Optionen noch einmal importiert, ist das Ergebnis sofort da.
+Optionen noch einmal importiert, ist das Ergebnis sofort da. Und es sagt dem
+Editor die Farben/Kollision der Teile (robits kennt dafuer keine Felder).
 
 Unterstuetzte Formate
 ---------------------
@@ -47,7 +50,7 @@ Unterstuetzte Formate
        -> ASCII-STL, zu grosse Netze, Szenen mit mehreren Objekten, Farben
 
 Aufruf:
-    python cad_import.py zelle.stp                    # -> scenes/zelle.xml
+    python cad_import.py zelle.stp                    # -> scenes/zelle/umgebung.xml
     python cad_import.py zelle.stp --name demo --quality coarse
     python cad_import.py teil.step --place cad        # CAD-Koordinaten behalten
                                                       # (Default auto: G1 auf freien Platz)
@@ -74,18 +77,18 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+import env_store  # noqa: E402
 import mesh_utils  # noqa: E402
 
 MESHES_DIR = HERE / "meshes"
-#: Ablage der Einzelteil-Meshes: meshes/cad/<name>/. Liegt bewusst unter
-#: meshes/, weil nur dieser Ordner in den Docker-Containern gemountet ist.
+#: Zwischenablage fuer Importe im Editor: meshes/cad/<name>/. Beim Speichern
+#: kopiert der Editor die benutzten Teile in den Ordner der Umgebung.
 CAD_DIR = MESHES_DIR / "cad"
-SCENES_DIR = HERE / "scenes"
 MANIFEST_NAME = "cad_import.json"
 
 #: Wird hochgezaehlt, wenn sich das Ergebnis bei gleicher Eingabe aendert -
 #: alte Manifest-Caches werden dann automatisch neu gebaut.
-IMPORT_VERSION = 1
+IMPORT_VERSION = 2
 
 #: CAD-Formate (exakte Geometrie, brauchen OpenCascade)
 CAD_SUFFIXES = {".step": "step", ".stp": "step", ".iges": "iges", ".igs": "iges",
@@ -1142,8 +1145,9 @@ def _build(protos, raw_instances, unit, options: ImportOptions, out_dir: Path,
     import numpy as np
 
     scale = unit * (options.scale if options.scale is not None else 1.0)
-    variants = {}           # (proto, S-Schluessel) -> [(file, center, verts)]
-    by_hash = {}            # Geometrie-Hash -> file   (gleiche Teile nur 1x)
+    variants = {}           # (proto, S-Schluessel) -> [Stueck-Dict]
+    files = {}              # (Geometrie-Hash, Farbe) -> file   (gleiche Teile nur 1x)
+    decomp = {}             # Geometrie-Hash -> (status, stuecke)   (CoACD nur 1x)
     hulls = {}              # file -> [(hull_file, center im Teil-Frame)]
     missing_decomp = []     # [(name, leer_m3)] wenn coacd fehlt
     used_files: set = set()
@@ -1176,68 +1180,74 @@ def _build(protos, raw_instances, unit, options: ImportOptions, out_dir: Path,
             F = np.asarray(proto.faces, dtype=np.int64)
             if np.linalg.det(S) < 0:
                 F = F[:, [0, 2, 1]]                  # Spiegeln dreht die Umlaufrichtung
-            pieces = []
             chunks = split_faces(V, F, mesh_utils.MJ_MAX_FACES)
             if len(chunks) > 1:
                 result.notes.append(f"'{proto.name}': {mesh_utils._de_number(len(F))} "
                                     f"Dreiecke - in {len(chunks)} Meshes geteilt "
                                     "(MuJoCo-Grenze).")
+            pieces = []
             for cv, cf in chunks:
                 cmin, cmax = cv.min(axis=0), cv.max(axis=0)
                 center = (cmin + cmax) / 2.0
                 cv = cv - center
-                digest = hashlib.sha1(np.round(cv, 6).tobytes() + cf.tobytes()).hexdigest()
-                file = by_hash.get(digest)
-                if file is None:
-                    base = sanitize_name(proto.name, "teil")[:60]
-                    rgba = list(proto.rgba or DEFAULT_RGBA)
-                    if _GLASS_RE.search(proto.name):      # auch fuer den Editor
-                        rgba[3] = min(rgba[3], _GLASS_ALPHA)
-                    size = 2.0 * float(np.linalg.norm((cmax - cmin) / 2.0))
-                    collide = options.collision and size >= options.min_collision_size
-                    status, parts = ("skip", None)
-                    if collide:
-                        status, parts = _decompose(cv, cf, options.decompose_min_empty)
-                    if status == "missing":
-                        missing_decomp.append((proto.name, parts))
-                    file = new_file(base, cv, cf, rgba, collide and status != "ok", True)
-                    if status == "ok":
-                        # Kollision uebernehmen die konvexen Stuecke; das
-                        # sichtbare Mesh selbst kollidiert nicht mehr.
-                        hulls[file] = []
-                        for hv, hf in parts:
-                            hc = (hv.min(axis=0) + hv.max(axis=0)) / 2.0
-                            hfile = new_file(f"{file[:-4]}__huelle", hv - hc, hf, rgba,
-                                             True, False)
-                            hulls[file].append((hfile, hc))
-                        log(f"  '{proto.name}' ist stark konkav -> in {len(parts)} "
-                            "konvexe Stuecke zerlegt.")
-                    by_hash[digest] = file
-                pieces.append((file, center, cv))
+                pieces.append({
+                    "center": center, "verts": cv, "faces": cf,
+                    "digest": hashlib.sha1(np.round(cv, 6).tobytes() + cf.tobytes()).hexdigest(),
+                    "size": 2.0 * float(np.linalg.norm((cmax - cmin) / 2.0))})
             variants[vkey] = pieces
 
-        rgba = list(raw.rgba or proto.rgba or DEFAULT_RGBA)
+        # Farbe gehoert zur Datei: der Editor kennt Farben nur je Mesh-Datei
+        # (Manifest). Gleiche Geometrie in zwei Farben = zwei Dateien, sonst
+        # waeren nach einem Editor-Durchlauf beide gleich eingefaerbt.
+        rgba = [float(x) for x in (raw.rgba or proto.rgba or DEFAULT_RGBA)]
         if _GLASS_RE.search(raw.name) or _GLASS_RE.search(proto.name):
             rgba[3] = min(rgba[3], _GLASS_ALPHA)
+        rgba = [round(x, 4) for x in rgba]
         quat = [round(float(x), 8) for x in _mat_to_quat(R)]
-        for file, center, cv in variants[vkey]:
-            pos = R @ center + t * scale
+        for piece in variants[vkey]:
+            cv, cf = piece["verts"], piece["faces"]
+            fkey = (piece["digest"], tuple(round(x, 3) for x in rgba))
+            file = files.get(fkey)
+            if file is None:
+                collide = options.collision and piece["size"] >= options.min_collision_size
+                status, parts = ("skip", None)
+                if collide:
+                    if piece["digest"] not in decomp:
+                        decomp[piece["digest"]] = _decompose(cv, cf, options.decompose_min_empty)
+                        st, pp = decomp[piece["digest"]]
+                        if st == "missing":
+                            missing_decomp.append((proto.name, pp))
+                        elif st == "ok":
+                            log(f"  '{proto.name}' ist stark konkav -> in {len(pp)} "
+                                "konvexe Stuecke zerlegt.")
+                    status, parts = decomp[piece["digest"]]
+                base = sanitize_name(proto.name, "teil")[:60]
+                file = new_file(base, cv, cf, rgba, collide and status != "ok", True)
+                if status == "ok":
+                    # Kollision uebernehmen die konvexen Stuecke; das
+                    # sichtbare Mesh selbst kollidiert nicht mehr.
+                    hulls[file] = []
+                    for hv, hf in parts:
+                        hc = (hv.min(axis=0) + hv.max(axis=0)) / 2.0
+                        hfile = new_file(f"{file[:-4]}__huelle", hv - hc, hf, rgba,
+                                         True, False)
+                        hulls[file].append((hfile, hc))
+                files[fkey] = file
+            pos = R @ piece["center"] + t * scale
             world = cv @ R.T + pos
             lo = np.minimum(lo, world.min(axis=0))
             hi = np.maximum(hi, world.max(axis=0))
             name = _unique(sanitize_name(raw.name, "teil"), used_names)
             result.instances.append(Instance(
                 name=name, path=raw.path, mesh=file,
-                pos=[round(float(x), 6) for x in pos], quat=quat,
-                rgba=[round(float(x), 4) for x in rgba],
+                pos=[round(float(x), 6) for x in pos], quat=quat, rgba=rgba,
                 collision=result.meshes[file].collision))
             for k, (hfile, hc) in enumerate(hulls.get(file, ()), start=1):
-                hpos = R @ (center + hc) + t * scale
+                hpos = R @ (piece["center"] + hc) + t * scale
                 result.instances.append(Instance(
                     name=_unique(f"{name}__k{k}", used_names), path=raw.path,
                     mesh=hfile, pos=[round(float(x), 6) for x in hpos], quat=quat,
-                    rgba=[round(float(x), 4) for x in rgba],
-                    collision=True, visual=False, part=name))
+                    rgba=rgba, collision=True, visual=False, part=name))
     if not result.instances:
         raise ImportFailed("Keine verwertbare Geometrie gefunden.")
     result.bbox_min = [round(float(x), 6) for x in lo]
@@ -1417,7 +1427,7 @@ def environment_xml(result: ImportResult, xml_path: Path, place: str = DEFAULT_P
     ET.indent(root, space="  ")
 
     header = (
-        f"<!-- AUTO-GENERIERT von scene_editor/cad_import.py aus {Path(result.source).name}\n"
+        f"<!-- {_GENERATED_MARK} aus {Path(result.source).name}\n"
         f"     {result.summary()}\n"
         "     Nur Optik: contype/conaffinity=0 (kleine Teile). Konkave Teile sind\n"
         "     zusaetzlich in konvexe Kollisions-Stuecke '<teil>__k<n>' zerlegt\n"
@@ -1426,6 +1436,23 @@ def environment_xml(result: ImportResult, xml_path: Path, place: str = DEFAULT_P
         f"     Platzierung '{place}': ganze Baugruppe per <body pos> verschiebbar.\n"
         "     Neu erzeugen:  ./launch.sh import <datei>  (ueberschreibt diese Datei) -->\n")
     return header + ET.tostring(root, encoding="unicode") + "\n"
+
+
+_GENERATED_MARK = "AUTO-GENERIERT von scene_editor/cad_import.py"
+
+
+def is_generated(xml_path: Path) -> bool:
+    """Stammt die Umgebungs-XML unveraendert aus diesem Import?
+
+    Speichert man eine importierte Umgebung im Editor (Objekte dazu, Teile
+    verschoben), faellt der Kopfkommentar weg - dann darf ein erneuter Import
+    sie nicht still ueberschreiben.
+    """
+    try:
+        with open(xml_path, encoding="utf-8", errors="replace") as fh:
+            return _GENERATED_MARK in fh.read(4096)
+    except OSError:
+        return False
 
 
 def placement_notes(result: ImportResult, place: str) -> list:
@@ -1443,7 +1470,7 @@ def placement_notes(result: ImportResult, place: str) -> list:
 
 def write_environment(result: ImportResult, xml_path: Path | None = None,
                       place: str = DEFAULT_PLACEMENT) -> Path:
-    xml_path = Path(xml_path) if xml_path else SCENES_DIR / f"{result.name}.xml"
+    xml_path = Path(xml_path) if xml_path else env_store.env_xml(result.name)
     xml_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = xml_path.with_name(xml_path.name + ".tmp")
     tmp.write_text(environment_xml(result, xml_path, place), encoding="utf-8")
@@ -1516,7 +1543,7 @@ def import_file(src, name: str | None = None, options: ImportOptions | None = No
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
-        description="CAD/Mesh -> MuJoCo-Umgebung (Einzelteil-Meshes + scenes/<name>.xml)")
+        description="CAD/Mesh -> MuJoCo-Umgebung scenes/<name>/ (umgebung.xml + meshes/)")
     ap.add_argument("file", nargs="?", help="STEP/IGES/BREP oder STL/OBJ/PLY/GLB/...")
     ap.add_argument("--name", help="Name der Umgebung (Default: Dateiname)")
     ap.add_argument("--quality", choices=list(QUALITY), default=DEFAULT_QUALITY,
@@ -1534,8 +1561,11 @@ def main(argv=None) -> int:
     ap.add_argument("--no-collision", action="store_true",
                     help="alles nur anzeigen (reine Deko-Umgebung)")
     ap.add_argument("--no-scene", action="store_true",
-                    help="nur Meshes erzeugen, keine scenes/<name>.xml")
-    ap.add_argument("--force", action="store_true", help="Cache ignorieren")
+                    help="nur Meshes in die Zwischenablage meshes/cad/<name>/ "
+                         "(zum Einfuegen im Editor), keine Umgebung")
+    ap.add_argument("--force", action="store_true", help="Cache ignorieren, neu vernetzen")
+    ap.add_argument("--replace", action="store_true",
+                    help="eine im Editor weiterbearbeitete Umgebung gleichen Namens ersetzen")
     ap.add_argument("--check", action="store_true",
                     help="nur pruefen, ob das CAD-Backend installiert ist (inkl. coacd/trimesh; Exit 0/2)")
     args = ap.parse_args(argv)
@@ -1550,19 +1580,44 @@ def main(argv=None) -> int:
     options = ImportOptions(quality=args.quality, scale=args.scale, place=args.place,
                             min_collision_size=args.min_collision_size,
                             collision=not args.no_collision)
-    name = sanitize_name(args.name or Path(args.file).stem, "cad_import")
+    # Umgebungs-Name = Ordnername = G1_ENV -> dieselben strengen Regeln.
+    name = env_store.sanitize_env_name(args.name or Path(args.file).stem) or "cad_import"
+    folder = env_store.env_dir(name)
+    xml = folder / env_store.ENV_FILE
+    legacy = env_store.SCENES_DIR / f"{name}.xml"
+    if not args.no_scene and not args.replace:
+        if (xml.is_file() and not is_generated(xml)) or legacy.is_file():
+            print(f"Fehler: Die Umgebung '{name}' gibt es schon und sie wurde nicht "
+                  "(nur) von diesem Import erzeugt - vermutlich im Editor weiter"
+                  "bearbeitet. Anderen Namen waehlen (--name) oder ersetzen "
+                  "(--replace).", file=sys.stderr)
+            return 1
+    out_root = CAD_DIR if args.no_scene else folder / env_store.ENV_MESH_DIR
     if args.force:
-        (CAD_DIR / name / MANIFEST_NAME).unlink(missing_ok=True)
+        (out_root / name / MANIFEST_NAME).unlink(missing_ok=True)
     try:
-        result = import_file(args.file, name, options)
+        result = import_file(args.file, name, options, out_root=out_root)
     except ImportFailed as exc:
         print(f"Fehler: {exc}", file=sys.stderr)
         return 1
     print(f"OK: {result.summary()}")
     print(f"    Meshes: {result.out_dir}")
     if not args.no_scene:
-        xml = write_environment(result, place=options.place)
-        print(f"    Umgebung: {xml}  (beim G1-Start als '{xml.stem}' waehlbar)")
+        write_environment(result, xml, place=options.place)
+        if legacy.is_file():
+            legacy.unlink()               # altes Format gleichen Namens abloesen
+        # Reste einer frueheren (Editor-)Fassung dieser Umgebung wegraeumen:
+        # der Ordner soll genau das enthalten, was umgebung.xml benutzt.
+        for extra in sorted(folder.rglob("*"), reverse=True):
+            keep = (extra == xml or extra == result.out_dir
+                    or result.out_dir in extra.parents or extra in result.out_dir.parents)
+            if keep:
+                continue
+            if extra.is_file():
+                extra.unlink()
+            elif extra.is_dir() and not any(extra.iterdir()):
+                extra.rmdir()
+        print(f"    Umgebung: {xml}  (beim G1-Start als '{name}' waehlbar)")
     for note in result.notes + placement_notes(result, options.place):
         print(f"Hinweis: {note}")
     return 0

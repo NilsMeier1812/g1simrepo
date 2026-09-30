@@ -235,6 +235,27 @@ class TestMeshImport(_TmpDir):
         self.assertTrue(again.from_cache)
         self.assertEqual([i.name for i in again.instances], [i.name for i in res.instances])
 
+    def test_farbe_gehoert_zur_datei(self):
+        """Der Editor kennt Farben nur je Mesh-Datei (Manifest) - gleiche
+        Geometrie in zwei Farben braucht also zwei Dateien."""
+        import numpy as np
+        import trimesh
+        scene = trimesh.Scene()
+        for i, c in enumerate(([200, 30, 30, 255], [30, 200, 30, 255], [200, 30, 30, 255])):
+            box = trimesh.Trimesh(*_box(0.3, 0.2, 0.1), process=False)
+            box.visual.face_colors = c
+            T = np.eye(4)
+            T[:3, 3] = [i * 0.5, 0, 0]
+            scene.add_geometry(box, node_name=f"k{i}", geom_name=f"k{i}", transform=T)
+        src = self.dir / "kisten.glb"
+        scene.export(src)
+        res = ci.import_file(src, "kisten", out_root=self.dir / "cad", log=lambda m: None)
+        by_name = {i.name: i for i in res.parts}
+        self.assertEqual(by_name["k0"].mesh, by_name["k2"].mesh)       # rot + rot: eine Datei
+        self.assertNotEqual(by_name["k0"].mesh, by_name["k1"].mesh)    # rot + gruen: zwei
+        for inst in res.parts:
+            self.assertEqual(res.meshes[inst.mesh].rgba, inst.rgba)    # Editor sieht die Farbe
+
     def test_zu_grosses_netz_wird_geteilt(self):
         import numpy as np
         import trimesh

@@ -376,19 +376,20 @@ class TestNamenUndPfade(unittest.TestCase):
         self.assertFalse(bes.is_grasp_name("kiste_grasp"))
 
     def test_resolve_env_path_akzeptiert_kurzform(self):
-        starter = bes.SCENES_DIR / "environment_starter.xml"
+        starter = bes.SCENES_DIR / "environment_starter" / "umgebung.xml"
         if not starter.is_file():
             self.skipTest("Beispiel-Umgebung nicht vorhanden")
-        for arg in ("environment_starter", "environment_starter.xml",
-                    "scenes/environment_starter.xml", str(starter)):
+        for arg in ("environment_starter", "scenes/environment_starter",
+                    str(starter.parent), str(starter)):
             self.assertEqual(bes.resolve_env_path(arg), starter.resolve())
+        self.assertIn("environment_starter", bes.available_envs())
 
 
 class TestStarterUmgebung(unittest.TestCase):
     """Von Hand geschriebene Umgebungen (kanonische Form) bleiben unveraendert."""
 
     def test_starter_bleibt_statisch(self):
-        starter = bes.SCENES_DIR / "environment_starter.xml"
+        starter = bes.SCENES_DIR / "environment_starter" / "umgebung.xml"
         if not starter.is_file():
             self.skipTest("Beispiel-Umgebung nicht vorhanden")
         wb, _asset, _w, counts = merge(bes.parse_environment(starter),

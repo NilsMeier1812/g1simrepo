@@ -29,7 +29,7 @@ Sim-Start, damit Reste eines alten Laufs nicht mit dem neuen gemischt werden.
     mj_data gesendet (freie Koerper, siehe build_env_scene.py).
 
 Jedes Objekt: {name, class, type, pos[3], quat[4 wxyz], rgba[4], size,
-mesh (Pfad unter scene_editor/meshes/), aabb_half}.
+mesh (Pfad unter scene_editor/, z.B. scenes/<name>/meshes/teil.stl), aabb_half}.
 """
 import json
 import os

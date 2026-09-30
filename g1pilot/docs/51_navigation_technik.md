@@ -74,7 +74,7 @@ kommen 1×/s, greifbare Objekte mit Live-Pose 10×/s. `scene_bridge`
 veröffentlicht nur bei Änderungen (plus Keepalive `keepalive_s`, Default 2 s),
 damit IK und Karte nicht 10×/s Hunderte Marker umrechnen. Mesh-Marker
 verweisen auf den Pfad unter `scene_editor/meshes/` (z. B.
-`file:///scene_meshes/cad/<name>/<teil>.stl`).
+`file:///scene_editor/scenes/<name>/meshes/<teil>.stl`; der ROS-Container mountet dafür `unitree_mujoco/scene_editor` read-only).
 
 `/scene_markers` ist das **eine geteilte Weltmodell**:
 

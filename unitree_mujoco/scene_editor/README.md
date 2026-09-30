@@ -11,11 +11,11 @@ Helfer-Skripte.
 > Ergaenzt das vorhandene `terrain_tool/` (Terrain per Python-Skript). Der
 > Scene Editor ist der **visuelle** Weg: Objekte/Meshes per Maus setzen.
 
-> **Zentraler Umgebungs-Ordner:** `scene_editor/scenes/`. Alles, was hier als
-> `*.xml` liegt, ist die Liste der Umgebungen – waehlbar **im Editor**
-> (`./launch.sh`) UND **beim G1-Start** (`g1pilot/start.sh`, Sim). Eine neue
-> Umgebung im Editor unter `scenes/` speichern reicht, damit sie an beiden
-> Stellen auftaucht.
+> **Jede Umgebung ist ein Ordner:** `scene_editor/scenes/<name>/` mit
+> `umgebung.xml` und allen Meshes, die sie braucht, in `meshes/` daneben. Jeder
+> solche Ordner ist eine Umgebung – waehlbar **im Editor** (`./launch.sh`) UND
+> **beim G1-Start** (`g1pilot/start.sh`, Sim). Ordner kopieren, zippen oder
+> einchecken = Umgebung weitergeben (siehe Abschnitt 5).
 
 ## Konzept: Basis + Umgebung
 
@@ -24,7 +24,7 @@ Das System trennt **Basis** (immer gleich) von **Umgebung** (wechselt):
 | | kommt aus | Inhalt |
 |---|---|---|
 | **Basis** (immer automatisch) | `build_env_scene.py` | G1-Roboter, **Lichtquelle**, Boden, **Weld** (haelt den G1 anfangs fest), visual/statistic – die technischen Grunddinge |
-| **Umgebung** (waehlbar) | `scenes/<name>.xml` | **nur Hindernisse / Objekte zum Interagieren/Greifen** |
+| **Umgebung** (waehlbar) | `scenes/<name>/umgebung.xml` (+ `meshes/`) | **nur Hindernisse / Objekte zum Interagieren/Greifen** |
 
 Du baust in einer Umgebung also **nur die Objekte**. G1, Licht, Boden und Weld
 werden beim Laden immer automatisch dazugefuegt – nie in die Umgebung schreiben.
@@ -66,27 +66,38 @@ scene_editor/
 ├── launch.sh                   # Menue / Editor / Viewer starten
 ├── run_editor.py               # Editor-Start + Speichern-nur-mit-Name, Umbenennen, Import
 ├── cad_import.py               # CAD/Mesh -> Einzelteil-Meshes + Umgebung (auch als CLI)
+├── env_store.py                # Umgebungs-Ordner: finden, eigenstaendig machen, Zip, Migration
 ├── mesh_utils.py               # STL pruefen/reparieren (nur Standardbibliothek)
 ├── build_env_scene.py          # kombiniert G1 + Umgebung (nutzt start.sh)
 ├── test_*.py                   # Tests (python3 test_<name>.py)
 ├── requirements.txt
-├── meshes/
+├── meshes/                     # Mesh-BIBLIOTHEK (Quelle zum Einfuegen im Editor)
 │   ├── sample_crate.stl        # Beispiel-STL zum Import-Testen
 │   ├── sample_ramp.stl
 │   ├── sample_bracket.step     # Beispiel-STEP zum CAD-Import-Testen
-│   ├── cad/<name>/             # Einzelteile je CAD-Import (automatisch, nicht im Git)
+│   ├── cad/<name>/             # Zwischenablage fuer CAD-Importe im Editor (nicht im Git)
 │   └── uploads/                # im Editor hochgeladene CAD-Dateien (nicht im Git)
-└── scenes/
-    └── environment_starter.xml # Umgebung OHNE Roboter -> das bearbeitest du
+├── scenes/                     # die UMGEBUNGEN - je eine ein Ordner
+│   ├── environment_starter/
+│   │   ├── umgebung.xml        # nur Objekte, Pfade relativ (meshes/...)
+│   │   └── meshes/             # alles, was umgebung.xml braucht
+│   └── dc_demonstrator/        # z.B. eine importierte CAD-Zelle
+│       ├── umgebung.xml
+│       └── meshes/dc_demonstrator/   # Einzelteile + cad_import.json
+└── export/                     # Umgebungs-Zips (./launch.sh pack, nicht im Git)
 
 ../unitree_robots/g1/
     ├── scene_g1_playground.xml # statisches Beispiel: G1 + Objekte + STLs
     └── scene_env_<name>.xml     # auto-generiert bei Umgebungs-Auswahl (start.sh)
 ```
 
-**Umgebung im G1-Sim laden:** `g1pilot/start.sh` (Sim) fragt jetzt „Welche
-Umgebung laden?" und listet alle `scenes/*.xml` auf – der G1 wird unveraendert
-hineingeladen (siehe Abschnitt 4).
+**Umgebung im G1-Sim laden:** `g1pilot/start.sh` (Sim) fragt „Welche
+Umgebung laden?" und listet alle Umgebungen aus `scenes/` auf – der G1 wird
+unveraendert hineingeladen (siehe Abschnitt 4).
+
+> `meshes/` ist die **Bibliothek**, aus der man im Editor einfuegt; eine
+> gespeicherte Umgebung haengt aber nie davon ab. Beim Speichern kopiert der
+> Editor alles Benutzte in den Umgebungsordner.
 
 ---
 
@@ -100,8 +111,8 @@ cd unitree_mujoco/scene_editor
 Das legt ein eigenes `.venv/` an und installiert den Editor dort hinein
 (die Systemumgebung wird nicht angefasst).
 
-> **Der Editor laeuft bewusst auf dem Host, nicht im Docker-Stack.** Docker
-> mountet von hier nur `meshes/` (read-only) und laedt die fertige Szenen-XML.
+> **Der Editor laeuft bewusst auf dem Host, nicht im Docker-Stack.** Der
+> Sim-Stack liest die fertigen Umgebungen nur (read-only gemountet).
 > Dieses `setup.sh` ist also das einzige Setup, das der Editor braucht – einmal,
 > danach nie wieder.
 >
@@ -174,19 +185,22 @@ Das listet **alle Umgebungen nummeriert** auf (aus dem zentralen Ordner
 Umgebungen in scene_editor/scenes/
 (dieselben, die auch beim G1-Start via g1pilot/start.sh waehlbar sind)
 ----------------------------------------------------------
-    1) environment_starter
-    2) kueche
+    1) dc_demonstrator
+    2) environment_starter
     n) neue leere Umgebung im Editor
+    i) CAD-/Mesh-Datei (STEP, STL, ...) als Umgebung importieren
+    u) Umgebung aus Zip einspielen
     q) beenden
 ----------------------------------------------------------
-Auswahl (Zahl / n / q): 1
+Auswahl (Zahl / n / i / u / q): 2
 
 Gewaehlt: environment_starter
 Aktion:
    e) im Editor bearbeiten
    v) allein im Viewer ansehen (ohne Roboter)
    g) mit dem G1 im Viewer ansehen
-Auswahl [e/v/g] (Default e):
+   p) als Zip packen (-> export/environment_starter.zip)
+Auswahl [e/v/g/p] (Default e):
 ```
 
 - Zahl = Umgebung waehlen, dann:
@@ -194,7 +208,10 @@ Auswahl [e/v/g] (Default e):
   - **v** – allein im Viewer ansehen (ohne Roboter)
   - **g** – **mit dem G1** im Viewer ansehen (kombiniert automatisch, ohne
     Docker-Stack)
+  - **p** – als Zip packen (zum Weitergeben, Abschnitt 5)
 - **n** = mit einer leeren Umgebung neu anfangen.
+- **i** = CAD-/Mesh-Datei direkt als neue Umgebung importieren.
+- **u** = eine gezippte Umgebung einspielen.
 
 Neue Umgebungen aus `scenes/` tauchen automatisch in der Liste auf – hier
 **und** beim G1-Start.
@@ -214,15 +231,19 @@ Der Editor startet einen lokalen Webserver und oeffnet den Browser
   **`grasp_`** = greifbares Objekt, alles andere = Hindernis (siehe oben).
 - **Speichern** – Ordner **„Umgebung speichern"** ganz oben. Dort steht **nur
   ein Feld: der Name** (z.B. `kueche`) – kein Pfad. Klick auf **`Speichern`**
-  schreibt `scenes/kueche.xml` (+ `.json` zum spaeteren Weiterbearbeiten), und
-  die Umgebung ist sofort im Menue **und** beim G1-Start waehlbar.
+  schreibt den Ordner `scenes/kueche/` (`umgebung.xml` + `meshes/`), und die
+  Umgebung ist sofort im Menue **und** beim G1-Start waehlbar.
 
 Beim Speichern passiert ausserdem automatisch:
 
-- **Meshes werden mitgenommen.** Der Editor merkt sich absolute Pfade
-  (`/home/du/Downloads/kiste.stl`) – die gibt es im Docker-Container nicht.
-  Dateien ausserhalb des Repos landen darum in `meshes/imported/` und werden im
-  XML relativ (`../meshes/...`) referenziert.
+- **Alle Dateien kommen in den Umgebungsordner.** Meshes aus der Bibliothek,
+  CAD-Importe und Dateien von irgendwo auf der Platte werden nach
+  `scenes/<name>/meshes/` kopiert und relativ referenziert (`meshes/...`).
+  CAD-Importe bleiben als Unterordner samt `cad_import.json` zusammen (sonst
+  kennt der Editor beim naechsten Oeffnen ihre Farben nicht mehr). Gleichnamige,
+  aber verschiedene Dateien werden umbenannt statt ueberschrieben.
+- **Aufraeumen:** Meshes, die nach dem Loeschen von Objekten keiner mehr
+  benutzt, fliegen aus dem Ordner. Unter anderem Namen speichern = Kopie.
 - **Kontrolle:** die gespeicherte Umgebung wird sofort testweise mit MuJoCo
   geladen. Klappt das nicht, sagt die Meldung im Editor warum (gespeichert wird
   trotzdem – deine Arbeit geht nie verloren).
@@ -294,10 +315,14 @@ sie im CAD aufgebaut ist:
 | **Offene/flache Teile** | Bleche/Schilder ohne Volumen bekommen `inertia="shell"` (sonst: „mesh volume is too small"). |
 | **Platzierung `auto`** | Boden (bzw. Oberkante einer Bodenplatte) auf z=0; bei begehbaren Modellen steht der G1 (immer im Ursprung) auf einem freien Platz moeglichst mittig, kleine Objekte kommen 1 m vor den G1. Steht der G1 doch in einem Teil, sagt der Import das. |
 
-Ergebnis: `meshes/cad/<name>/` (Einzelteile + Manifest `cad_import.json`) und –
-beim Import auf der Kommandozeile – direkt eine fertige Umgebung
-`scenes/<name>.xml`. Wird dieselbe Datei mit denselben Einstellungen noch einmal
-importiert, kommt das Ergebnis sofort aus dem Cache.
+Ergebnis auf der Kommandozeile: direkt eine fertige Umgebung
+`scenes/<name>/` (`umgebung.xml` + Einzelteile samt Manifest `cad_import.json`
+in `meshes/<name>/`). Im Editor landet der Import zuerst in der Zwischenablage
+`meshes/cad/<name>/` und beim Speichern im Ordner der Umgebung. Wird dieselbe
+Datei mit denselben Einstellungen noch einmal importiert, kommt das Ergebnis
+sofort aus dem Cache. Ein erneuter Import ersetzt die Umgebung nur, solange sie
+nicht im Editor weiterbearbeitet wurde – sonst bricht er mit Hinweis ab
+(`--replace` ersetzt trotzdem, `--name` legt eine neue an).
 
 Beispiel (NX-Export einer Roboterzelle, 43 MB STEP): 698 Teile, 315
 verschiedene Meshes, 4 konkave Teile zerlegt – ca. 20 s Einlesen/Vernetzen plus
@@ -316,7 +341,7 @@ Auf der Kommandozeile (ohne Editor) – das Ergebnis ist sofort beim G1-Start
 waehlbar:
 
 ```bash
-./launch.sh import ~/Downloads/zelle.stp                  # -> scenes/zelle.xml
+./launch.sh import ~/Downloads/zelle.stp                  # -> scenes/zelle/
 ./launch.sh import zelle.stp --name demo --quality coarse
 ./launch.sh import teil.step --place cad                  # CAD-Koordinaten behalten
 ./launch.sh import --help                                 # alle Optionen
@@ -368,7 +393,7 @@ Sim-Modus) kommt jetzt die Frage:
      ...
 ```
 
-Jede `scene_editor/scenes/*.xml` taucht hier automatisch als Auswahl auf.
+Jede Umgebung aus `scene_editor/scenes/` taucht hier automatisch als Auswahl auf.
 Waehlst du eine, passiert Folgendes automatisch:
 
 1. `build_env_scene.py` baut auf dem Host eine kombinierte Szene
@@ -388,7 +413,7 @@ speichern, beim Start auswaehlen, fertig.
 Oder eine kombinierte Szene manuell erzeugen und im Viewer pruefen:
 
 ```bash
-python3 build_env_scene.py --env scenes/kueche.xml --inspire 0
+python3 build_env_scene.py --env kueche --inspire 0
 .venv/bin/python -m mujoco.viewer --mjcf=../unitree_robots/g1/scene_env_kueche.xml
 ```
 
@@ -398,7 +423,8 @@ python3 build_env_scene.py --env scenes/kueche.xml --inspire 0
 
 | Datei | Zweck | Inhalt |
 |-------|-------|----------|
-| `scenes/*.xml` | **Umgebungen – die baust du im Editor** | nur Objekte |
+| `scenes/<name>/` | **Umgebungen – die baust du im Editor** | `umgebung.xml` (nur Objekte) + `meshes/` |
+| `env_store.py` | kennt das Ordner-Format: finden, eigenstaendig machen, Zip, Migration | – |
 | `build_env_scene.py` | baut **Basis** (G1+Licht+Boden+Weld) und mischt die Objekte ein | – |
 | `scene_env_<name>.xml` (im g1-Ordner, auto-generiert) | **das laedt der Sim** | Basis + Objekte |
 
@@ -422,9 +448,11 @@ Docker-Container).
 
 ## Eigene STLs – Kurzreferenz
 
+In `scenes/<name>/umgebung.xml`, die STL liegt in `scenes/<name>/meshes/`:
+
 ```xml
 <asset>
-  <mesh name="tisch" file="../meshes/tisch.stl" scale="0.001 0.001 0.001"/>
+  <mesh name="tisch" file="meshes/tisch.stl" scale="0.001 0.001 0.001"/>
 </asset>
 <worldbody>
   <geom type="mesh" mesh="tisch" pos="1 0 0"/>
@@ -439,6 +467,39 @@ Mehr dazu in `meshes/README.md`.
 
 ---
 
+## 5. Umgebungen weitergeben: Git, Zip, alte Umgebungen
+
+**Git (Normalfall):** Umgebungsordner werden **samt Meshes eingecheckt** – nach
+`git pull` ist eine Umgebung auf jedem Rechner sofort waehlbar. Git speichert
+gleiche Dateien nur einmal, mehrere Umgebungen mit derselben Zelle kosten also
+kaum Platz. Soll eine grosse Umgebung **nicht** ins Repo (z.B. eine Kunden-
+Anlage), eine Zeile in `.gitignore`: `scenes/<name>/`.
+
+**Zip (ohne Git, z.B. per USB/Cloud):**
+
+```bash
+./launch.sh pack dc_demonstrator             # -> export/dc_demonstrator.zip
+./launch.sh pack dc_demonstrator ~/Desktop   # anderes Ziel (Ordner oder .zip)
+./launch.sh unpack ~/Downloads/dc_demonstrator.zip          # -> scenes/dc_demonstrator/
+./launch.sh unpack zelle.zip --name zelle_v2 --force        # umbenennen / ersetzen
+```
+
+Oder in der Start-GUI unter *Umgebungen bearbeiten*: **📦 Als Zip exportieren**
+/ **📥 Zip einspielen**. Das Zip enthaelt genau den Ordner. Beim Einspielen
+wird geprueft, dass alle Pfade relativ sind und im Ordner bleiben – ein kaputtes
+oder fremdes Zip landet nie halb in `scenes/`.
+
+**Pruefen:** `./launch.sh check` zeigt je Umgebung, ob sie eigenstaendig ist
+(keine absoluten Pfade, nichts ausserhalb des Ordners, keine fehlende Datei).
+Behebt sich durch einmal Oeffnen und Speichern im Editor.
+
+**Alte Umgebungen** (flache `scenes/<name>.xml` mit Meshes irgendwo in
+`meshes/`) wandelt `launch.sh` beim naechsten Start **automatisch** um
+(`./launch.sh migrate` von Hand): Meshes werden in den neuen Ordner kopiert,
+die Bibliothek bleibt unangetastet. Bis dahin funktionieren sie weiter.
+
+---
+
 ## launch.sh – Uebersicht
 
 ```bash
@@ -450,17 +511,22 @@ Mehr dazu in `meshes/README.md`.
 ./launch.sh view [name]     # Umgebung allein im MuJoCo-Viewer ansehen
 ./launch.sh with-g1 [name]  # Umgebung + G1 im MuJoCo-Viewer ansehen
 ./launch.sh view-g1         # statisches Beispiel scene_g1_playground.xml
-./launch.sh import <datei>  # CAD/Mesh (STEP, IGES, STL, GLB, ...) -> scenes/<name>.xml
-./launch.sh check-meshes    # alle STL in meshes/ auf MuJoCo-Tauglichkeit pruefen
+./launch.sh import <datei>  # CAD/Mesh (STEP, IGES, STL, GLB, ...) -> scenes/<name>/
+./launch.sh pack <name> [ziel]      # Umgebung als Zip (Default: export/<name>.zip)
+./launch.sh unpack <zip> [--name N] [--force]   # Zip als Umgebung einspielen
+./launch.sh check [name]    # Umgebung(en) eigenstaendig/vollstaendig?
+./launch.sh migrate         # alte Umgebungen (scenes/<name>.xml) umwandeln
+./launch.sh check-meshes    # alle STL (Bibliothek + Umgebungen) auf MuJoCo-Tauglichkeit
 ```
 
-`[name]` darf `kueche`, `kueche.xml`, `scenes/kueche.xml` oder ein absoluter
-Pfad sein – es wird immer in `scenes/` nachgeschlagen; bei einem Tippfehler
-listet `launch.sh` die vorhandenen Umgebungen auf. Anderer Port fuer den
-Editor: `SCENE_EDITOR_PORT=8081 ./launch.sh edit kueche`.
+`[name]` darf `kueche`, `scenes/kueche` oder der Pfad zur `umgebung.xml` sein;
+bei einem Tippfehler listet `launch.sh` die vorhandenen Umgebungen auf.
+Dateipfade (`import`/`pack`/`unpack`) duerfen relativ zum aktuellen Ordner
+sein. Anderer Port fuer den Editor: `SCENE_EDITOR_PORT=8081 ./launch.sh edit kueche`.
 
 Nach Aenderungen an der Normalisierung: `python3 test_build_env_scene.py`,
-an der STL-Pruefung: `python3 test_mesh_utils.py` (beide nur Standardbibliothek),
+an der STL-Pruefung: `python3 test_mesh_utils.py`, am Ordner-Format/Zip:
+`python3 test_env_store.py` (alle drei nur Standardbibliothek),
 am CAD-Import: `.venv/bin/python test_cad_import.py` (im venv laufen alle Tests,
 mit blankem `python3` werden die Teile ohne numpy/trimesh/OpenCascade
 uebersprungen).
@@ -531,10 +597,13 @@ uebersprungen).
 - **`Port 8080 ist schon belegt`** – es laeuft noch ein Editor. In der GUI:
   *Laufende Prozesse* -> *Stoppen*. Oder anderen Port nehmen:
   `SCENE_EDITOR_PORT=8081 ./launch.sh edit kueche`.
-- **Umgebung erscheint nicht in der Auswahl** – der Dateiname darf nur
-  `A-Z a-z 0-9 _ -` enthalten (er wird als `G1_ENV` weitergereicht) und die
-  Datei muss ein `<mujoco>`-XML sein. Die GUI zeigt aussortierte Dateien unter
-  *Umgebungen bearbeiten* mit Begruendung an.
+- **Umgebung erscheint nicht in der Auswahl** – der Ordnername darf nur
+  `A-Z a-z 0-9 _ -` enthalten (er wird als `G1_ENV` weitergereicht), darin muss
+  eine `umgebung.xml` (ein `<mujoco>`-XML) liegen. Die GUI zeigt aussortierte
+  Eintraege unter *Umgebungen bearbeiten* mit Begruendung an.
+- **Umgebung laedt auf einem anderen Rechner nicht / Meshes fehlen** – sie
+  verweist noch auf Dateien ausserhalb ihres Ordners. `./launch.sh check <name>`
+  zeigt welche; einmal im Editor oeffnen und speichern holt sie hinein.
 - **`Umgebung ... laesst sich nicht laden`** beim Start – die kombinierte Szene
   kompiliert nicht (meist ein fehlendes Mesh oder ein doppelter Name). Genaue
   Meldung: *Umgebungen bearbeiten* -> **„Auf Ladbarkeit pruefen"** bzw.

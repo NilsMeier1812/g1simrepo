@@ -10,12 +10,14 @@ fehlt - ohne das Paket zu patchen:
    DATEIPFAD ("~/temp/export/scene.json"). Das ist die haeufigste Fehlerquelle:
    ein Tippfehler im Pfad und die Umgebung landet irgendwo, wo sie niemand
    findet. Hier gibt es stattdessen oben den Ordner "Umgebung speichern" mit
-   EINEM Feld: dem Namen. Gespeichert wird immer nach  scene_editor/scenes/ .
+   EINEM Feld: dem Namen. Gespeichert wird immer nach
+   scene_editor/scenes/<name>/umgebung.xml .
 
-2. MESHES AUS scenes/ HERAUS PORTABEL. Beim Speichern werden Mesh-Dateien, die
-   ausserhalb des Repos liegen, nach  scene_editor/meshes/imported/  kopiert und
-   im XML relativ referenziert - sonst findet der (read-only gemountete)
-   Docker-Container sie spaeter nicht.
+2. JEDE UMGEBUNG EIN EIGENSTAENDIGER ORDNER. Beim Speichern werden alle
+   benutzten Dateien (Meshes aus der Bibliothek, CAD-Importe, Dateien von
+   ausserhalb des Repos) nach scenes/<name>/meshes/ kopiert und relativ
+   referenziert, nicht mehr benutzte werden entfernt (env_store.py). Eine
+   Umgebung laesst sich so als Ganzes kopieren, zippen und verteilen.
 
 3. UMBENENNEN. Der eingebaute Editor kann Objekte nicht umbenennen - dabei
    entscheidet genau der Name, ob ein Objekt ein Hindernis oder ein GREIFBARES
@@ -50,21 +52,21 @@ Aufruf wie die normale CLI:
     python run_editor.py prompt "eine Kueche"
 """
 import os
-import re
-import shutil
 import socket
 import sys
 import tempfile
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 
-# Ziel-Ordner fuer exportierte Szenen (fest verdrahtet, neben diesem Skript)
-SCENES_DIR = HERE / "scenes"
+# Umgebungen: scenes/<name>/umgebung.xml (+ meshes/), siehe env_store.py.
+sys.path.insert(0, str(HERE))
+import env_store  # noqa: E402
+
+SCENES_DIR = env_store.SCENES_DIR
 SCENES_DIR.mkdir(parents=True, exist_ok=True)
 DEFAULT_NAME = "meine_umgebung"
-DEFAULT_TARGET = str(SCENES_DIR / f"{DEFAULT_NAME}.xml")
+DEFAULT_TARGET = str(env_store.env_xml(DEFAULT_NAME))
 
 # Ordner, aus dem der Editor eigene Meshes (STL/OBJ/...) importiert.
 MESHES_DIR = HERE / "meshes"
@@ -182,35 +184,16 @@ _scene_editor_mod.SceneEditor._load_inventory = _load_inventory_offline_tolerant
 # ---------------------------------------------------------------------------
 # Namen
 # ---------------------------------------------------------------------------
-_UMLAUTS = {"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss",
-            "Ä": "Ae", "Ö": "Oe", "Ü": "Ue"}
-
-
-def sanitize_env_name(raw: str) -> str:
-    """Aus einer Nutzereingabe einen sauberen Umgebungs-Namen machen.
-
-    Der Name wird zum Dateinamen UND zum Wert von G1_ENV (Env-Variable, die per
-    docker-compose weitergereicht wird) - deshalb bewusst streng: nur
-    Buchstaben/Ziffern/_/-, keine Pfade, keine Leerzeichen, keine Umlaute.
-    Rueckgabe "" heisst: unbrauchbar.
-    """
-    name = (raw or "").strip()
-    name = Path(name).name                      # evtl. mitgetippte Pfade weg
-    for k, v in _UMLAUTS.items():
-        name = name.replace(k, v)
-    if name.lower().endswith((".xml", ".json")):
-        name = name.rsplit(".", 1)[0]
-    name = re.sub(r"\s+", "_", name)
-    name = re.sub(r"[^A-Za-z0-9_\-]", "_", name)
-    name = re.sub(r"_{2,}", "_", name).strip("_-")
-    return name
+# Der Name wird Ordnername UND Wert von G1_ENV (docker-compose) - die Regeln
+# stehen an EINER Stelle (env_store).
+sanitize_env_name = env_store.sanitize_env_name
 
 
 def _initial_name_from_argv() -> str:
     """Beim Bearbeiten einer vorhandenen Umgebung deren Namen vorbelegen."""
     argv = sys.argv[1:]
     if len(argv) >= 2 and argv[0] == "edit":
-        name = sanitize_env_name(Path(argv[1]).stem)
+        name = sanitize_env_name(env_store.env_name_of(argv[1]))
         if name:
             return name
     return DEFAULT_NAME
@@ -222,66 +205,6 @@ INITIAL_NAME = _initial_name_from_argv()
 # ---------------------------------------------------------------------------
 # Speichern (Export) - nur der Name wird gefragt
 # ---------------------------------------------------------------------------
-def _relocate_meshes(xml_path: Path, notes: list) -> None:
-    """Mesh-Referenzen im exportierten XML repo-relativ machen.
-
-    Der Exporter schreibt ABSOLUTE Pfade (z.B. /home/du/Downloads/kiste.stl).
-    Auf einem anderen Rechner - und im Docker-Container, der nur
-    unitree_mujoco/ sieht - existieren die nicht. Also: Datei nach
-    scene_editor/meshes/ (bzw. meshes/imported/) holen und im XML als
-    "../meshes/..." referenzieren (relativ zu scenes/, wie im Starter-Beispiel).
-    """
-    try:
-        tree = ET.parse(xml_path)
-    except (OSError, ET.ParseError) as exc:
-        notes.append(f"XML nicht nachbearbeitbar: {exc}")
-        return
-
-    root = tree.getroot()
-    changed = False
-    for asset in root.findall("asset"):
-        for mesh in asset.findall("mesh"):
-            file_attr = mesh.get("file")
-            if not file_attr:
-                continue
-            src = Path(os.path.expanduser(file_attr))
-            if not src.is_absolute():
-                src = (xml_path.parent / src)
-            try:
-                src = src.resolve()
-            except OSError:
-                continue
-            if not src.is_file():
-                notes.append(f"Mesh fehlt: {file_attr}")
-                continue
-            try:
-                inside = src.is_relative_to(MESHES_DIR)
-            except AttributeError:  # Python < 3.9
-                inside = str(src).startswith(str(MESHES_DIR))
-            if inside:
-                dest = src
-            else:
-                bes.IMPORTED_MESHES_DIR.mkdir(parents=True, exist_ok=True)
-                dest = bes.IMPORTED_MESHES_DIR / src.name
-                try:
-                    if not dest.is_file() or dest.stat().st_size != src.stat().st_size:
-                        shutil.copy2(src, dest)
-                    notes.append(f"{src.name} -> meshes/imported/")
-                except OSError as exc:
-                    notes.append(f"{src.name} konnte nicht kopiert werden: {exc}")
-                    continue
-            rel = os.path.relpath(dest, SCENES_DIR).replace(os.sep, "/")
-            if rel != file_attr:
-                mesh.set("file", rel)
-                changed = True
-
-    if changed:
-        try:
-            tree.write(xml_path, encoding="utf-8", xml_declaration=False)
-        except OSError as exc:
-            notes.append(f"XML nicht schreibbar: {exc}")
-
-
 def _repair_orphan_parents(editor, notes: list) -> None:
     """Verwaiste Eltern-Pfade reparieren, BEVOR exportiert wird.
 
@@ -368,12 +291,13 @@ def _fix_bad_stl_meshes(editor, notes: list) -> None:
 
 
 def save_environment(editor, name: str):
-    """Szene als scenes/<name>.xml speichern.
+    """Szene als eigenstaendigen Ordner scenes/<name>/ speichern.
 
-    Rueckgabe: (ok, titel, text). Es wird IMMER erst in einen temporaeren Ordner
-    exportiert und nur das Ergebnis nach scenes/ verschoben - der Exporter legt
-    naemlich zusaetzlich eine Datei "MuJoCo Model.xml" ab, die sonst als
-    Geister-Umgebung in jeder Auswahlliste auftauchen wuerde.
+    Rueckgabe: (ok, titel, text). Exportiert wird IMMER erst in einen
+    temporaeren Ordner (der Exporter legt dort noch "MuJoCo Model.xml" und eine
+    .json mit absoluten Pfaden ab - beides gehoert nicht in die Umgebung).
+    env_store.make_self_contained() schreibt dann umgebung.xml, holt alle
+    benutzten Dateien in den Ordner und raeumt nicht mehr benutzte weg.
     """
     clean = sanitize_env_name(name)
     if not clean:
@@ -381,38 +305,43 @@ def save_environment(editor, name: str):
             "Bitte einen Namen eingeben (Buchstaben, Ziffern, _ und -), "
             "z.B. 'kueche'.")
 
-    target = SCENES_DIR / f"{clean}.xml"
-    existed = target.is_file()
+    folder = env_store.env_dir(clean)
+    target = folder / env_store.ENV_FILE
+    legacy = SCENES_DIR / f"{clean}.xml"
+    existed = target.is_file() or legacy.is_file()
     notes = []
 
     try:
         _repair_orphan_parents(editor, notes)
         _fix_bad_stl_meshes(editor, notes)
         with tempfile.TemporaryDirectory(prefix="scene_export_") as td:
-            tmp_xml = Path(td) / f"{clean}.xml"
+            tmp_xml = Path(td) / "export.xml"
             editor.controller.export_scene(tmp_xml)
             if not tmp_xml.is_file():
                 return False, "Speichern fehlgeschlagen", \
                     "Der Editor hat keine XML-Datei erzeugt."
-            _relocate_meshes(tmp_xml, notes)
-
-            SCENES_DIR.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(tmp_xml), str(target))
-            tmp_json = tmp_xml.with_suffix(".json")
-            if tmp_json.is_file():
-                shutil.move(str(tmp_json), str(target.with_suffix(".json")))
+            env_store.make_self_contained(tmp_xml, folder, notes, prune=True)
+        # Dieselbe Umgebung im alten Format (scenes/<name>.xml) abloesen.
+        for old in (legacy, legacy.with_suffix(".json")):
+            if old.is_file():
+                old.unlink()
     except Exception as exc:  # pragma: no cover - Laufzeit
         return False, "Speichern fehlgeschlagen", f"{type(exc).__name__}: {exc}"
 
-    # Kontrolle: laesst sich die Umgebung ueberhaupt laden?
+    # Kontrolle: vollstaendig und ladbar?
+    problems = env_store.containment_problems(target)
     problem = bes.validate_scene(target)
 
-    lines = [f"{'Ueberschrieben' if existed else 'Gespeichert'}: scenes/{clean}.xml"]
+    lines = [f"{'Ueberschrieben' if existed else 'Gespeichert'}: "
+             f"scenes/{clean}/{env_store.ENV_FILE}"]
     lines.append("Beim Sim-Start unter 'Umgebung' als '%s' waehlbar." % clean)
     if notes:
         lines.append("Hinweise: " + "; ".join(notes))
+    if problems:
+        lines.append("ACHTUNG, nicht eigenstaendig: " + "; ".join(problems))
     if problem:
         lines.append("ACHTUNG: MuJoCo kann die Datei nicht laden -> " + problem.strip())
+    if problems or problem:
         return False, "Gespeichert, aber fehlerhaft", "\n".join(lines)
     return True, "Umgebung gespeichert", "\n".join(lines)
 
@@ -425,12 +354,12 @@ def _install_save_control(editor) -> None:
                                    expand_by_default=True):
             txt = server.gui.add_text(
                 "Name", initial_value=INITIAL_NAME,
-                hint="Nur der Name, kein Pfad. Gespeichert wird immer nach "
-                     "scene_editor/scenes/<name>.xml")
+                hint="Nur der Name, kein Pfad. Gespeichert wird immer als "
+                     "Ordner scene_editor/scenes/<name>/")
             btn = server.gui.add_button("Speichern", color="green")
             server.gui.add_markdown(
-                "Ziel: `scene_editor/scenes/<name>.xml` — genau diese Namen "
-                "stehen beim Sim-Start unter *Umgebung* zur Auswahl.")
+                "Ziel: `scene_editor/scenes/<name>/` (umgebung.xml + alle Meshes) — "
+                "genau diese Namen stehen beim Sim-Start unter *Umgebung* zur Auswahl.")
     except Exception as exc:  # pragma: no cover - GUI-Aufbau
         print(f"[run_editor] Speichern-Control nicht verfuegbar: {exc}", file=sys.stderr)
         return
@@ -442,7 +371,7 @@ def _install_save_control(editor) -> None:
             handle.visible = False
         except Exception:
             pass
-    editor.layout.export_path.value = str(SCENES_DIR / f"{INITIAL_NAME}.xml")
+    editor.layout.export_path.value = str(env_store.env_xml(INITIAL_NAME))
 
     @btn.on_click
     def _save(event) -> None:
@@ -452,7 +381,7 @@ def _install_save_control(editor) -> None:
             clean = sanitize_env_name(txt.value)
             if clean:
                 txt.value = clean
-                editor.layout.export_path.value = str(SCENES_DIR / f"{clean}.xml")
+                editor.layout.export_path.value = str(env_store.env_xml(clean))
             print(f"[run_editor] {title}: {body.replace(chr(10), ' | ')}")
             _notify(event, title, body)
         finally:
@@ -1147,27 +1076,30 @@ def _run_prompt(rest) -> int:
         return 2
 
     base = sanitize_env_name(text)[:40] or "prompt"
-    out = SCENES_DIR / f"{base}.xml"
-    i = 2
-    while out.exists():
-        out = SCENES_DIR / f"{base}_{i}.xml"
+    name, i = base, 2
+    while env_store.env_dir(name).exists() or (SCENES_DIR / f"{name}.xml").exists():
+        name = f"{base}_{i}"
         i += 1
 
-    print(f"[run_editor] Erzeuge Umgebung aus Text -> {out.name} (kann dauern) ...")
-    try:
-        _editor_cli.cli.main(["prompt", "--output-model-name", str(out), text],
-                             standalone_mode=False)
-    except Exception as exc:
-        print(f"[run_editor] Text-Generierung fehlgeschlagen: {exc}", file=sys.stderr)
-        return 1
-    if not out.is_file():
-        print("[run_editor] Es wurde keine Umgebung erzeugt (Antwort nicht verwertbar).",
-              file=sys.stderr)
-        return 1
+    print(f"[run_editor] Erzeuge Umgebung aus Text -> scenes/{name}/ (kann dauern) ...")
+    with tempfile.TemporaryDirectory(prefix="scene_prompt_") as td:
+        raw = Path(td) / "prompt.xml"
+        try:
+            _editor_cli.cli.main(["prompt", "--output-model-name", str(raw), text],
+                                 standalone_mode=False)
+        except Exception as exc:
+            print(f"[run_editor] Text-Generierung fehlgeschlagen: {exc}", file=sys.stderr)
+            return 1
+        if not raw.is_file():
+            print("[run_editor] Es wurde keine Umgebung erzeugt (Antwort nicht verwertbar).",
+                  file=sys.stderr)
+            return 1
+        # Meshes der generierten Szene (z.B. Objaverse-Downloads) mit in den Ordner.
+        out = env_store.make_self_contained(raw, env_store.env_dir(name))
 
-    print(f"[run_editor] Umgebung erzeugt: scenes/{out.name} - oeffne sie im Editor.")
+    print(f"[run_editor] Umgebung erzeugt: scenes/{name}/ - oeffne sie im Editor.")
     global INITIAL_NAME
-    INITIAL_NAME = out.stem
+    INITIAL_NAME = name
     try:
         _editor_cli.cli.main(["edit", str(out)], standalone_mode=False)
     except Exception as exc:

@@ -208,19 +208,18 @@ def _collect_mesh_assets(root, scene_dir: Path):
 
 
 def mesh_resource_path(mesh_path) -> str:
-    """Pfad eines Meshes relativ zu scene_editor/meshes/ (mit '/').
+    """Pfad eines Meshes relativ zu scene_editor/ (mit '/').
 
-    Genau dieser Ordner ist im ROS-Container als /scene_meshes gemountet
+    Genau dieser Ordner ist im ROS-Container als /scene_editor gemountet
     (docker-compose.yml) - RViz braucht also den Pfad DARUNTER, nicht nur den
-    Dateinamen: CAD-Importe liegen in meshes/cad/<name>/, Fremd-Meshes in
-    meshes/imported/. Liegt das Mesh woanders, bleibt es beim Dateinamen.
+    Dateinamen: Umgebungen bringen ihre Meshes in scenes/<name>/meshes/ mit,
+    aeltere Umgebungen nutzen die Bibliothek meshes/. Liegt das Mesh woanders,
+    bleibt es beim Dateinamen.
     """
     parts = Path(mesh_path).parts
     for i in range(len(parts) - 2, -1, -1):
-        if parts[i] == "scene_editor" and parts[i + 1] == "meshes":
-            rel = parts[i + 2:]
-            if rel:
-                return "/".join(rel)
+        if parts[i] == "scene_editor":
+            return "/".join(parts[i + 1:])
     return os.path.basename(str(mesh_path))
 
 

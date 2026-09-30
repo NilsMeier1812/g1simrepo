@@ -17,6 +17,7 @@ Grosse Netze und alle anderen Formate (STEP, IGES, PLY, GLB, ...) wandelt
 cad_import.py um; hier wird nur geprueft und (ASCII -> binaer) repariert.
 
     python3 mesh_utils.py [ordner|datei.stl]   # STLs pruefen, ASCII reparieren
+                                             # (ohne Argument: meshes/ + scenes/)
 """
 from __future__ import annotations
 
@@ -222,4 +223,6 @@ def check_meshes(target: Path) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(check_meshes(Path(sys.argv[1]) if len(sys.argv) > 1 else MESHES_DIR))
+    # Ohne Argument: Mesh-Bibliothek UND alle Umgebungen (scenes/<name>/meshes/).
+    _targets = [Path(a) for a in sys.argv[1:]] or [MESHES_DIR, HERE / "scenes"]
+    raise SystemExit(max(check_meshes(t) for t in _targets))

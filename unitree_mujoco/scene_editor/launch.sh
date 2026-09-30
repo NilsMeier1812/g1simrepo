@@ -2,52 +2,59 @@
 # =====================================================================
 # Starter fuer den mujoco-scene-editor und den MuJoCo-Viewer.
 #
-# Zentraler Umgebungs-Ordner:  scene_editor/scenes/
-#   -> Dieselben Umgebungen sind hier UND beim G1-Start (g1pilot/start.sh)
-#      waehlbar. Neue Umgebungen einfach im Editor speichern (dort wird nur
-#      noch der NAME gefragt, siehe run_editor.py).
+# Umgebungen:  scene_editor/scenes/<name>/umgebung.xml  (+ meshes/ daneben)
+#   -> Jede Umgebung ist EIN Ordner mit allem, was sie braucht - kopieren,
+#      zippen, loeschen, fertig. Dieselben Umgebungen sind hier UND beim
+#      G1-Start (g1pilot/start.sh) waehlbar. Neue einfach im Editor speichern
+#      (dort wird nur der NAME gefragt, siehe run_editor.py).
 #
 # Ohne Argument -> interaktives Menue: listet alle Umgebungen nummeriert auf;
-# pro Umgebung kannst du: bearbeiten (Editor), allein ansehen, oder MIT dem
-# G1 ansehen.
+# pro Umgebung kannst du: bearbeiten (Editor), ansehen, mit dem G1 ansehen,
+# als Zip packen.
 #
-#   ./launch.sh                 interaktives Menue (empfohlen)
-#   ./launch.sh new             leere Umgebung im Editor starten
-#   ./launch.sh edit <name>     bestimmte Umgebung im Editor oeffnen
-#   ./launch.sh prompt "text"   Umgebung per Text-Prompt generieren (API-Key)
-#   ./launch.sh view <name>     Umgebung allein im MuJoCo-Viewer ansehen
-#   ./launch.sh with-g1 <name>  Umgebung + G1 im MuJoCo-Viewer ansehen
-#   ./launch.sh list            vorhandene Umgebungen auflisten
-#   ./launch.sh view-g1         statisches Beispiel scene_g1_playground.xml
-#   ./launch.sh import <datei>  CAD/Mesh (STEP, IGES, STL, OBJ, PLY, GLB, ...) als
-#                               Umgebung importieren -> scenes/<name>.xml
-#                               (Optionen: ./launch.sh import --help)
-#   ./launch.sh check-meshes    STLs in meshes/ auf MuJoCo-Tauglichkeit pruefen
+#   ./launch.sh                   interaktives Menue (empfohlen)
+#   ./launch.sh new               leere Umgebung im Editor starten
+#   ./launch.sh edit <name>       bestimmte Umgebung im Editor oeffnen
+#   ./launch.sh prompt "text"     Umgebung per Text-Prompt generieren (API-Key)
+#   ./launch.sh view <name>       Umgebung allein im MuJoCo-Viewer ansehen
+#   ./launch.sh with-g1 <name>    Umgebung + G1 im MuJoCo-Viewer ansehen
+#   ./launch.sh list              vorhandene Umgebungen auflisten
+#   ./launch.sh view-g1           statisches Beispiel scene_g1_playground.xml
+#   ./launch.sh import <datei>    CAD/Mesh (STEP, IGES, STL, OBJ, PLY, GLB, ...) als
+#                                 Umgebung importieren -> scenes/<name>/
+#                                 (Optionen: ./launch.sh import --help)
+#   ./launch.sh pack <name> [ziel]  Umgebung als Zip (Default: export/<name>.zip)
+#   ./launch.sh unpack <zip> [--name N] [--force]   Zip als Umgebung einspielen
+#   ./launch.sh check [name]      Umgebung(en) auf Vollstaendigkeit pruefen
+#   ./launch.sh migrate           alte Umgebungen (scenes/<name>.xml) umwandeln
+#   ./launch.sh check-meshes      STLs auf MuJoCo-Tauglichkeit pruefen
 #
-# <name> darf "kueche", "kueche.xml", "scenes/kueche.xml" oder ein absoluter
-# Pfad sein - es wird immer in scenes/ nachgeschaut.
+# <name> darf "kueche", "scenes/kueche" oder der Pfad zur umgebung.xml sein.
+# Dateipfade (import/pack/unpack) duerfen relativ zum aktuellen Ordner sein.
 #
 # Der Editor oeffnet einen lokalen Webserver (http://127.0.0.1:8080; anderer
 # Port via SCENE_EDITOR_PORT=8081).
 # =====================================================================
 set -euo pipefail
+CALLER_PWD="$PWD"                 # fuer relative Dateipfade der Nutzer
 cd "$(dirname "$0")"
+SE_DIR="$PWD"
 
 VENV="${SCENE_EDITOR_VENV:-.venv}"   # Docker-Image: /opt/scene_editor_venv
+case "$VENV" in /*) ;; *) VENV="$SE_DIR/$VENV" ;; esac
 if [[ ! -x "$VENV/bin/python" ]]; then
   echo "Kein virtualenv gefunden. Bitte zuerst  ./setup.sh  ausfuehren." >&2
   exit 1
 fi
 
 # RoBits-Config persistent halten
-export ROBITS_CONFIG_DIR="${ROBITS_CONFIG_DIR:-$(pwd)/.robits_config}"
+export ROBITS_CONFIG_DIR="${ROBITS_CONFIG_DIR:-$SE_DIR/.robits_config}"
 export SCENE_EDITOR_PORT="${SCENE_EDITOR_PORT:-8080}"
 
 PY="$VENV/bin/python"
-SCENES_DIR="scenes"
 G1_PLAYGROUND="../unitree_robots/g1/scene_g1_playground.xml"
-
-mkdir -p "$SCENES_DIR"
+EXPORT_DIR="$SE_DIR/export"
+mkdir -p scenes
 
 # --- Selbstheilung: fehlende Teile im venv nachinstallieren ------------
 # Aeltere venvs haben die Pakete fuer den CAD-Import nicht (cadquery-ocp =
@@ -70,34 +77,37 @@ ensure_cad_backend() {
   fi
 }
 
-# --- alle Umgebungen aus dem zentralen Ordner einsammeln -------------
-collect_envs() {
-  ENVS=()
-  local f
-  for f in "$SCENES_DIR"/*.xml; do
-    [[ -e "$f" ]] || continue
-    ENVS+=("$f")
-  done
+# --- Umgebungen im alten Format (scenes/<name>.xml) einmalig umwandeln --
+# Ab jetzt ist jede Umgebung ein Ordner. Alte Dateien werden beim ersten Start
+# automatisch umgezogen (Meshes werden in den Ordner KOPIERT, die Bibliothek
+# meshes/ bleibt, wie sie ist).
+auto_migrate() {
+  "$PY" env_store.py migrate --quiet || true
 }
 
-# --- Umgebungs-Argument aufloesen: name | name.xml | pfad ------------
+# --- Umgebungen (alles ueber env_store.py - EINE Stelle kennt das Format) --
+collect_envs() {
+  ENVS=()
+  local n
+  while IFS= read -r n; do
+    [[ -n "$n" ]] && ENVS+=("$n")
+  done < <("$PY" env_store.py list)
+}
+
+# Name/Pfad -> Pfad der umgebung.xml (mit Liste der Umgebungen bei Tippfehler).
 resolve_env() {
-  local arg="$1" c
-  for c in "$arg" "$arg.xml" "$SCENES_DIR/$arg" "$SCENES_DIR/$arg.xml" \
-           "$SCENES_DIR/$(basename "$arg")"; do
-    if [[ -f "$c" ]]; then
-      printf '%s' "$c"
-      return 0
-    fi
-  done
+  local arg="$1"
+  if "$PY" env_store.py resolve "$arg" 2>/dev/null; then
+    return 0
+  fi
   echo "Umgebung nicht gefunden: $arg" >&2
   collect_envs
   if [[ ${#ENVS[@]} -eq 0 ]]; then
-    echo "In $SCENES_DIR/ liegt noch keine Umgebung - mit './launch.sh new' eine anlegen." >&2
+    echo "In scenes/ liegt noch keine Umgebung - mit './launch.sh new' eine anlegen." >&2
   else
-    echo "Vorhanden in $SCENES_DIR/:" >&2
+    echo "Vorhanden in scenes/:" >&2
     local e
-    for e in "${ENVS[@]}"; do echo "   - $(basename "$e" .xml)" >&2; done
+    for e in "${ENVS[@]}"; do echo "   - $e" >&2; done
   fi
   return 1
 }
@@ -105,8 +115,22 @@ resolve_env() {
 edit_scene() { ensure_cad_backend; exec "$PY" run_editor.py edit "$1"; }
 new_scene()  { ensure_cad_backend; exec "$PY" run_editor.py new; }
 
+# Werkzeuge, die Dateipfade des Nutzers bekommen, im Aufruf-Ordner starten,
+# damit relative Pfade stimmen (die Skripte finden ihre Ordner selbst).
+in_caller_dir() { cd "$CALLER_PWD"; exec "$PY" "$@"; }
+
 # CAD-/Mesh-Datei direkt als Umgebung importieren (ohne Editor).
-import_file() { ensure_cad_backend; exec "$PY" cad_import.py "$@"; }
+import_file() { ensure_cad_backend; in_caller_dir "$SE_DIR/cad_import.py" "$@"; }
+
+pack_env() {
+  local name="$1" target="${2:-}"
+  if [[ -z "$target" ]]; then
+    mkdir -p "$EXPORT_DIR"
+    target="$EXPORT_DIR"
+  fi
+  in_caller_dir "$SE_DIR/env_store.py" pack "$name" "$target"
+}
+
 # Der MuJoCo-Viewer ist ein Desktop-Fenster - im Docker-Container (Editor-
 # Profil) gibt es keins. Dann klar sagen statt mit einem GLFW-Fehler abzubrechen.
 need_display() {
@@ -135,11 +159,19 @@ view_with_g1() {
 list_envs() {
   collect_envs
   if [[ ${#ENVS[@]} -eq 0 ]]; then
-    echo "(noch keine Umgebungen in $SCENES_DIR/)"
+    echo "(noch keine Umgebungen in scenes/)"
     return 0
   fi
-  local e
-  for e in "${ENVS[@]}"; do echo "$(basename "$e" .xml)"; done
+  printf '%s\n' "${ENVS[@]}"
+}
+
+# Pfad-Eingabe aus dem Menue: Anfuehrungszeichen weg (Drag & Drop ins
+# Terminal setzt sie oft).
+read_path() {
+  local prompt="$1" p sq="'"
+  read -rp "$prompt" p
+  p="${p%\"}"; p="${p#\"}"; p="${p%$sq}"; p="${p#$sq}"
+  printf '%s' "$p"
 }
 
 # --- interaktives Menue ----------------------------------------------
@@ -147,7 +179,7 @@ menu() {
   collect_envs
   echo ""
   echo "=================== MuJoCo Scene Editor ==================="
-  echo "Umgebungen in scene_editor/${SCENES_DIR}/"
+  echo "Umgebungen in scene_editor/scenes/"
   echo "(dieselben, die auch beim G1-Start via g1pilot/start.sh waehlbar sind)"
   echo "----------------------------------------------------------"
   if [[ ${#ENVS[@]} -eq 0 ]]; then
@@ -155,26 +187,29 @@ menu() {
   else
     local i
     for i in "${!ENVS[@]}"; do
-      printf "   %2d) %s\n" "$((i + 1))" "$(basename "${ENVS[$i]}" .xml)"
+      printf "   %2d) %s\n" "$((i + 1))" "${ENVS[$i]}"
     done
   fi
   echo "    n) neue leere Umgebung im Editor"
   echo "    i) CAD-/Mesh-Datei (STEP, STL, ...) als Umgebung importieren"
+  echo "    u) Umgebung aus Zip einspielen"
   echo "    q) beenden"
   echo "----------------------------------------------------------"
-  local sel
-  read -rp "Auswahl (Zahl / n / i / q): " sel
+  local sel file
+  read -rp "Auswahl (Zahl / n / i / u / q): " sel
 
   case "$sel" in
     q|Q|"") exit 0 ;;
     n|N)    new_scene ;;
     i|I)
-      local file sq="'"
-      read -rp "Pfad zur Datei: " file
-      # Anfuehrungszeichen weg (Drag & Drop ins Terminal setzt sie oft)
-      file="${file%\"}"; file="${file#\"}"; file="${file%$sq}"; file="${file#$sq}"
+      file=$(read_path "Pfad zur Datei: ")
       [[ -n "$file" ]] || exit 0
       import_file "$file"
+      ;;
+    u|U)
+      file=$(read_path "Pfad zum Zip: ")
+      [[ -n "$file" ]] || exit 0
+      in_caller_dir "$SE_DIR/env_store.py" unpack "$file"
       ;;
     *[!0-9]*) echo "Ungueltige Eingabe." >&2; exit 1 ;;
     *)
@@ -182,19 +217,22 @@ menu() {
       if (( idx < 0 || idx >= ${#ENVS[@]} )); then
         echo "Ungueltige Nummer." >&2; exit 1
       fi
-      local chosen="${ENVS[$idx]}" act
+      local chosen="${ENVS[$idx]}" xml act
+      xml=$(resolve_env "$chosen") || exit 1
       echo ""
-      echo "Gewaehlt: $(basename "$chosen" .xml)"
+      echo "Gewaehlt: $chosen"
       echo "Aktion:"
       echo "   e) im Editor bearbeiten"
       echo "   v) allein im Viewer ansehen (ohne Roboter)"
       echo "   g) mit dem G1 im Viewer ansehen"
-      read -rp "Auswahl [e/v/g] (Default e): " act
+      echo "   p) als Zip packen (-> export/$chosen.zip)"
+      read -rp "Auswahl [e/v/g/p] (Default e): " act
       act="${act:-e}"
       case "$act" in
-        e|E) edit_scene "$chosen" ;;
-        v|V) view_scene "$chosen" ;;
-        g|G) view_with_g1 "$chosen" ;;
+        e|E) edit_scene "$xml" ;;
+        v|V) view_scene "$xml" ;;
+        g|G) view_with_g1 "$xml" ;;
+        p|P) pack_env "$chosen" ;;
         *)   echo "Ungueltige Aktion." >&2; exit 1 ;;
       esac
       ;;
@@ -204,11 +242,22 @@ menu() {
 # --- Dispatch --------------------------------------------------------
 CMD="${1:-menu}"; shift || true
 
+case "$CMD" in
+  -h|--help|help|check-meshes) ;;
+  *) auto_migrate ;;
+esac
+
 # Fuer die Kommandos mit Umgebungs-Argument: Default = Starter-Umgebung, und
 # der Name wird nachgeschlagen statt blind durchgereicht.
 need_env() {
-  local arg="${1:-$SCENES_DIR/environment_starter.xml}"
-  resolve_env "$arg"
+  resolve_env "${1:-environment_starter}"
+}
+
+need_arg() {
+  if [[ -z "${1:-}" ]]; then
+    echo "$2" >&2
+    exit 1
+  fi
 }
 
 case "$CMD" in
@@ -217,11 +266,8 @@ case "$CMD" in
   new)     new_scene ;;
   edit)    ENV_FILE=$(need_env "${1:-}") || exit 1; edit_scene "$ENV_FILE" ;;
   prompt)
-    if [[ $# -eq 0 ]]; then
-      echo "Bitte eine Beschreibung angeben, z.B.:" >&2
-      echo "   ./launch.sh prompt \"a kitchen with a table and two boxes\"" >&2
-      exit 1
-    fi
+    need_arg "${1:-}" "Bitte eine Beschreibung angeben, z.B.:
+   ./launch.sh prompt \"a kitchen with a table and two boxes\""
     ensure_cad_backend
     exec "$PY" run_editor.py prompt "$@"
     ;;
@@ -229,21 +275,28 @@ case "$CMD" in
   with-g1) ENV_FILE=$(need_env "${1:-}") || exit 1; view_with_g1 "$ENV_FILE" ;;
   view-g1) view_scene "$G1_PLAYGROUND" ;;
   import|convert)
-    if [[ $# -eq 0 ]]; then
-      echo "Bitte eine Datei angeben, z.B.:" >&2
-      echo "   ./launch.sh import ~/Downloads/zelle.stp" >&2
-      echo "   ./launch.sh import --help     (alle Optionen)" >&2
-      exit 1
-    fi
+    need_arg "${1:-}" "Bitte eine Datei angeben, z.B.:
+   ./launch.sh import ~/Downloads/zelle.stp
+   ./launch.sh import --help     (alle Optionen)"
     import_file "$@"
     ;;
-  check-meshes) exec "$PY" mesh_utils.py "$@" ;;
+  pack)
+    need_arg "${1:-}" "Welche Umgebung? z.B.:  ./launch.sh pack kueche [ziel.zip|ordner]"
+    pack_env "$@"
+    ;;
+  unpack)
+    need_arg "${1:-}" "Welches Zip? z.B.:  ./launch.sh unpack ~/Downloads/kueche.zip [--name N] [--force]"
+    in_caller_dir "$SE_DIR/env_store.py" unpack "$@"
+    ;;
+  check)   exec "$PY" env_store.py check "$@" ;;
+  migrate) exec "$PY" env_store.py migrate ;;
+  check-meshes) in_caller_dir "$SE_DIR/mesh_utils.py" "$@" ;;
   -h|--help|help)
-    sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'
     ;;
   *)
     echo "Unbekanntes Kommando: $CMD" >&2
-    echo "Benutze: (ohne Argument) | new | edit [name] | prompt \"text\" | view [name] | with-g1 [name] | list | view-g1 | import <datei> | check-meshes" >&2
+    echo "Benutze: (ohne Argument) | new | edit [name] | prompt \"text\" | view [name] | with-g1 [name] | list | view-g1 | import <datei> | pack <name> | unpack <zip> | check [name] | migrate | check-meshes" >&2
     exit 1
     ;;
 esac
