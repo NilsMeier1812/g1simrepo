@@ -226,7 +226,8 @@ else
   fi
 
   # ── 2d) Umgebung waehlen (G1 bleibt gleich, nur die Welt drumherum) ────
-  #   Umgebungen werden im scene_editor gebaut (scene_editor/scenes/*.xml).
+  #   Umgebungen werden im scene_editor gebaut: je Umgebung ein Ordner
+  #   scene_editor/scenes/<name>/ (umgebung.xml + meshes/, siehe env_store.py).
   #   "Standard" = bisheriges Terrain (scene.xml). Bei einer Auswahl erzeugt
   #   build_env_scene.py auf dem HOST eine kombinierte Szene (G1 + Umgebung) im
   #   g1-Ordner; der Container mountet das Repo nur read-only, kann also selbst
@@ -239,29 +240,22 @@ else
   [ -x "$_scene_editor/.venv/bin/python" ] && _scene_py="$_scene_editor/.venv/bin/python"
 
   _env_menu=("Standard — aktuelles Terrain (scene.xml)|__default__")
-  if [ -d "$_scenes_dir" ]; then
-    for _f in "$_scenes_dir"/*.xml; do
-      [ -e "$_f" ] || continue
-      _b=$(basename "$_f" .xml)
-      # Nur Namen, die als G1_ENV/Dateiname taugen (Leer-/Sonderzeichen brechen
-      # sonst spaeter beim docker-compose-Durchreichen). "MuJoCo Model" ist
-      # Beifang aelterer Editor-Exporte.
-      case "$_b" in
-        *[!A-Za-z0-9_-]*) echo -e "${Y}[start] Umgebung '${_b}.xml' uebersprungen (Sonderzeichen im Namen).${R}"; continue ;;
-      esac
-      _env_menu+=("$_b|$_b")
-    done
-  fi
+  # Liste aus env_store.py: nur Namen, die als G1_ENV taugen (Leer-/Sonder-
+  # zeichen brechen beim docker-compose-Durchreichen); Beifang aelterer
+  # Editor-Exporte und kaputte Dateien sortiert es aus.
+  while IFS= read -r _b; do
+    [ -n "$_b" ] && _env_menu+=("$_b|$_b")
+  done < <("$_scene_py" "$_scene_editor/env_store.py" list 2>/dev/null || true)
   ask_menu "2d) Welche Umgebung laden? (G1 wird unveraendert hineingeladen)" 1 "${G1_ENV:-}" "${_env_menu[@]}"
   if [ "$REPLY_VALUE" = "__default__" ] || [ -z "$REPLY_VALUE" ]; then
     G1_ENV=""
   else
     G1_ENV="$REPLY_VALUE"
-    if [ ! -f "$_scenes_dir/${G1_ENV}.xml" ]; then
+    if ! "$_scene_py" "$_scene_editor/env_store.py" resolve "$G1_ENV" >/dev/null 2>&1; then
       echo -e "${Y}[start] Umgebung '${G1_ENV}' gibt es nicht (mehr) in ${_scenes_dir}/ -> Standard.${R}"
       G1_ENV=""
     elif ! _env_out=$("$_scene_py" "$_scene_editor/build_env_scene.py" \
-           --env "$_scenes_dir/${G1_ENV}.xml" --inspire "${G1_INSPIRE_HANDS:-0}" 2>&1 >/dev/null); then
+           --env "$G1_ENV" --inspire "${G1_INSPIRE_HANDS:-0}" 2>&1 >/dev/null); then
       echo -e "${Y}[start] Umgebung '${G1_ENV}' konnte nicht geladen werden -> Standard.${R}"
       [ -n "$_env_out" ] && echo -e "${DIM}${_env_out}${R}"
       echo -e "${DIM}        Reparieren: Menue 'Umgebungen bearbeiten' -> 'Auf Ladbarkeit pruefen'.${R}"

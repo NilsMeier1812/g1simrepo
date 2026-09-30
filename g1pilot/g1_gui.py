@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import os
 import queue
-import re
 import shutil
 import subprocess
 import sys
@@ -36,12 +35,11 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 try:
     import tkinter as tk
-    from tkinter import ttk, messagebox, simpledialog
+    from tkinter import ttk, messagebox, simpledialog, filedialog
 except Exception as exc:  # pragma: no cover - nur wenn tkinter fehlt
     sys.stderr.write(
         "[g1_gui] Tkinter ist nicht verfuegbar (%s).\n"
@@ -60,6 +58,13 @@ LAUNCH_SH = SCENE_DIR / "launch.sh"
 SETUP_SH = SCENE_DIR / "setup.sh"
 SCENE_VENV = SCENE_DIR / ".venv" / "bin" / "python"
 BUILD_ENV_PY = SCENE_DIR / "build_env_scene.py"
+EXPORT_DIR = SCENE_DIR / "export"          # Default-Ziel fuer Umgebungs-Zips
+
+# Umgebungen sind Ordner scenes/<name>/ (umgebung.xml + meshes/). Das Format
+# kennt genau EIN Modul (env_store.py, nur Standardbibliothek) - Editor,
+# Generator, launch.sh, start.sh und diese GUI benutzen es gemeinsam.
+sys.path.insert(0, str(SCENE_DIR))
+import env_store  # noqa: E402
 
 # Port des Editor-Webservers (viser). Muss zu run_editor.py/launch.sh passen.
 EDITOR_PORT = os.environ.get("SCENE_EDITOR_PORT", "8080")
@@ -123,53 +128,14 @@ def docker_ready() -> bool:
         return False
 
 
-# Dateien, die frueher beim Editor-Export als Beifang in scenes/ landeten und
-# sonst als Geister-Umgebung in der Auswahl auftauchen.
-_JUNK_STEMS = {"mujoco model"}
-_SAFE_STEM_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-
-
-def scene_problem(path: Path) -> str | None:
-    """Warum eine Datei aus scenes/ KEINE brauchbare Umgebung ist (sonst None).
-
-    Der Dateiname wird als G1_ENV per docker-compose weitergereicht und geht in
-    den Namen der erzeugten Szene ein - Leerzeichen/Sonderzeichen brechen dabei.
-    """
-    stem = path.stem
-    if stem.strip().lower() in _JUNK_STEMS:
-        return "Beifang eines alten Editor-Exports (kann geloescht werden)"
-    if not _SAFE_STEM_RE.match(stem):
-        return "Dateiname enthaelt Leer-/Sonderzeichen (nur A-Z, a-z, 0-9, _ und -)"
-    try:
-        raw = path.read_text(encoding="utf-8", errors="replace")
-        root = ET.fromstring(re.sub(r"<!--.*?-->", "", raw, flags=re.DOTALL))
-    except (OSError, ET.ParseError) as exc:
-        return f"kein lesbares XML ({exc})"
-    if root.tag != "mujoco":
-        return f"Wurzel-Element <{root.tag}> statt <mujoco>"
-    return None
-
-
-def list_scenes() -> list[Path]:
-    """Alle brauchbaren Umgebungen aus scene_editor/scenes/*.xml (sortiert)."""
-    if not SCENES_DIR.is_dir():
-        return []
-    return sorted(p for p in SCENES_DIR.glob("*.xml")
-                  if p.is_file() and scene_problem(p) is None)
+def list_scenes() -> list:
+    """Alle brauchbaren Umgebungen (env_store.Env: .name, .xml, .folder)."""
+    return env_store.list_envs()
 
 
 def list_broken_scenes() -> list[tuple[Path, str]]:
-    """Dateien in scenes/, die nicht als Umgebung taugen (+ Grund)."""
-    if not SCENES_DIR.is_dir():
-        return []
-    out = []
-    for p in sorted(SCENES_DIR.glob("*.xml")):
-        if not p.is_file():
-            continue
-        why = scene_problem(p)
-        if why:
-            out.append((p, why))
-    return out
+    """Eintraege in scenes/, die nicht als Umgebung taugen (+ Grund)."""
+    return env_store.scan()[1]
 
 
 def scene_python() -> str:
@@ -716,9 +682,9 @@ class SimFrame(tk.Frame):
         """Umgebungsliste frisch aus scenes/ ziehen (Editor laeuft ggf. parallel)."""
         self._scene_paths: dict[str, str] = {DEFAULT_ENV_LABEL: ""}
         names = [DEFAULT_ENV_LABEL]
-        for p in list_scenes():
-            names.append(p.stem)
-            self._scene_paths[p.stem] = p.stem
+        for env in list_scenes():
+            names.append(env.name)
+            self._scene_paths[env.name] = env.name
         self._env_box.configure(values=names)
         if self.v_env.get() not in names:
             self.v_env.set(DEFAULT_ENV_LABEL)
@@ -740,7 +706,7 @@ class SimFrame(tk.Frame):
 
     def _prepare_env(self, name: str) -> bool:
         """Kombinierte Szene vor dem Start erzeugen und Fehler klar melden."""
-        if not (SCENES_DIR / f"{name}.xml").is_file():
+        if env_store.find(name) is None:
             messagebox.showerror(
                 "Umgebung weg",
                 f"Die Umgebung '{name}' gibt es nicht mehr in\n{SCENES_DIR}.\n\n"
@@ -950,8 +916,8 @@ class SceneFrame(tk.Frame):
         super().__init__(parent, bg=BG)
         self.app = app
         nav_header(self, app, "Umgebungen bearbeiten",
-                   "Szenen aus scene_editor/scenes/ — dieselben, die beim Sim-Start "
-                   "waehlbar sind.")
+                   "Umgebungen aus scene_editor/scenes/<name>/ — dieselben, die beim "
+                   "Sim-Start waehlbar sind.")
         body = ScrollableFrame(self)
         body.pack(fill="both", expand=True)
         self._body = body.body
@@ -1014,6 +980,12 @@ class SceneFrame(tk.Frame):
         tk.Button(grid, text="🗑  Umgebung loeschen", command=self._delete_scene,
                   bg=CARD, fg=RED, relief="flat", padx=10, pady=8).grid(
             row=2, column=1, padx=4, pady=4, sticky="ew")
+        tk.Button(grid, text="📦  Als Zip exportieren", command=self._pack_scene,
+                  bg=CARD, fg=FG, relief="flat", padx=10, pady=8).grid(
+            row=3, column=0, padx=4, pady=4, sticky="ew")
+        tk.Button(grid, text="📥  Zip einspielen", command=self._unpack_scene,
+                  bg=CARD, fg=FG, relief="flat", padx=10, pady=8).grid(
+            row=3, column=1, padx=4, pady=4, sticky="ew")
         grid.columnconfigure(0, weight=1)
         grid.columnconfigure(1, weight=1)
 
@@ -1028,8 +1000,9 @@ class SceneFrame(tk.Frame):
         tk.Label(new, text=(
                      f"Der Editor oeffnet einen lokalen Webserver ({EDITOR_URL}) im Browser. "
                      "Zum Speichern oben im Editor unter 'Umgebung speichern' nur den NAMEN "
-                     "eintippen — die Datei landet automatisch in scenes/ und steht danach "
-                     "beim Sim-Start zur Auswahl (Liste hier mit ↻ auffrischen)."),
+                     "eintippen — die Umgebung landet als Ordner in scenes/<name>/ (mit allen "
+                     "Meshes) und steht danach beim Sim-Start zur Auswahl (Liste hier mit ↻ "
+                     "auffrischen). Weitergeben: 📦 Zip exportieren / 📥 Zip einspielen."),
                  bg=CARD, fg=MUTED, font=("TkDefaultFont", 9),
                  wraplength=560, justify="left").pack(anchor="w", pady=(6, 0))
 
@@ -1039,7 +1012,7 @@ class SceneFrame(tk.Frame):
         scenes = getattr(self, "_scenes", None)
         sel = self.listbox.curselection() if scenes else ()
         if scenes and sel:
-            previous = scenes[sel[0]].stem
+            previous = scenes[sel[0]].name
 
         self.listbox.configure(state="normal")
         self.listbox.delete(0, "end")
@@ -1048,11 +1021,12 @@ class SceneFrame(tk.Frame):
             self.listbox.insert("end", "(noch keine Umgebungen — 'Leere Umgebung' anlegen)")
             self.listbox.configure(state="disabled")
         else:
-            for p in self._scenes:
-                self.listbox.insert("end", p.stem)
+            for env in self._scenes:
+                label = env.name + ("   (altes Format)" if env.legacy else "")
+                self.listbox.insert("end", label)
             idx = 0
-            for i, p in enumerate(self._scenes):
-                if p.stem == previous:
+            for i, env in enumerate(self._scenes):
+                if env.name == previous:
                     idx = i
                     break
             self.listbox.selection_set(idx)
@@ -1079,9 +1053,9 @@ class SceneFrame(tk.Frame):
                                 parent=self)
             return None
         scene = self._scenes[sel[0]]
-        if not scene.is_file():
+        if not scene.xml.is_file():
             messagebox.showerror("Umgebung weg",
-                                 f"{scene.name} gibt es nicht mehr.", parent=self)
+                                 f"'{scene.name}' gibt es nicht mehr.", parent=self)
             self._reload_scenes()
             return None
         return scene
@@ -1091,36 +1065,104 @@ class SceneFrame(tk.Frame):
         scene = self._selected_scene()
         if scene is None:
             return
-        ok, out = build_env_scene(scene.stem, self.v_hands.get())
-        if ok:
+        ok, out = build_env_scene(scene.name, self.v_hands.get())
+        missing = [] if scene.legacy else env_store.containment_problems(scene.xml)
+        if ok and not missing:
             messagebox.showinfo(
                 "Umgebung in Ordnung",
-                f"'{scene.stem}' laesst sich mit dem G1 kombinieren und laden.\n\n"
+                f"'{scene.name}' laesst sich mit dem G1 kombinieren und laden.\n\n"
                 f"{out}", parent=self)
+        elif ok:
+            messagebox.showwarning(
+                "Umgebung laedt, ist aber nicht eigenstaendig",
+                f"'{scene.name}' laedt, braucht aber Dateien ausserhalb ihres Ordners "
+                "(Zip/Weitergabe wuerde nicht funktionieren):\n\n"
+                + "\n".join(f"• {m}" for m in missing)
+                + "\n\nEinmal im Editor oeffnen und speichern behebt das.", parent=self)
         else:
             messagebox.showerror(
                 "Umgebung fehlerhaft",
-                f"'{scene.stem}' laesst sich nicht laden:\n\n{out or '(keine Meldung)'}",
+                f"'{scene.name}' laesst sich nicht laden:\n\n{out or '(keine Meldung)'}",
                 parent=self)
 
     def _delete_scene(self) -> None:
         scene = self._selected_scene()
         if scene is None:
             return
+        what = scene.xml if scene.legacy else scene.folder
         if not messagebox.askyesno(
                 "Umgebung loeschen",
-                f"'{scene.stem}' wirklich loeschen?\n\n{scene}\n"
-                "(die zugehoerige .json-Datei wird mitgeloescht)", parent=self):
+                f"'{scene.name}' wirklich loeschen?\n\n{what}\n"
+                + ("(die zugehoerige .json-Datei wird mitgeloescht)" if scene.legacy
+                   else "(der ganze Ordner samt Meshes)"), parent=self):
             return
         try:
-            scene.unlink()
-            sidecar = scene.with_suffix(".json")
-            if sidecar.is_file():
-                sidecar.unlink()
+            if scene.legacy:
+                scene.xml.unlink()
+                sidecar = scene.xml.with_suffix(".json")
+                if sidecar.is_file():
+                    sidecar.unlink()
+            else:
+                shutil.rmtree(scene.folder)
         except OSError as exc:
             messagebox.showerror("Loeschen fehlgeschlagen", str(exc), parent=self)
             return
         self._reload_scenes()
+
+    def _pack_scene(self) -> None:
+        """Umgebung als Zip speichern (zum Weitergeben/Sichern)."""
+        scene = self._selected_scene()
+        if scene is None:
+            return
+        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        target = filedialog.asksaveasfilename(
+            parent=self, title=f"'{scene.name}' als Zip speichern",
+            initialdir=str(EXPORT_DIR), initialfile=f"{scene.name}.zip",
+            defaultextension=".zip", filetypes=[("Zip", "*.zip")])
+        if not target:
+            return
+        try:
+            if scene.legacy:
+                env_store.migrate(scene)
+            out = env_store.pack(scene.name, target)
+        except (env_store.EnvError, OSError) as exc:
+            messagebox.showerror("Export fehlgeschlagen", str(exc), parent=self)
+            return
+        self._reload_scenes()
+        messagebox.showinfo(
+            "Umgebung exportiert",
+            f"{out}\n({out.stat().st_size / 1e6:.1f} MB)\n\nAuf dem anderen Rechner hier "
+            "mit '📥 Zip einspielen' oder  ./launch.sh unpack <zip>.", parent=self)
+
+    def _unpack_scene(self) -> None:
+        """Umgebung aus einem Zip einspielen."""
+        path = filedialog.askopenfilename(
+            parent=self, title="Umgebung (Zip) einspielen",
+            filetypes=[("Zip", "*.zip"), ("Alle Dateien", "*")])
+        if not path:
+            return
+        try:
+            env = env_store.unpack(path)
+        except env_store.EnvError as exc:
+            if "gibt es schon" not in str(exc):
+                messagebox.showerror("Einspielen fehlgeschlagen", str(exc), parent=self)
+                return
+            if not messagebox.askyesno(
+                    "Umgebung ersetzen?",
+                    f"{exc}\n\nVorhandene Umgebung durch das Zip ersetzen?", parent=self):
+                return
+            try:
+                env = env_store.unpack(path, force=True)
+            except (env_store.EnvError, OSError) as exc2:
+                messagebox.showerror("Einspielen fehlgeschlagen", str(exc2), parent=self)
+                return
+        except OSError as exc:
+            messagebox.showerror("Einspielen fehlgeschlagen", str(exc), parent=self)
+            return
+        self._reload_scenes()
+        messagebox.showinfo("Umgebung eingespielt",
+                            f"'{env.name}' liegt jetzt in {env.folder}\n"
+                            "und ist beim Sim-Start waehlbar.", parent=self)
 
     def _run_scene(self, cmd: str) -> None:
         scene = self._selected_scene()
@@ -1131,7 +1173,7 @@ class SceneFrame(tk.Frame):
         title = {"edit": "Editor", "view": "Viewer", "with-g1": "Viewer + G1"}[cmd]
         # 'edit' startet den Web-Editor -> Browser oeffnen; view/with-g1 sind
         # native MuJoCo-Fenster.
-        self._run_cmd([cmd, str(scene)], f"{title}: {scene.stem}", env=env,
+        self._run_cmd([cmd, str(scene.xml)], f"{title}: {scene.name}", env=env,
                       browser=(cmd == "edit"))
 
     def _run_prompt(self) -> None:

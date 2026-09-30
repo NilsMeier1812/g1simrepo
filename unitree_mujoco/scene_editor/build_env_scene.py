@@ -10,9 +10,10 @@ Idee des Systems:
       - der Weld "hold_base_weld" (haelt den G1 am Anfang an torso_link fest;
         wird vom Sim per Name gesteuert, siehe hold_base.py)
       - visual/statistic-Grundeinstellungen
-  * UMGEBUNG (scene_editor/scenes/<name>.xml): enthaelt NUR Hindernisse bzw.
-    Objekte zum Interagieren/Greifen - also nur <asset> (eigene Meshes) und
-    die Objekte im <worldbody>. KEIN Roboter, KEIN Boden, KEIN Licht, KEIN Weld.
+  * UMGEBUNG (scene_editor/scenes/<name>/umgebung.xml, Meshes daneben in
+    meshes/ - siehe env_store.py): enthaelt NUR Hindernisse bzw. Objekte zum
+    Interagieren/Greifen - also nur <asset> (eigene Meshes) und die Objekte
+    im <worldbody>. KEIN Roboter, KEIN Boden, KEIN Licht, KEIN Weld.
 
 Dieses Skript erzeugt die kombinierte Szene  unitree_robots/g1/scene_env_<name>.xml
 = BASIS + Objekte der Umgebung.
@@ -46,15 +47,14 @@ Ausserdem robust gemacht:
     kompiliert. Nur eine ladbare Szene wird geschrieben (atomar).
 
 Aufruf:
-    python3 build_env_scene.py --env scenes/warehouse.xml
-    python3 build_env_scene.py --env scenes/warehouse.xml --inspire 1
-    python3 build_env_scene.py --env warehouse            (Kurzform, sucht in scenes/)
+    python3 build_env_scene.py --env warehouse                 (Name, sucht in scenes/)
+    python3 build_env_scene.py --env warehouse --inspire 1
+    python3 build_env_scene.py --env scenes/warehouse/umgebung.xml
 """
 import argparse
 import os
 import re
 import shutil
-import struct
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -63,11 +63,14 @@ GRASP_PREFIX_RE = re.compile(r"^grasp_", re.IGNORECASE)
 
 HERE = Path(__file__).resolve().parent          # .../unitree_mujoco/scene_editor
 
-# STL-Pruefung/ASCII-Reparatur liegt in step_import.py (haengt selbst an nichts
-# ausser der Standardbibliothek, laeuft also auch unter dem System-python3, mit
-# dem start.sh dieses Skript aufruft).
+# STL-Pruefung/ASCII-Reparatur (mesh_utils) und die Metadaten aus CAD-Importen
+# (cad_import) haengen beim Import an nichts ausser der Standardbibliothek -
+# laufen also auch unter dem System-python3, mit dem start.sh dieses Skript
+# aufruft.
 sys.path.insert(0, str(HERE))
-import step_import  # noqa: E402
+import cad_import  # noqa: E402
+import env_store  # noqa: E402
+import mesh_utils  # noqa: E402
 
 MJ_ROOT = HERE.parent                            # .../unitree_mujoco
 G1_DIR = MJ_ROOT / "unitree_robots" / "g1"
@@ -376,17 +379,8 @@ def _make_grasp_body(geom_el, name, pos, quat):
 
 # MuJoCos eigene Grenze fuer die Face-Anzahl in binaeren STL-Dateien (siehe
 # dessen Fehlermeldung "number of faces should be between 1 and 200000").
-_MJ_STL_MAX_FACES = step_import.MJ_MAX_FACES
-
-
-def is_valid_binary_stl(path: Path) -> bool:
-    """True, wenn MuJoCo diese Datei als binaere STL laden kann.
-
-    MuJoCo lehnt ASCII-STL beim Kompilieren ab ("stl_decoder: ... perhaps this
-    is an ASCII file?") und ebenso Netze mit mehr als 200000 Dreiecken.
-    """
-    faces = step_import.stl_face_count(path)
-    return faces is not None and 1 <= faces <= _MJ_STL_MAX_FACES
+_MJ_STL_MAX_FACES = mesh_utils.MJ_MAX_FACES
+is_valid_binary_stl = mesh_utils.is_valid_binary_stl
 
 
 def convert_stl_to_binary(path: Path, warnings) -> bool:
@@ -399,7 +393,7 @@ def convert_stl_to_binary(path: Path, warnings) -> bool:
     """
     notes = []
     try:
-        step_import.ascii_stl_to_binary(path)
+        mesh_utils.ascii_stl_to_binary(path)
     except Exception as exc:
         first_error = exc
         try:
@@ -414,13 +408,13 @@ def convert_stl_to_binary(path: Path, warnings) -> bool:
     else:
         notes.append("war eine ASCII-STL -> automatisch binaer neu geschrieben")
 
-    faces = step_import.stl_face_count(path)
+    faces = mesh_utils.stl_face_count(path)
     if faces is not None and faces > _MJ_STL_MAX_FACES:
         warnings.append(
             f"  ! '{path.name}' hat {faces} Dreiecke, MuJoCo kann hoechstens "
             f"{_MJ_STL_MAX_FACES} -> Objekt(e) damit werden weggelassen. "
-            "Mesh vereinfachen oder die STEP-Datei mit Genauigkeit 'coarse' "
-            "neu konvertieren (Editor: Ordner 'STEP/CAD-Import').")
+            "Die Datei ueber den CAD-Import einlesen, der zerlegt sie: "
+            "./launch.sh import <datei>")
         return False
     if not is_valid_binary_stl(path):
         warnings.append(f"  ! '{path.name}' bleibt nach der Reparatur ungueltig "
@@ -533,6 +527,10 @@ def merge_assets(env_root, asset, env_dir, warnings):
 
 def merge_environment(env_root, asset, wb, env_dir, warnings):
     """Mischt die Objekte der Umgebung normalisiert in die Basis ein."""
+    # Meshes aus CAD-Importen: Farbe, "nur Optik", Kollisions-Stuecke und
+    # inertia="shell" (flache Teile) aus dem Import-Manifest nachtragen, falls
+    # die Umgebung sie nicht selbst setzt (z.B. nach einem Editor-Durchlauf).
+    cad_import.apply_mesh_defaults(env_root, env_dir)
     rename_map, dropped_meshes = merge_assets(env_root, asset, env_dir, warnings)
 
     collected = []
@@ -599,35 +597,14 @@ def merge_environment(env_root, asset, wb, env_dir, warnings):
 # Ein-/Ausgabe
 # ---------------------------------------------------------------------------
 def resolve_env_path(arg: str) -> Path:
-    """Umgebung finden. Erlaubt sind Pfad, Dateiname und blosser Name:
-        scenes/kueche.xml | kueche.xml | kueche | /abs/pfad/kueche.xml
-    """
-    raw = Path(os.path.expanduser(arg))
-    candidates = []
-    if raw.is_absolute():
-        candidates.append(raw)
-    else:
-        candidates.append(Path.cwd() / raw)
-        candidates.append(SCENES_DIR / raw.name)
-    if raw.suffix.lower() != ".xml":
-        extra = []
-        for c in list(candidates):
-            extra.append(c.with_name(c.name + ".xml"))
-        candidates.extend(extra)
-    for c in candidates:
-        try:
-            rc = c.resolve()
-        except OSError:
-            continue
-        if rc.is_file():
-            return rc
-    return (candidates[0]).resolve()
+    """Umgebung finden (Name, Ordner oder Pfad, siehe env_store.resolve).
+    Nicht gefunden -> ein nicht existierender Pfad (fuer die Fehlermeldung)."""
+    found = env_store.resolve(arg)
+    return found if found is not None else Path(os.path.expanduser(arg)).resolve()
 
 
 def available_envs() -> list:
-    if not SCENES_DIR.is_dir():
-        return []
-    return sorted(p.stem for p in SCENES_DIR.glob("*.xml") if p.is_file())
+    return env_store.names()
 
 
 def parse_environment(env_path: Path):
@@ -680,26 +657,26 @@ def main() -> None:
     if not (G1_DIR / robot_file).is_file():
         sys.exit(f"[build_env_scene] Robotermodell fehlt: {G1_DIR / robot_file}")
 
-    name = env_path.stem
+    name = env_store.env_name_of(env_path)
     out_path = Path(args.out).resolve() if args.out else (G1_DIR / f"scene_env_{name}.xml")
 
     try:
         env_root = parse_environment(env_path)
     except (OSError, ET.ParseError, ValueError) as exc:
-        sys.exit(f"[build_env_scene] Umgebung '{env_path.name}' ist kein lesbares MuJoCo-XML: {exc}")
+        sys.exit(f"[build_env_scene] Umgebung '{name}' ist kein lesbares MuJoCo-XML: {exc}")
 
     warnings = []
     mj, asset, wb = build_base(robot_file, f"g1_env_{name}")
     try:
         n_obstacles, n_grasp = merge_environment(env_root, asset, wb, env_dir, warnings)
     except Exception as exc:  # pragma: no cover - defensiv
-        sys.exit(f"[build_env_scene] Umgebung '{env_path.name}' konnte nicht eingemischt "
+        sys.exit(f"[build_env_scene] Umgebung '{name}' konnte nicht eingemischt "
                  f"werden: {exc}")
 
     ET.indent(mj, space="  ")
     header = (
         "<!-- AUTO-GENERIERT von scene_editor/build_env_scene.py.\n"
-        f"     Basis (G1 + Licht + Boden + Weld) + Umgebung: {env_path.name}\n"
+        f"     Basis (G1 + Licht + Boden + Weld) + Umgebung: {name}\n"
         f"     Roboter: {robot_file}\n"
         f"     Objekte: {n_obstacles} Hindernis(se), {n_grasp} Greif-Objekt(e)\n"
         "     NICHT von Hand editieren - wird bei jeder Umgebungs-Auswahl neu erzeugt. -->\n"
@@ -721,7 +698,7 @@ def main() -> None:
             tmp_path.unlink(missing_ok=True)
             for w in warnings:
                 print(w, file=sys.stderr)
-            sys.exit(f"[build_env_scene] Umgebung '{env_path.name}' laesst sich nicht laden:\n"
+            sys.exit(f"[build_env_scene] Umgebung '{name}' laesst sich nicht laden:\n"
                      f"{err}\n"
                      "Tipp: Objekt-Namen/Meshes in der Umgebung pruefen "
                      "(scene_editor/README.md).")

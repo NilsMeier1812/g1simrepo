@@ -7,6 +7,8 @@
 #   make real            → Echter Roboter starten (schlank)
 #   make real-full       → Echter Roboter mit Livox/MOLA/Navigation starten
 #   make stop            → Alles stoppen
+#   make editor          → Scene Editor im Container (Browser: http://127.0.0.1:8080)
+#   make build-editor    → Scene-Editor-Image bauen (~5 min)
 #
 #   Duenner Wrapper um `docker compose --profile <sim|real|real-full>` auf
 #   der EINEN docker-compose.yml (siehe deren Kopfkommentar) -- es gibt
@@ -15,11 +17,15 @@
 
 ROBOT_INTERFACE ?= eth0
 DISPLAY         ?= :0
+# Argumente fuer launch.sh im Editor-Container (leer = Menue), z.B.
+#   make editor ARGS="new"   |   make editor ARGS="import /import/zelle.stp"
+ARGS            ?=
 
 .PHONY: sim sim-bg real real-full stop \
         build-sim build-real build-real-full \
         build-mujoco build-g1pilot-sim build-g1pilot-real build-g1pilot-real-full \
-        logs status clean shell-sim shell-mujoco shell-real
+        logs status clean shell-sim shell-mujoco shell-real \
+        editor build-editor
 
 # ─── SIMULATION ─────────────────────────────────────────────
 sim: build-g1pilot-sim build-mujoco
@@ -44,6 +50,17 @@ real-full: build-g1pilot-real-full
 	@xhost +local:root 2>/dev/null || true
 	ROBOT_INTERFACE=$(ROBOT_INTERFACE) DISPLAY=$(DISPLAY) \
 	  docker compose --profile real-full up
+
+# ─── SCENE EDITOR (Container, v.a. fuer Windows) ────────────
+# `run` statt `up`: launch.sh ist interaktiv (Menue) und braucht ein Terminal.
+editor: build-editor
+	@echo "🟢 Scene Editor: http://127.0.0.1:8080 (Strg+C beendet)"
+	HOST_UID=$$(id -u 2>/dev/null || echo 1000) HOST_GID=$$(id -g 2>/dev/null || echo 1000) \
+	  docker compose --profile editor run --rm --service-ports scene-editor bash launch.sh $(ARGS)
+
+build-editor:
+	@echo "📦 Baue Scene-Editor Image (~5 min)..."
+	docker compose --profile editor build scene-editor
 
 # ─── BAUEN ──────────────────────────────────────────────────
 build-sim: build-g1pilot-sim build-mujoco
@@ -73,6 +90,7 @@ stop:
 	docker compose --profile sim down --remove-orphans 2>/dev/null || true
 	docker compose --profile real down --remove-orphans 2>/dev/null || true
 	docker compose --profile real-full down --remove-orphans 2>/dev/null || true
+	docker compose --profile editor down --remove-orphans 2>/dev/null || true
 
 # ─── HILFS-COMMANDS ─────────────────────────────────────────
 logs:
@@ -85,7 +103,9 @@ clean:
 	docker compose --profile sim down --volumes --remove-orphans 2>/dev/null || true
 	docker compose --profile real down --volumes --remove-orphans 2>/dev/null || true
 	docker compose --profile real-full down --volumes --remove-orphans 2>/dev/null || true
-	docker rmi g1pilot-sim:v1.1.0 g1pilot-mujoco:v1.0 g1pilot-real:v1.2.0 g1pilot:v1.1.0 2>/dev/null || true
+	docker compose --profile editor down --volumes --remove-orphans 2>/dev/null || true
+	docker rmi g1pilot-sim:v1.1.0 g1pilot-mujoco:v1.0 g1pilot-real:v1.2.0 g1pilot:v1.1.0 \
+	  g1pilot-scene-editor:v1.0 2>/dev/null || true
 
 # Shells ueber `docker compose exec` statt Name-Filter -- Compose ohne
 # `container_name:` benennt Container nach <projekt>-<service>-<n>, das

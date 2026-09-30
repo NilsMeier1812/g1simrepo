@@ -195,6 +195,12 @@ class G1IKSolver:
         # transformiert /scene_markers (Frame 'map') per TF dorthin, BEVOR er
         # sync_environment() aufruft.
         self._env_objects = {}
+        # Dieselben Objekte als gestapelte Arrays (pos, R^T, half, is_grasp) fuer
+        # den vektorisierten Check im Regelkreis - eine CAD-Zelle bringt
+        # Hunderte Objekte mit, eine Python-Schleife je Objekt waere bei 250 Hz
+        # zu langsam. Wird in sync_environment() als EIN Tupel ersetzt (atomar
+        # fuer den lesenden Regelkreis-Thread).
+        self._env_arrays = None
         # Eigenes pin.Data fuer den Umgebungs-Check (analog zu _gate_data oben):
         # die FK hier darf NICHT self.data (Solver-Zustand, von solve()/anderen
         # Aufrufern im selben Tick genutzt) ueberschreiben.
@@ -342,7 +348,26 @@ class G1IKSolver:
                 "cls": o.get("cls", "obstacle"),
                 "pos": pos, "R": R, "half": half,
             }
+        if new_objects:
+            objs = list(new_objects.values())
+            arrays = (
+                np.stack([ob["pos"] for ob in objs]),
+                np.stack([ob["R"].T for ob in objs]),
+                np.stack([ob["half"] for ob in objs]),
+                np.array([ob["cls"] == "grasp" for ob in objs], dtype=bool),
+            )
+        else:
+            arrays = None
         self._env_objects = new_objects
+        self._env_arrays = arrays
+
+    @staticmethod
+    def _point_obb_distances(p: np.ndarray, arrays) -> np.ndarray:
+        """Wie _point_obb_distance, aber fuer ALLE Objekte auf einmal."""
+        pos, Rt, half, _grasp = arrays
+        local = np.einsum("nij,nj->ni", Rt, p - pos)
+        excess = np.maximum(np.abs(local) - half, 0.0)
+        return np.linalg.norm(excess, axis=1)
 
     @staticmethod
     def _point_obb_distance(p: np.ndarray, obj: dict) -> float:
@@ -373,7 +398,8 @@ class G1IKSolver:
         wuerden sie sich mit dem 250-Hz-Regelkreis denselben mutable Zustand
         teilen (Pinocchio-Kontrakt: Model ist threadsicher/read-only, Data
         ist mutabler Scratch-Zustand pro Aufrufer)."""
-        if not self._env_objects:
+        arrays = self._env_arrays
+        if arrays is None:
             return False
         data = data if data is not None else self._env_data
         q = pin.neutral(self.model)
@@ -388,13 +414,13 @@ class G1IKSolver:
             fid_elbow = self._fid_env_elbow.get(side)
             p_hand = data.oMf[fid_hand].translation if fid_hand is not None else None
             p_elbow = data.oMf[fid_elbow].translation if fid_elbow is not None else None
-            for obj in self._env_objects.values():
-                if p_elbow is not None:
-                    if self._point_obb_distance(p_elbow, obj) < margin:
-                        return True
-                if p_hand is not None and obj["cls"] != "grasp":
-                    if self._point_obb_distance(p_hand, obj) < margin:
-                        return True
+            if p_elbow is not None:
+                if np.any(self._point_obb_distances(p_elbow, arrays) < margin):
+                    return True
+            if p_hand is not None:
+                near = self._point_obb_distances(p_hand, arrays) < margin
+                if np.any(near & ~arrays[3]):          # Greif-Objekte: Hand darf ran
+                    return True
         return False
 
     def make_scratch_buffers(self) -> dict:

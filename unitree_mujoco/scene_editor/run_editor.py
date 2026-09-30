@@ -10,12 +10,14 @@ fehlt - ohne das Paket zu patchen:
    DATEIPFAD ("~/temp/export/scene.json"). Das ist die haeufigste Fehlerquelle:
    ein Tippfehler im Pfad und die Umgebung landet irgendwo, wo sie niemand
    findet. Hier gibt es stattdessen oben den Ordner "Umgebung speichern" mit
-   EINEM Feld: dem Namen. Gespeichert wird immer nach  scene_editor/scenes/ .
+   EINEM Feld: dem Namen. Gespeichert wird immer nach
+   scene_editor/scenes/<name>/umgebung.xml .
 
-2. MESHES AUS scenes/ HERAUS PORTABEL. Beim Speichern werden Mesh-Dateien, die
-   ausserhalb des Repos liegen, nach  scene_editor/meshes/imported/  kopiert und
-   im XML relativ referenziert - sonst findet der (read-only gemountete)
-   Docker-Container sie spaeter nicht.
+2. JEDE UMGEBUNG EIN EIGENSTAENDIGER ORDNER. Beim Speichern werden alle
+   benutzten Dateien (Meshes aus der Bibliothek, CAD-Importe, Dateien von
+   ausserhalb des Repos) nach scenes/<name>/meshes/ kopiert und relativ
+   referenziert, nicht mehr benutzte werden entfernt (env_store.py). Eine
+   Umgebung laesst sich so als Ganzes kopieren, zippen und verteilen.
 
 3. UMBENENNEN. Der eingebaute Editor kann Objekte nicht umbenennen - dabei
    entscheidet genau der Name, ob ein Objekt ein Hindernis oder ein GREIFBARES
@@ -28,17 +30,21 @@ fehlt - ohne das Paket zu patchen:
    Default ~/temp/ArmarXObjects existiert nicht - dann wirkt der Ordner-Scan,
    als gaebe es keinen Import).
 
-6. STEP/STP-IMPORT (CAD). MuJoCo und der Editor koennen nur Dreiecksnetze,
-   kein CAD-BRep - darum wird STEP beim Import automatisch nach STL tesseliert
-   (siehe step_import.py). Das gilt fuer den Upload-Button, fuer den Ordner
-   meshes/ (STEPs dort werden beim Start konvertiert) und ueber den GUI-Ordner
-   "STEP/CAD-Import" (Skalierung/Genauigkeit + Sammel-Konvertierung).
+6. CAD-/MESH-IMPORT (STEP, IGES, BREP, PLY, GLB, ...). MuJoCo kann nur
+   STL/OBJ/MSH. Alles andere laeuft durch cad_import.py und kommt als GRUPPE
+   aus Einzelteilen in die Szene (Namen/Farben/Lage aus der Datei, konkave
+   Teile konvex zerlegt) - ueber den Upload-Button oder den GUI-Ordner
+   "CAD-Import" (Einstellungen + Dateien aus meshes/).
 
 7. MESH-TUERSTEHER. Jedes Mesh wird geprueft, BEVOR es in die Szene kommt:
-   ASCII-STL wird binaer neu geschrieben, zu feine CAD-Netze werden beim
-   Konvertieren vergroebert, und was MuJoCo trotzdem nicht laden koennte
-   (> 200000 Dreiecke, fremdes Format), wird gar nicht erst eingefuegt. Sonst
-   steckt ein unladbares Objekt in der Szene und auch das Speichern scheitert.
+   ASCII-STL wird binaer neu geschrieben, zu grosse Netze (> 200000 Dreiecke)
+   werden in Teile zerlegt statt abgelehnt. Sonst steckt ein unladbares Objekt
+   in der Szene und auch das Speichern scheitert.
+
+8. VIELE OBJEKTE. Eine CAD-Zelle hat schnell 700 Teile. Einfuegen passiert in
+   einem Schritt, die Elementliste wird nur einmal aktualisiert, gleiche Meshes
+   nur einmal geladen; Farbe/Kollision/Traegheit kommen beim Anzeigen und
+   Speichern aus dem Import-Manifest (robits kennt dafuer keine Felder).
 
 Aufruf wie die normale CLI:
     python run_editor.py new
@@ -46,21 +52,21 @@ Aufruf wie die normale CLI:
     python run_editor.py prompt "eine Kueche"
 """
 import os
-import re
-import shutil
 import socket
 import sys
 import tempfile
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 
-# Ziel-Ordner fuer exportierte Szenen (fest verdrahtet, neben diesem Skript)
-SCENES_DIR = HERE / "scenes"
+# Umgebungen: scenes/<name>/umgebung.xml (+ meshes/), siehe env_store.py.
+sys.path.insert(0, str(HERE))
+import env_store  # noqa: E402
+
+SCENES_DIR = env_store.SCENES_DIR
 SCENES_DIR.mkdir(parents=True, exist_ok=True)
 DEFAULT_NAME = "meine_umgebung"
-DEFAULT_TARGET = str(SCENES_DIR / f"{DEFAULT_NAME}.xml")
+DEFAULT_TARGET = str(env_store.env_xml(DEFAULT_NAME))
 
 # Ordner, aus dem der Editor eigene Meshes (STL/OBJ/...) importiert.
 MESHES_DIR = HERE / "meshes"
@@ -71,6 +77,22 @@ DEFAULT_ASSET_DIR = str(MESHES_DIR)
 # die g1_gui.py/launch.sh im Browser oeffnen.
 EDITOR_PORT = int(os.environ.get("SCENE_EDITOR_PORT", "8080"))
 os.environ.setdefault("_VISER_PORT_OVERRIDE", str(EDITOR_PORT))
+
+# Der Editor bindet seinen Webserver fest an 127.0.0.1 (er darf Dateien
+# schreiben - bewusst nur lokal erreichbar). Im Docker-Container ist 127.0.0.1
+# aber das Container-Innere; dort setzt das Image SCENE_EDITOR_HOST=0.0.0.0,
+# und docker-compose veroeffentlicht den Port trotzdem nur auf 127.0.0.1 des
+# Rechners. Ohne die Variable bleibt alles wie gehabt.
+EDITOR_HOST = os.environ.get("SCENE_EDITOR_HOST", "").strip()
+if EDITOR_HOST:
+    import viser as _viser
+
+    _orig_viser_init = _viser.ViserServer.__init__
+
+    def _viser_init_with_host(self, host="127.0.0.1", *args, **kwargs):
+        _orig_viser_init(self, EDITOR_HOST, *args, **kwargs)
+
+    _viser.ViserServer.__init__ = _viser_init_with_host
 
 # Gemeinsame Helfer mit dem Szenen-Generator (liegt im selben Ordner).
 sys.path.insert(0, str(HERE))
@@ -111,6 +133,19 @@ _editor_cli.DEFAULT_EXPORT_TARGET = DEFAULT_TARGET
 
 import mujoco_scene_editor.scene_editor as _scene_editor_mod  # noqa: E402
 
+# robits meldet beim Einlesen JEDES Meshes pauschal "Not fully implemented
+# yet." - bei einer CAD-Zelle 750 Zeilen, zwischen denen echte Warnungen
+# ("Mesh path does not exist.") untergehen. Nur genau diese Meldung weg.
+import logging  # noqa: E402
+
+
+class _DropMeshImportNoise(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.getMessage() != "Not fully implemented yet."
+
+
+logging.getLogger("robits.sim.converters.mujoco_importer").addFilter(_DropMeshImportNoise())
+
 
 # ---------------------------------------------------------------------------
 # Ohne Internet ueberhaupt starten koennen.
@@ -149,35 +184,16 @@ _scene_editor_mod.SceneEditor._load_inventory = _load_inventory_offline_tolerant
 # ---------------------------------------------------------------------------
 # Namen
 # ---------------------------------------------------------------------------
-_UMLAUTS = {"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss",
-            "Ä": "Ae", "Ö": "Oe", "Ü": "Ue"}
-
-
-def sanitize_env_name(raw: str) -> str:
-    """Aus einer Nutzereingabe einen sauberen Umgebungs-Namen machen.
-
-    Der Name wird zum Dateinamen UND zum Wert von G1_ENV (Env-Variable, die per
-    docker-compose weitergereicht wird) - deshalb bewusst streng: nur
-    Buchstaben/Ziffern/_/-, keine Pfade, keine Leerzeichen, keine Umlaute.
-    Rueckgabe "" heisst: unbrauchbar.
-    """
-    name = (raw or "").strip()
-    name = Path(name).name                      # evtl. mitgetippte Pfade weg
-    for k, v in _UMLAUTS.items():
-        name = name.replace(k, v)
-    if name.lower().endswith((".xml", ".json")):
-        name = name.rsplit(".", 1)[0]
-    name = re.sub(r"\s+", "_", name)
-    name = re.sub(r"[^A-Za-z0-9_\-]", "_", name)
-    name = re.sub(r"_{2,}", "_", name).strip("_-")
-    return name
+# Der Name wird Ordnername UND Wert von G1_ENV (docker-compose) - die Regeln
+# stehen an EINER Stelle (env_store).
+sanitize_env_name = env_store.sanitize_env_name
 
 
 def _initial_name_from_argv() -> str:
     """Beim Bearbeiten einer vorhandenen Umgebung deren Namen vorbelegen."""
     argv = sys.argv[1:]
     if len(argv) >= 2 and argv[0] == "edit":
-        name = sanitize_env_name(Path(argv[1]).stem)
+        name = sanitize_env_name(env_store.env_name_of(argv[1]))
         if name:
             return name
     return DEFAULT_NAME
@@ -189,66 +205,6 @@ INITIAL_NAME = _initial_name_from_argv()
 # ---------------------------------------------------------------------------
 # Speichern (Export) - nur der Name wird gefragt
 # ---------------------------------------------------------------------------
-def _relocate_meshes(xml_path: Path, notes: list) -> None:
-    """Mesh-Referenzen im exportierten XML repo-relativ machen.
-
-    Der Exporter schreibt ABSOLUTE Pfade (z.B. /home/du/Downloads/kiste.stl).
-    Auf einem anderen Rechner - und im Docker-Container, der nur
-    unitree_mujoco/ sieht - existieren die nicht. Also: Datei nach
-    scene_editor/meshes/ (bzw. meshes/imported/) holen und im XML als
-    "../meshes/..." referenzieren (relativ zu scenes/, wie im Starter-Beispiel).
-    """
-    try:
-        tree = ET.parse(xml_path)
-    except (OSError, ET.ParseError) as exc:
-        notes.append(f"XML nicht nachbearbeitbar: {exc}")
-        return
-
-    root = tree.getroot()
-    changed = False
-    for asset in root.findall("asset"):
-        for mesh in asset.findall("mesh"):
-            file_attr = mesh.get("file")
-            if not file_attr:
-                continue
-            src = Path(os.path.expanduser(file_attr))
-            if not src.is_absolute():
-                src = (xml_path.parent / src)
-            try:
-                src = src.resolve()
-            except OSError:
-                continue
-            if not src.is_file():
-                notes.append(f"Mesh fehlt: {file_attr}")
-                continue
-            try:
-                inside = src.is_relative_to(MESHES_DIR)
-            except AttributeError:  # Python < 3.9
-                inside = str(src).startswith(str(MESHES_DIR))
-            if inside:
-                dest = src
-            else:
-                bes.IMPORTED_MESHES_DIR.mkdir(parents=True, exist_ok=True)
-                dest = bes.IMPORTED_MESHES_DIR / src.name
-                try:
-                    if not dest.is_file() or dest.stat().st_size != src.stat().st_size:
-                        shutil.copy2(src, dest)
-                    notes.append(f"{src.name} -> meshes/imported/")
-                except OSError as exc:
-                    notes.append(f"{src.name} konnte nicht kopiert werden: {exc}")
-                    continue
-            rel = os.path.relpath(dest, SCENES_DIR).replace(os.sep, "/")
-            if rel != file_attr:
-                mesh.set("file", rel)
-                changed = True
-
-    if changed:
-        try:
-            tree.write(xml_path, encoding="utf-8", xml_declaration=False)
-        except OSError as exc:
-            notes.append(f"XML nicht schreibbar: {exc}")
-
-
 def _repair_orphan_parents(editor, notes: list) -> None:
     """Verwaiste Eltern-Pfade reparieren, BEVOR exportiert wird.
 
@@ -335,12 +291,13 @@ def _fix_bad_stl_meshes(editor, notes: list) -> None:
 
 
 def save_environment(editor, name: str):
-    """Szene als scenes/<name>.xml speichern.
+    """Szene als eigenstaendigen Ordner scenes/<name>/ speichern.
 
-    Rueckgabe: (ok, titel, text). Es wird IMMER erst in einen temporaeren Ordner
-    exportiert und nur das Ergebnis nach scenes/ verschoben - der Exporter legt
-    naemlich zusaetzlich eine Datei "MuJoCo Model.xml" ab, die sonst als
-    Geister-Umgebung in jeder Auswahlliste auftauchen wuerde.
+    Rueckgabe: (ok, titel, text). Exportiert wird IMMER erst in einen
+    temporaeren Ordner (der Exporter legt dort noch "MuJoCo Model.xml" und eine
+    .json mit absoluten Pfaden ab - beides gehoert nicht in die Umgebung).
+    env_store.make_self_contained() schreibt dann umgebung.xml, holt alle
+    benutzten Dateien in den Ordner und raeumt nicht mehr benutzte weg.
     """
     clean = sanitize_env_name(name)
     if not clean:
@@ -348,47 +305,45 @@ def save_environment(editor, name: str):
             "Bitte einen Namen eingeben (Buchstaben, Ziffern, _ und -), "
             "z.B. 'kueche'.")
 
-    target = SCENES_DIR / f"{clean}.xml"
-    existed = target.is_file()
+    folder = env_store.env_dir(clean)
+    target = folder / env_store.ENV_FILE
+    legacy = SCENES_DIR / f"{clean}.xml"
+    existed = target.is_file() or legacy.is_file()
     notes = []
 
     try:
         _repair_orphan_parents(editor, notes)
         _fix_bad_stl_meshes(editor, notes)
         with tempfile.TemporaryDirectory(prefix="scene_export_") as td:
-            tmp_xml = Path(td) / f"{clean}.xml"
+            tmp_xml = Path(td) / "export.xml"
             editor.controller.export_scene(tmp_xml)
             if not tmp_xml.is_file():
                 return False, "Speichern fehlgeschlagen", \
                     "Der Editor hat keine XML-Datei erzeugt."
-            _relocate_meshes(tmp_xml, notes)
-
-            SCENES_DIR.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(tmp_xml), str(target))
-            tmp_json = tmp_xml.with_suffix(".json")
-            if tmp_json.is_file():
-                shutil.move(str(tmp_json), str(target.with_suffix(".json")))
+            env_store.make_self_contained(tmp_xml, folder, notes, prune=True)
+        # Dieselbe Umgebung im alten Format (scenes/<name>.xml) abloesen.
+        for old in (legacy, legacy.with_suffix(".json")):
+            if old.is_file():
+                old.unlink()
     except Exception as exc:  # pragma: no cover - Laufzeit
         return False, "Speichern fehlgeschlagen", f"{type(exc).__name__}: {exc}"
 
-    # Kontrolle: laesst sich die Umgebung ueberhaupt laden?
+    # Kontrolle: vollstaendig und ladbar?
+    problems = env_store.containment_problems(target)
     problem = bes.validate_scene(target)
 
-    lines = [f"{'Ueberschrieben' if existed else 'Gespeichert'}: scenes/{clean}.xml"]
+    lines = [f"{'Ueberschrieben' if existed else 'Gespeichert'}: "
+             f"scenes/{clean}/{env_store.ENV_FILE}"]
     lines.append("Beim Sim-Start unter 'Umgebung' als '%s' waehlbar." % clean)
     if notes:
         lines.append("Hinweise: " + "; ".join(notes))
+    if problems:
+        lines.append("ACHTUNG, nicht eigenstaendig: " + "; ".join(problems))
     if problem:
         lines.append("ACHTUNG: MuJoCo kann die Datei nicht laden -> " + problem.strip())
+    if problems or problem:
         return False, "Gespeichert, aber fehlerhaft", "\n".join(lines)
     return True, "Umgebung gespeichert", "\n".join(lines)
-
-
-def _notify(event, title, body):
-    try:
-        event.client.add_notification(title=title, body=body, loading=False)
-    except Exception:
-        print(f"[run_editor] {title}: {body}")
 
 
 def _install_save_control(editor) -> None:
@@ -399,12 +354,12 @@ def _install_save_control(editor) -> None:
                                    expand_by_default=True):
             txt = server.gui.add_text(
                 "Name", initial_value=INITIAL_NAME,
-                hint="Nur der Name, kein Pfad. Gespeichert wird immer nach "
-                     "scene_editor/scenes/<name>.xml")
+                hint="Nur der Name, kein Pfad. Gespeichert wird immer als "
+                     "Ordner scene_editor/scenes/<name>/")
             btn = server.gui.add_button("Speichern", color="green")
             server.gui.add_markdown(
-                "Ziel: `scene_editor/scenes/<name>.xml` — genau diese Namen "
-                "stehen beim Sim-Start unter *Umgebung* zur Auswahl.")
+                "Ziel: `scene_editor/scenes/<name>/` (umgebung.xml + alle Meshes) — "
+                "genau diese Namen stehen beim Sim-Start unter *Umgebung* zur Auswahl.")
     except Exception as exc:  # pragma: no cover - GUI-Aufbau
         print(f"[run_editor] Speichern-Control nicht verfuegbar: {exc}", file=sys.stderr)
         return
@@ -416,7 +371,7 @@ def _install_save_control(editor) -> None:
             handle.visible = False
         except Exception:
             pass
-    editor.layout.export_path.value = str(SCENES_DIR / f"{INITIAL_NAME}.xml")
+    editor.layout.export_path.value = str(env_store.env_xml(INITIAL_NAME))
 
     @btn.on_click
     def _save(event) -> None:
@@ -426,7 +381,7 @@ def _install_save_control(editor) -> None:
             clean = sanitize_env_name(txt.value)
             if clean:
                 txt.value = clean
-                editor.layout.export_path.value = str(SCENES_DIR / f"{clean}.xml")
+                editor.layout.export_path.value = str(env_store.env_xml(clean))
             print(f"[run_editor] {title}: {body.replace(chr(10), ' | ')}")
             _notify(event, title, body)
         finally:
@@ -504,107 +459,58 @@ def _install_rename_control(editor) -> None:
         _notify(event, "Umbenannt", f"{old.rsplit('/', 1)[-1]} -> {new_leaf}  ({kind})")
 
 
-# STEP-Konverter (STEP/STP -> STL). Liegt neben diesem Skript.
-sys.path.insert(0, str(HERE))
-import step_import
+# CAD-/Mesh-Import (STEP, IGES, PLY, GLB, zu grosse STL, ...). Liegt neben
+# diesem Skript; OpenCascade/trimesh werden erst beim Import geladen.
+import cad_import  # noqa: E402
+import mesh_utils  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Zusaetzlicher Upload-Button: echter Datei-Dialog des Browsers.
 # Der eingebaute Import ("Add Assets from File") scannt nur einen Ordner. Fuer
 # "Datei aus beliebigem Ordner auswaehlen" haengen wir per viser-Upload-Button
-# einen zweiten Weg an: ausgewaehlte Datei wird nach meshes/ gespeichert und
-# direkt in die Szene eingefuegt. Umgesetzt ohne Aenderung am Fremdpaket, indem
-# wir die Editor-Fabrik umschliessen.
+# einen zweiten Weg an. Umgesetzt ohne Aenderung am Fremdpaket, indem wir die
+# Editor-Fabrik umschliessen.
 #
-# STEP/STP wird dabei automatisch nach STL konvertiert (MuJoCo und der Editor
-# koennen nur Dreiecksnetze, kein CAD-BRep) - siehe step_import.py.
+#  * STL/OBJ, die MuJoCo direkt laden kann -> wie bisher ein Mesh-Objekt.
+#  * alles andere (STEP/IGES/BREP, PLY/GLB/..., ASCII-/Riesen-STL) laeuft durch
+#    cad_import.py und kommt als GRUPPE aus Einzelteilen in die Szene - mit
+#    Namen, Farben und Lage aus der Datei.
 # ---------------------------------------------------------------------------
-# Nur, was MuJoCo spaeter auch laden kann - der Editor selbst wuerde mehr
-# rendern (PLY/GLB), beim Export in die Szene faellt das aber durch.
-_MESH_EXTS = ",".join(step_import.MJ_MESH_SUFFIXES)
-_STEP_EXTS = ",".join(step_import.STEP_SUFFIXES)
-# Datei-Dialoge filtern nach exakter Endung - Gross- und Kleinschreibung
-# beide anbieten, CAD-Programme schreiben gern ".STEP".
-_ALL_EXTS = (_MESH_EXTS + "," + _STEP_EXTS).split(",")
-_UPLOAD_EXTS = ",".join(_ALL_EXTS + [e.upper() for e in _ALL_EXTS])
+# Mesh-Uploads landen wie bisher direkt in meshes/ (der Ordner-Scan findet sie),
+# CAD-Quellen daneben in meshes/uploads/ (der Scan kennt die Endungen nicht).
+UPLOADS_DIR = MESHES_DIR / "uploads"
 
-
-# Konvertier-Einstellungen fuer STEP (im GUI-Ordner "STEP/CAD-Import" aenderbar)
-_STEP_OPTS = {
-    "scale": step_import.DEFAULT_SCALE,     # CAD ist mm, MuJoCo m
-    "quality": step_import.DEFAULT_QUALITY,
+# Einstellungen fuer den CAD-Import (im GUI-Ordner "CAD-Import" aenderbar)
+_CAD_OPTS = {
+    "quality": cad_import.DEFAULT_QUALITY,
+    "scale": 0.0,                  # 0 = automatisch
+    "place": cad_import.DEFAULT_PLACEMENT,
+    "min_collision_size": cad_import.DEFAULT_MIN_COLLISION_SIZE,
 }
 
 
-def _prepare_upload(name: str, content: bytes):
-    """Hochgeladene Datei nach meshes/ schreiben, STEP dabei nach STL wandeln.
-
-    Gibt (mesh_pfad, hinweistext) zurueck. Das Ergebnis ist garantiert etwas,
-    das MuJoCo laden kann - sonst RuntimeError mit Klartext. Wichtig, weil ein
-    unbrauchbares Mesh sonst erst tief im Editor beim Kompilieren knallt
-    ("stl_decoder: number of faces should be between 1 and 200000").
-    """
-    dest = MESHES_DIR / Path(name).name
-    dest.write_bytes(content)
-    notes = []
-    if step_import.is_step_file(dest):
-        mesh = step_import.convert_step_to_stl(
-            dest, scale=_STEP_OPTS["scale"], quality=_STEP_OPTS["quality"],
-            notes=notes)
-        info = (f"{dest.name} ist eine CAD-Datei und wurde nach {mesh.name} "
-                f"konvertiert (Skalierung {_STEP_OPTS['scale']}, "
-                f"{step_import.stl_face_count(mesh)} Dreiecke).")
-    else:
-        mesh = dest
-        problem = step_import.make_mujoco_ready(mesh, notes)
-        if problem:
-            raise RuntimeError(
-                f"{problem}\n"
-                "Das Mesh in einem CAD-/Mesh-Programm vereinfachen (Ziel: unter "
-                f"{step_import.MJ_MAX_FACES} Dreiecke) und binaer als STL "
-                "exportieren - oder gleich die STEP-Datei hochladen, die wird "
-                "hier automatisch passend tesseliert.")
-        info = f"{mesh.name} nach meshes/ gespeichert."
-    if notes:
-        info += " " + " ".join(notes)
-    return mesh, info
+def _cad_options() -> "cad_import.ImportOptions":
+    scale = float(_CAD_OPTS["scale"] or 0.0)
+    return cad_import.ImportOptions(
+        quality=str(_CAD_OPTS["quality"]),
+        scale=scale if scale > 0 else None,
+        place=str(_CAD_OPTS["place"]),
+        min_collision_size=float(_CAD_OPTS["min_collision_size"]))
 
 
-def _install_upload_button(editor) -> None:
-    server = editor.layout.server
-    step_ok = bool(step_import.available_backends())
-    label = "STL/OBJ/STEP waehlen ..." if step_ok else "STL/OBJ waehlen ..."
-    hint = ("Datei aus beliebigem Ordner waehlen; wird nach meshes/ kopiert und "
-            "in die Szene eingefuegt.")
-    if step_ok:
-        hint += " STEP/STP wird automatisch nach STL konvertiert."
+def _upload_suffixes() -> str:
+    """Endungen fuer den Datei-Dialog (Browser filtern exakt: auch GROSS)."""
+    exts = cad_import.supported_suffixes()
+    return ",".join(exts + [e.upper() for e in exts])
+
+
+def _notify(event, title, body, loading=False):
     try:
-        with server.gui.add_folder("Eigene Datei hochladen", order=1.3,
-                                   expand_by_default=True):
-            up = server.gui.add_upload_button(
-                label, mime_type=_UPLOAD_EXTS if step_ok else _MESH_EXTS,
-                hint=hint,
-            )
-    except Exception as exc:  # pragma: no cover - GUI-Aufbau
-        print(f"[run_editor] Upload-Button nicht verfuegbar: {exc}", file=sys.stderr)
-        return
-
-    @up.on_upload
-    def _on_upload(event) -> None:
-        f = up.value
-        if not f or not f.name:
-            return
-        if step_import.is_step_file(f.name) and not step_ok:
-            _notify(event, "STEP nicht moeglich", step_import.NO_BACKEND_HINT)
-            return
-        try:
-            mesh, info = _prepare_upload(f.name, f.content)
-            editor.controller.create_mesh(editor.get_selected_parent(), mesh.resolve())
-        except Exception as exc:  # pragma: no cover - Laufzeit
-            print(f"[run_editor] Upload fehlgeschlagen: {exc}", file=sys.stderr)
-            _notify(event, "Import fehlgeschlagen", str(exc))
-            return
-        _notify(event, "Mesh eingefuegt", f"{info} In die Szene gelegt.")
+        return event.client.add_notification(
+            title=title, body=body, loading=loading, with_close_button=not loading)
+    except Exception:
+        print(f"[run_editor] {title}: {body}")
+        return None
 
 
 def _broadcast(editor, title, body) -> None:
@@ -616,38 +522,418 @@ def _broadcast(editor, title, body) -> None:
         pass
 
 
+def _done(handle) -> None:
+    """Lade-Meldung wegnehmen (viser: nur remove() ist oeffentlich)."""
+    try:
+        if handle is not None:
+            handle.remove()
+    except Exception:
+        pass
+
+
+# -- Schnelles Einfuegen/Neuzeichnen vieler Objekte --------------------------
+# Der Renderer schickt bei JEDEM Element die komplette Elementliste an den
+# Browser. Bei einer CAD-Zelle mit ~700 Teilen waeren das ~500.000 Eintraege.
+# Waehrend Sammel-Operationen wird das deshalb angehalten und am Ende EINMAL
+# nachgeholt.
+def _batched_dropdown(renderer):
+    class _Ctx:
+        def __enter__(self):
+            self.orig = renderer.update_elements_dropdown
+            renderer.update_elements_dropdown = lambda *_a, **_k: None
+            return self
+
+        def __exit__(self, *exc):
+            renderer.update_elements_dropdown = self.orig
+            self.orig()
+            return False
+    return _Ctx()
+
+
+def _patch_renderer_for_many_objects() -> None:
+    from mujoco_scene_editor.scene_renderer import ViserSceneRenderer
+
+    orig = ViserSceneRenderer.render_from_state
+
+    def render_from_state(self, blueprints):
+        with _batched_dropdown(self):
+            return orig(self, blueprints)
+
+    ViserSceneRenderer.render_from_state = render_from_state
+
+
+def _patch_mesh_rendering() -> None:
+    """Meshes mit Farbe aus dem CAD-Manifest zeichnen, Kollisions-Stuecke
+    ausblenden und gleiche Dateien nur einmal laden.
+
+    Der eingebaute Renderer kennt fuer Meshes keine Farbe (alles grau) und
+    laedt jede Datei neu - bei 700 Teilen aus 300 Dateien unnoetig langsam.
+    """
+    import trimesh
+    from mujoco_scene_editor.scene_renderer import ViserSceneRenderer
+    from mujoco_scene_editor.utils import viser_utils
+    from robits.sim.blueprints import MeshBlueprint
+
+    cache = {}
+
+    def _load(path: Path):
+        key = (str(path), path.stat().st_mtime)
+        tri = cache.get(key)
+        if tri is None:
+            tri = trimesh.load_mesh(str(path))
+            cache[key] = tri
+        return tri.copy()
+
+    def _create_mesh_node(self, bp):
+        position, wxyz = viser_utils.pose_to_gui(bp)
+        path = Path(bp.mesh_path).resolve()
+        tri = _load(path)
+        scale = getattr(bp, "scale", None)
+        if scale is not None and scale != 1.0:
+            tri.apply_scale(scale)
+        defaults = cad_import.mesh_defaults(path) or {}
+        if defaults.get("rgba"):
+            rgba = [int(round(255 * c)) for c in defaults["rgba"]]
+            tri.visual = trimesh.visual.ColorVisuals(tri, face_colors=rgba)
+        return self.layout.server.scene.add_mesh_trimesh(
+            bp.path, mesh=tri, wxyz=wxyz, position=position,
+            visible=defaults.get("visual", True))
+
+    ViserSceneRenderer.__dict__["_create_node"].register(MeshBlueprint, _create_mesh_node)
+
+
+def _patch_mesh_export() -> None:
+    """Beim Speichern Farbe/Kollision/Traegheit aus dem CAD-Manifest setzen.
+
+    robits exportiert Meshes ohne Farbe, immer mit Kollision und kompiliert
+    die Szene dabei - flache/offene CAD-Teile (Bleche, Schilder) liessen das
+    mit "mesh volume is too small" scheitern. Die Werte stehen im Manifest des
+    Imports (cad_import.mesh_defaults).
+    """
+    import mujoco
+    from robits.sim.blueprints import MeshBlueprint
+    from robits.sim.scene.model_factory import SceneBuilder
+
+    dispatcher = SceneBuilder.__dict__["add"]
+    orig = dispatcher.dispatcher.dispatch(MeshBlueprint)
+
+    def add_mesh(self, blueprint):
+        out = orig(self, blueprint)
+        defaults = cad_import.mesh_defaults(blueprint.mesh_path)
+        if not defaults:
+            return out
+        try:
+            mesh = self.spec.mesh(f"{blueprint.basename}_mesh")
+            geom = self.spec.geom(blueprint.basename)
+        except Exception:
+            return out
+        if mesh is not None and defaults.get("shell"):
+            mesh.inertia = mujoco.mjtMeshInertia.mjMESH_INERTIA_SHELL
+        if geom is not None:
+            geom.rgba = list(defaults.get("rgba", geom.rgba))
+            if not defaults.get("collision", True):
+                geom.contype = 0
+                geom.conaffinity = 0
+            if not defaults.get("visual", True):
+                geom.group = int(cad_import.COLLISION_GROUP)
+        return out
+
+    dispatcher.register(MeshBlueprint, add_mesh)
+
+
+def _hide_cad_parts_in_asset_scan() -> None:
+    """Einzelteile aus meshes/cad/ nicht im Ordner-Scan anbieten.
+
+    Der Scan laeuft rekursiv - ohne Filter stuenden nach einem Zellen-Import
+    Hunderte Einzelteile in "Add Assets from File". Ganze Importe fuegt man
+    ueber den Ordner "CAD-Import" ein.
+    """
+    from mujoco_scene_editor.inventory.local_assets import Inventory
+
+    orig = Inventory.list
+
+    def list_without_cad(self, root, *args, **kwargs):
+        items = orig(self, root, *args, **kwargs)
+        cad_root = cad_import.CAD_DIR.resolve()
+        return [m for m in items if cad_root not in Path(m.path).resolve().parents]
+
+    Inventory.list = list_without_cad
+
+
+def insert_cad_import(editor, result, place: str) -> str:
+    """Import-Ergebnis als Gruppe in die Szene legen. -> Pfad der Gruppe.
+
+    Alle Blueprints kommen in EINEM Schritt in den Zustand (ein Undo-Schritt,
+    eine Dropdown-Aktualisierung). Teile mit konvexer Zerlegung bekommen eine
+    eigene Untergruppe, damit sichtbares Mesh und Kollisions-Stuecke beim
+    Verschieben/Loeschen zusammenbleiben. Namen werden gegen die ganze Szene
+    eindeutig gemacht (MuJoCo verlangt global eindeutige Namen).
+    """
+    import numpy as np
+    from robits.sim.blueprints import BlueprintGroup, MeshBlueprint, Pose
+
+    ctrl = editor.controller
+    used = {p.rsplit("/", 1)[-1].lower() for p in ctrl.state.blueprints}
+
+    def unique(name):
+        return cad_import._unique(bes.sanitize_name(name) or "teil", used)
+
+    def pose(pos, quat=(1.0, 0.0, 0.0, 0.0)):
+        return Pose().with_position([float(v) for v in pos]).with_quat_wxyz(
+            [float(v) for v in quat])
+
+    root = "/" + unique(result.name)
+    bps = [BlueprintGroup(root, pose(result.placement_offset(place)))]
+    hulls = {}
+    for inst in result.instances:
+        if inst.part:
+            hulls.setdefault(inst.part, []).append(inst)
+    for inst in result.parts:
+        mesh = str((result.out_dir / inst.mesh).resolve())
+        leaf = unique(inst.name)
+        if inst.name not in hulls:
+            bps.append(MeshBlueprint(f"{root}/{leaf}", mesh_path=mesh,
+                                     pose=pose(inst.pos, inst.quat), is_static=True))
+            continue
+        group = f"{root}/{leaf}"
+        bps.append(BlueprintGroup(group, pose(inst.pos, inst.quat)))
+        bps.append(MeshBlueprint(f"{group}/{unique(inst.name + '_optik')}", mesh_path=mesh,
+                                 pose=pose((0, 0, 0)), is_static=True))
+        R = np.asarray(Pose().with_quat_wxyz(inst.quat).matrix)[:3, :3]
+        for h in hulls[inst.name]:
+            rel = R.T @ (np.asarray(h.pos) - np.asarray(inst.pos))
+            bps.append(MeshBlueprint(
+                f"{group}/{unique(h.name)}", mesh_path=str((result.out_dir / h.mesh).resolve()),
+                pose=pose(rel), is_static=True))
+
+    ctrl.state.push_state_to_history()
+    for bp in bps:
+        ctrl.state.blueprints[bp.path] = bp
+    ctrl.state._seq += 1
+    with _batched_dropdown(ctrl.renderer):
+        for bp in bps:
+            ctrl.renderer.add(bp)
+    ctrl.update_history_btn_visibility()
+    return root
+
+
+def _import_and_insert(editor, src: Path, event=None, name=None) -> None:
+    """Datei per cad_import einlesen und in die Szene legen (mit Meldungen)."""
+    options = _cad_options()
+    busy = _notify(event, "Import laeuft ...",
+                   f"{src.name} wird eingelesen - grosse Baugruppen brauchen ein "
+                   "paar Minuten (Fortschritt im Terminal).", loading=True) \
+        if event is not None else None
+    try:
+        result = cad_import.import_file(src, name=name, options=options)
+        group = insert_cad_import(editor, result, options.place)
+    except cad_import.ImportFailed as exc:
+        _done(busy)
+        print(f"[run_editor] Import fehlgeschlagen: {exc}", file=sys.stderr)
+        (_notify(event, "Import fehlgeschlagen", str(exc)) if event is not None
+         else _broadcast(editor, "Import fehlgeschlagen", str(exc)))
+        return
+    except Exception as exc:  # pragma: no cover - Laufzeit
+        _done(busy)
+        msg = f"{type(exc).__name__}: {exc}"
+        print(f"[run_editor] Import fehlgeschlagen: {msg}", file=sys.stderr)
+        (_notify(event, "Import fehlgeschlagen", msg) if event is not None
+         else _broadcast(editor, "Import fehlgeschlagen", msg))
+        return
+    _done(busy)
+    body = (f"{result.summary()}.\nIn der Szene als Gruppe '{group.strip('/')}' - "
+            "die ganze Gruppe unter 'Elements' waehlen, um sie zu verschieben.")
+    if result.notes:
+        body += "\nHinweise: " + " ".join(result.notes[:4])
+    print(f"[run_editor] {body}")
+    if event is not None:
+        _notify(event, "CAD-Import eingefuegt", body)
+    else:
+        _broadcast(editor, "CAD-Import eingefuegt", body)
+
+
+def _install_upload_button(editor) -> None:
+    server = editor.layout.server
+    cad_ok = cad_import.occ_available()
+    label = "Datei waehlen (STL/OBJ/STEP/...)" if cad_ok else "Datei waehlen (STL/OBJ/...)"
+    hint = ("Datei aus beliebigem Ordner. STL/OBJ kommen direkt in die Szene; "
+            "CAD (STEP/IGES) und andere Formate werden in Einzelteile zerlegt "
+            "(Einstellungen im Ordner 'CAD-Import').")
+    try:
+        with server.gui.add_folder("Eigene Datei hochladen", order=1.3,
+                                   expand_by_default=True):
+            up = server.gui.add_upload_button(label, mime_type=_upload_suffixes(), hint=hint)
+    except Exception as exc:  # pragma: no cover - GUI-Aufbau
+        print(f"[run_editor] Upload-Button nicht verfuegbar: {exc}", file=sys.stderr)
+        return
+
+    @up.on_upload
+    def _on_upload(event) -> None:
+        f = up.value
+        if not f or not f.name:
+            return
+        name = Path(f.name).name
+        if cad_import.is_cad_file(name) and not cad_ok:
+            _notify(event, "CAD-Import nicht moeglich", cad_import.NO_OCC_HINT)
+            return
+        simple = Path(name).suffix.lower() in mesh_utils.MJ_MESH_SUFFIXES
+        dest = (MESHES_DIR if simple else UPLOADS_DIR) / name
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(f.content)
+        except OSError as exc:
+            _notify(event, "Upload fehlgeschlagen", str(exc))
+            return
+        if simple:
+            notes = []
+            problem = mesh_utils.make_mujoco_ready(dest, notes)
+            if not problem:
+                try:
+                    editor.controller.create_mesh(editor.get_selected_parent(), dest.resolve())
+                except Exception as exc:  # pragma: no cover - Laufzeit
+                    _notify(event, "Import fehlgeschlagen", str(exc))
+                    return
+                _notify(event, "Mesh eingefuegt",
+                        f"{dest.name} nach meshes/ gespeichert und in die Szene gelegt. "
+                        + " ".join(notes))
+                return
+            # z.B. > 200000 Dreiecke: in Teile zerlegen statt ablehnen
+            print(f"[run_editor] {problem} -> wird ueber den CAD-Import zerlegt.")
+        _import_and_insert(editor, dest, event)
+
+
 def _guard_create_mesh(editor) -> None:
     """Kein Mesh in die Szene lassen, das MuJoCo nicht laden kann.
 
-    Alle Wege, ein Mesh einzufuegen (Upload-Knopf, "Add Assets from File" ->
-    "Scan assets", Objaverse), laufen durch controller.create_mesh(). Das legt
-    das Blueprint erst in den Szenen-Zustand und rendert es dann - fliegt beim
-    Rendern ein Fehler ("stl_decoder: number of faces should be between 1 and
-    200000"), steckt das kaputte Objekt schon in der Szene und auch das
-    Speichern geht nicht mehr. Darum wird hier VORHER geprueft (und ASCII-STL
-    gleich repariert).
+    Alle Wege, ein Mesh einzufuegen (Upload-Knopf, "Add Assets from File",
+    Objaverse), laufen durch controller.create_mesh(). Das legt das Blueprint
+    erst in den Szenen-Zustand und rendert es dann - fliegt dabei ein Fehler
+    ("stl_decoder: number of faces should be between 1 and 200000"), steckt
+    das kaputte Objekt schon in der Szene und auch das Speichern geht nicht
+    mehr. Darum wird hier VORHER geprueft: ASCII-STL wird repariert, zu grosse
+    Netze und fremde Formate (PLY/GLB aus dem Ordner-Scan) laufen durch den
+    CAD-Import und kommen als Gruppe aus Einzelteilen in die Szene.
     """
     ctrl = editor.controller
     orig = ctrl.create_mesh
 
     def create_mesh(parent_name, mesh_path, *args, **kwargs):
+        path = Path(mesh_path)
         notes = []
         try:
-            problem = step_import.make_mujoco_ready(Path(mesh_path), notes)
+            problem = mesh_utils.make_mujoco_ready(path, notes)
         except Exception as exc:  # pragma: no cover - Laufzeit
-            problem = f"{Path(mesh_path).name}: Pruefung fehlgeschlagen ({exc})"
+            problem = f"{path.name}: Pruefung fehlgeschlagen ({exc})"
         for note in notes:
             print(f"[run_editor] {note}")
-        if problem:
-            msg = (f"{problem} Das Objekt wurde NICHT eingefuegt (die Szene "
-                   "bliebe sonst kaputt). Mesh vereinfachen oder die STEP-Datei "
-                   "laden - die wird beim Import automatisch passend tesseliert.")
-            print(f"[run_editor] Mesh abgelehnt: {problem}", file=sys.stderr)
-            _broadcast(editor, "Mesh nicht verwendbar", msg)
-            raise RuntimeError(msg)
-        return orig(parent_name, mesh_path, *args, **kwargs)
+        if not problem:
+            return orig(parent_name, mesh_path, *args, **kwargs)
+        if cad_import.is_importable(path) and cad_import.trimesh_available():
+            print(f"[run_editor] {problem} -> wird ueber den CAD-Import zerlegt.")
+            _import_and_insert(editor, path)
+            return None
+        msg = (f"{problem} Das Objekt wurde NICHT eingefuegt (die Szene bliebe "
+               "sonst kaputt).")
+        print(f"[run_editor] Mesh abgelehnt: {problem}", file=sys.stderr)
+        _broadcast(editor, "Mesh nicht verwendbar", msg)
+        raise RuntimeError(msg)
 
     ctrl.create_mesh = create_mesh
+
+
+def _cad_candidates() -> list:
+    """Dateien in meshes/ (+ uploads/), die erst importiert werden muessen."""
+    out = []
+    for folder in (MESHES_DIR, UPLOADS_DIR):
+        if not folder.is_dir():
+            continue
+        for p in sorted(folder.iterdir()):
+            if p.is_file() and cad_import.is_importable(p)                     and p.suffix.lower() not in mesh_utils.MJ_MESH_SUFFIXES:
+                out.append(p)
+    return out
+
+
+def _install_cad_controls(editor) -> None:
+    """Ordner "CAD-Import": Einstellungen + Dateien aus meshes/ einfuegen."""
+    server = editor.layout.server
+    cad_ok = cad_import.occ_available()
+    try:
+        with server.gui.add_folder("CAD-Import", order=1.35, expand_by_default=False):
+            if not cad_ok:
+                server.gui.add_markdown(
+                    "STEP/IGES inaktiv - OpenCascade fehlt: "
+                    "`.venv/bin/pip install cadquery-ocp`")
+            quality = server.gui.add_dropdown(
+                "Genauigkeit", options=tuple(cad_import.QUALITY),
+                initial_value=str(_CAD_OPTS["quality"]),
+                hint="Feinheit der Rundungen (fine = mehr Dreiecke, langsamer).")
+            scale = server.gui.add_number(
+                "Skalierung", initial_value=float(_CAD_OPTS["scale"]),
+                min=0.0, max=1000.0, step=0.0001,
+                hint="0 = automatisch (CAD: Einheit aus der Datei -> Meter, "
+                     "Meshes unveraendert). Sonst fester Faktor, z.B. 0.001.")
+            place = server.gui.add_dropdown(
+                "Platzierung", options=cad_import.PLACEMENTS,
+                initial_value=str(_CAD_OPTS["place"]),
+                hint="floor = auf den Boden stellen, center = zusaetzlich mittig "
+                     "um den Ursprung, cad = CAD-Koordinaten behalten.")
+            small = server.gui.add_number(
+                "Nur Optik unter (m)", initial_value=float(_CAD_OPTS["min_collision_size"]),
+                min=0.0, max=10.0, step=0.005,
+                hint="Teile mit kleinerer Diagonale (Schrauben, Knoepfe) nehmen "
+                     "nicht an der Kollision teil.")
+            files = server.gui.add_dropdown(
+                "Datei in meshes/", options=("(keine)",), initial_value="(keine)",
+                hint="CAD-/Mesh-Dateien, die nach meshes/ bzw. meshes/uploads/ "
+                     "kopiert wurden.")
+            btn_refresh = server.gui.add_button("Liste aktualisieren")
+            btn_import = server.gui.add_button("Importieren & einfuegen", color="green")
+    except Exception as exc:  # pragma: no cover - GUI-Aufbau
+        print(f"[run_editor] CAD-Controls nicht verfuegbar: {exc}", file=sys.stderr)
+        return
+
+    def refresh() -> None:
+        names = tuple(p.name for p in _cad_candidates()) or ("(keine)",)
+        files.options = names
+        if files.value not in names:
+            files.value = names[0]
+
+    refresh()
+
+    @quality.on_update
+    def _q(_evt) -> None:
+        _CAD_OPTS["quality"] = str(quality.value)
+
+    @scale.on_update
+    def _s(_evt) -> None:
+        _CAD_OPTS["scale"] = float(scale.value or 0.0)
+
+    @place.on_update
+    def _p(_evt) -> None:
+        _CAD_OPTS["place"] = str(place.value)
+
+    @small.on_update
+    def _m(_evt) -> None:
+        _CAD_OPTS["min_collision_size"] = float(small.value or 0.0)
+
+    @btn_refresh.on_click
+    def _r(_evt) -> None:
+        refresh()
+
+    @btn_import.on_click
+    def _i(event) -> None:
+        match = [p for p in _cad_candidates() if p.name == files.value]
+        if not match:
+            _notify(event, "Keine Datei gewaehlt",
+                    "CAD-Datei nach scene_editor/meshes/ kopieren, 'Liste "
+                    "aktualisieren', dann waehlen - oder oben 'Eigene Datei "
+                    "hochladen' benutzen.")
+            return
+        btn_import.disabled = True
+        try:
+            _import_and_insert(editor, match[0], event)
+        finally:
+            btn_import.disabled = False
 
 
 def _install_mesh_scale_control(editor) -> None:
@@ -712,172 +998,44 @@ def _install_mesh_scale_control(editor) -> None:
         _notify(event, "Mesh skaliert", f"Faktor {factor} angewendet.")
 
 
-def _install_step_controls(editor) -> None:
-    """Ordner "STEP/CAD-Import": Konvertier-Optionen + Sammel-Konvertierung.
-
-    Der eingebaute Ordner-Scan ("Add Assets from File") kennt nur Mesh-Formate.
-    Damit STEP-Dateien, die einfach nach meshes/ kopiert wurden, dort auftauchen,
-    wandelt dieser Knopf sie alle nach STL - danach findet "Scan assets" sie.
-    """
-    server = editor.layout.server
-    if not step_import.available_backends():
-        try:
-            with server.gui.add_folder("STEP/CAD-Import", expand_by_default=False):
-                server.gui.add_markdown(
-                    "STEP-Import inaktiv - kein Backend installiert.\n\n"
-                    "`.venv/bin/pip install cadquery-ocp`")
-        except Exception:
-            pass
-        return
-
-    try:
-        with server.gui.add_folder("STEP/CAD-Import", expand_by_default=False):
-            scale = server.gui.add_number(
-                "Skalierung", initial_value=float(_STEP_OPTS["scale"]),
-                min=0.000001, max=1000.0, step=0.0001,
-                hint="Beim Konvertieren angewendet. CAD ist meist in mm -> 0.001 "
-                     "ergibt Meter. 1 = Einheiten unveraendert.")
-            quality = server.gui.add_dropdown(
-                "Genauigkeit", options=("coarse", "normal", "fine"),
-                initial_value=str(_STEP_OPTS["quality"]),
-                hint="Feinheit der Tesselierung (fine = mehr Dreiecke).")
-            btn = server.gui.add_button("STEP-Dateien in meshes/ konvertieren")
-    except Exception as exc:  # pragma: no cover - GUI-Aufbau
-        print(f"[run_editor] STEP-Controls nicht verfuegbar: {exc}", file=sys.stderr)
-        return
-
-    @scale.on_update
-    def _sync_scale(_evt) -> None:
-        _STEP_OPTS["scale"] = float(scale.value)
-
-    @quality.on_update
-    def _sync_quality(_evt) -> None:
-        _STEP_OPTS["quality"] = str(quality.value)
-
-    @btn.on_click
-    def _convert_all(event) -> None:
-        notes = []
-        try:
-            made = step_import.convert_folder(
-                MESHES_DIR, overwrite=True, notes=notes,
-                scale=_STEP_OPTS["scale"], quality=_STEP_OPTS["quality"])
-        except Exception as exc:  # pragma: no cover - Laufzeit
-            print(f"[run_editor] STEP-Konvertierung fehlgeschlagen: {exc}",
-                  file=sys.stderr)
-            _notify(event, "Konvertierung fehlgeschlagen", str(exc))
-            return
-        if not made:
-            _notify(event, "Nichts zu konvertieren",
-                    "Keine STEP/STP-Dateien in meshes/ gefunden.")
-            return
-        body = (", ".join(f"{p.name} ({step_import.stl_face_count(p)} Dreiecke)"
-                          for p in made)
-                + " - jetzt unter 'Add Assets from File' -> 'Scan assets'.")
-        if notes:
-            body += "\n" + "\n".join(notes)
-        _notify(event, f"{len(made)} STEP konvertiert", body)
-
-
-def _convert_steps_at_startup() -> None:
-    """Neue STEP-Dateien in meshes/ schon beim Start nach STL wandeln.
-
-    So findet der eingebaute Ordner-Scan sie sofort, ohne dass man erst einen
-    Knopf druecken muss. Bereits konvertierte (STL neuer als STEP) bleiben.
-    """
-    if step_import.available_backends():
-        notes = []
-        try:
-            made = step_import.convert_folder(MESHES_DIR, overwrite=False, notes=notes)
-        except Exception as exc:  # pragma: no cover - Laufzeit
-            print(f"[run_editor] STEP-Vorkonvertierung fehlgeschlagen: {exc}",
-                  file=sys.stderr)
-            made = []
-        for out in made:
-            print(f"[run_editor] STEP konvertiert -> {out.name} "
-                  f"({step_import.stl_face_count(out)} Dreiecke)")
-        for note in notes:
-            print(f"[run_editor] {note}")
-    _check_meshes_at_startup()
-
-
 def _check_meshes_at_startup() -> None:
-    """Alle STL in meshes/ vorab pruefen (ASCII reparieren, zu grosse melden).
+    """STLs in meshes/ vorab pruefen: ASCII reparieren, zu grosse melden.
 
-    Der eingebaute Ordner-Scan ("Add Assets from File") bietet blind alles an,
-    was in meshes/ liegt - ein ASCII-STL oder ein Netz mit ueber 200000
-    Dreiecken laesst den Editor dann beim Einfuegen mit
-    "stl_decoder: number of faces ..." abbrechen. Lieber vorher wissen.
+    Der Ordner-Scan ("Add Assets from File") bietet alles an, was in meshes/
+    liegt. ASCII-STL wird hier gleich binaer neu geschrieben; zu grosse Netze
+    zerlegt der Tuersteher beim Einfuegen automatisch (siehe _guard_create_mesh).
     """
     for stl in sorted(MESHES_DIR.glob("*.stl")):
         notes = []
         try:
-            problem = step_import.make_mujoco_ready(stl, notes)
+            problem = mesh_utils.make_mujoco_ready(stl, notes)
         except Exception as exc:  # pragma: no cover - Laufzeit
             print(f"[run_editor] {stl.name}: Pruefung fehlgeschlagen ({exc})",
                   file=sys.stderr)
             continue
         for note in notes:
             print(f"[run_editor] {note}")
-        if not problem:
-            continue
-        # Gibt es die CAD-Quelle noch, wird einfach groeber neu tesseliert -
-        # damit repariert sich ein zu feines STL aus einer aelteren Sitzung
-        # beim naechsten Start von allein.
-        if _reconvert_from_step(stl):
-            continue
-        print(f"[run_editor] WARNUNG: {problem}\n"
-              f"             MuJoCo kann '{stl.name}' nicht laden - bitte "
-              "nicht in die Szene einfuegen (Editor bricht sonst ab).",
-              file=sys.stderr)
+        if problem:
+            print(f"[run_editor] Hinweis: {problem} Beim Einfuegen wird es "
+                  "automatisch in Teile zerlegt.")
 
 
-def _giveup_marker(stl: Path) -> Path:
-    """Merker: aus dieser STEP-Datei kam schon einmal kein brauchbares STL."""
-    return stl.with_name(f".{stl.name}.unconvertible")
+def _install_patches() -> None:
+    """Anpassungen am Editor/robits fuer grosse CAD-Importe (siehe oben).
 
-
-def _reconvert_from_step(stl: Path) -> bool:
-    """Zu feines/kaputtes STL aus der zugehoerigen STEP-Datei neu bauen.
-
-    Bei einer grossen Baugruppe kostet das Minuten. Scheitert es, wird das
-    vermerkt - sonst wuerde bei JEDEM Editor-Start dieselbe aussichtslose
-    Konvertierung neu laufen und das Starten ewig dauern.
+    Schlaegt eine davon fehl (andere Paketversion), laeuft der Editor trotzdem -
+    nur eben ohne diese Verbesserung.
     """
-    if not step_import.available_backends():
-        return False
-    for suffix in step_import.STEP_SUFFIXES:
-        for src in (stl.with_suffix(suffix), stl.with_suffix(suffix.upper())):
-            if not src.is_file():
-                continue
-            marker = _giveup_marker(stl)
-            stamp = f"{src.stat().st_mtime}"
-            if marker.is_file() and marker.read_text().strip() == stamp:
-                print(f"[run_editor] {stl.name}: aus {src.name} laesst sich "
-                      "kein MuJoCo-taugliches Netz erzeugen (schon versucht). "
-                      f"Merker loeschen zum erneuten Versuch: {marker.name}",
-                      file=sys.stderr)
-                return False
-            notes = []
-            try:
-                step_import.convert_step_to_stl(
-                    src, stl, scale=_STEP_OPTS["scale"],
-                    quality=_STEP_OPTS["quality"], notes=notes)
-            except Exception as exc:  # pragma: no cover - Laufzeit
-                print(f"[run_editor] {stl.name}: Neu-Konvertierung aus "
-                      f"{src.name} fehlgeschlagen: {exc}", file=sys.stderr)
-                try:
-                    marker.write_text(stamp)
-                except OSError:
-                    pass
-                return False
-            marker.unlink(missing_ok=True)
-            print(f"[run_editor] {stl.name} war fuer MuJoCo unbrauchbar und "
-                  f"wurde aus {src.name} neu erzeugt "
-                  f"({step_import.stl_face_count(stl)} Dreiecke).")
-            for note in notes:
-                print(f"[run_editor] {note}")
-            return True
-    return False
+    for patch in (_patch_renderer_for_many_objects, _patch_mesh_rendering,
+                  _patch_mesh_export, _hide_cad_parts_in_asset_scan):
+        try:
+            patch()
+        except Exception as exc:  # pragma: no cover - andere Paketversion
+            print(f"[run_editor] WARNUNG: {patch.__name__} nicht moeglich: {exc}",
+                  file=sys.stderr)
+
+
+_install_patches()
 
 
 _orig_get_scene_editor = _editor_cli.get_scene_editor
@@ -890,7 +1048,7 @@ def _get_scene_editor_with_extras(blueprints=None):
     _install_rename_control(editor)
     _install_upload_button(editor)
     _install_mesh_scale_control(editor)
-    _install_step_controls(editor)
+    _install_cad_controls(editor)
     print(f"[run_editor] Editor laeuft: http://127.0.0.1:{EDITOR_PORT}")
     return editor
 
@@ -918,27 +1076,30 @@ def _run_prompt(rest) -> int:
         return 2
 
     base = sanitize_env_name(text)[:40] or "prompt"
-    out = SCENES_DIR / f"{base}.xml"
-    i = 2
-    while out.exists():
-        out = SCENES_DIR / f"{base}_{i}.xml"
+    name, i = base, 2
+    while env_store.env_dir(name).exists() or (SCENES_DIR / f"{name}.xml").exists():
+        name = f"{base}_{i}"
         i += 1
 
-    print(f"[run_editor] Erzeuge Umgebung aus Text -> {out.name} (kann dauern) ...")
-    try:
-        _editor_cli.cli.main(["prompt", "--output-model-name", str(out), text],
-                             standalone_mode=False)
-    except Exception as exc:
-        print(f"[run_editor] Text-Generierung fehlgeschlagen: {exc}", file=sys.stderr)
-        return 1
-    if not out.is_file():
-        print("[run_editor] Es wurde keine Umgebung erzeugt (Antwort nicht verwertbar).",
-              file=sys.stderr)
-        return 1
+    print(f"[run_editor] Erzeuge Umgebung aus Text -> scenes/{name}/ (kann dauern) ...")
+    with tempfile.TemporaryDirectory(prefix="scene_prompt_") as td:
+        raw = Path(td) / "prompt.xml"
+        try:
+            _editor_cli.cli.main(["prompt", "--output-model-name", str(raw), text],
+                                 standalone_mode=False)
+        except Exception as exc:
+            print(f"[run_editor] Text-Generierung fehlgeschlagen: {exc}", file=sys.stderr)
+            return 1
+        if not raw.is_file():
+            print("[run_editor] Es wurde keine Umgebung erzeugt (Antwort nicht verwertbar).",
+                  file=sys.stderr)
+            return 1
+        # Meshes der generierten Szene (z.B. Objaverse-Downloads) mit in den Ordner.
+        out = env_store.make_self_contained(raw, env_store.env_dir(name))
 
-    print(f"[run_editor] Umgebung erzeugt: scenes/{out.name} - oeffne sie im Editor.")
+    print(f"[run_editor] Umgebung erzeugt: scenes/{name}/ - oeffne sie im Editor.")
     global INITIAL_NAME
-    INITIAL_NAME = out.stem
+    INITIAL_NAME = name
     try:
         _editor_cli.cli.main(["edit", str(out)], standalone_mode=False)
     except Exception as exc:
@@ -949,7 +1110,7 @@ def _run_prompt(rest) -> int:
 
 
 def main() -> int:
-    _convert_steps_at_startup()
+    _check_meshes_at_startup()
     argv = sys.argv[1:]
     if argv and argv[0] == "prompt":
         return _run_prompt(argv[1:])

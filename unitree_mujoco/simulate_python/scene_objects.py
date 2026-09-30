@@ -27,6 +27,7 @@ dekorative Objekte (contype=0 UND conaffinity=0) werden komplett
 ausgeklammert (weder Hindernis noch greifbar) -- dieselbe Konvention wie im
 Scene-Editor-README.
 """
+import functools
 import os
 import re
 import struct
@@ -92,6 +93,17 @@ def _is_decorative(attrs: dict) -> bool:
 
 
 def _mesh_local_aabb_half(stl_path: Path):
+    """Wie _mesh_aabb_half_cached, aber mit Cache pro Datei: CAD-Umgebungen
+    platzieren dasselbe Mesh oft dutzendfach (Profile, Schrauben)."""
+    try:
+        mtime = stl_path.stat().st_mtime
+    except OSError:
+        return None
+    return _mesh_aabb_half_cached(str(stl_path), mtime)
+
+
+@functools.lru_cache(maxsize=4096)
+def _mesh_aabb_half_cached(stl_path_str: str, _mtime: float):
     """Halbe Bounding-Box (lokal, VOR Skalierung) eines STL-Meshes.
 
     Reine Bounding-Box, kein Convex-Hull -- reicht fuer die 2D-Fussabdruck-
@@ -99,6 +111,7 @@ def _mesh_local_aabb_half(stl_path: Path):
     binaeres STL (Standardfall der Editor-Exporte); bei ASCII-STL wird ein
     einfacher Text-Parser als Fallback versucht.
     """
+    stl_path = Path(stl_path_str)
     try:
         data = stl_path.read_bytes()
     except OSError:
@@ -107,20 +120,14 @@ def _mesh_local_aabb_half(stl_path: Path):
         ntri = struct.unpack_from("<I", data, 80)[0]
         expected = 84 + ntri * 50
         if ntri > 0 and expected == len(data):
-            xs = [1e30, -1e30]
-            ys = [1e30, -1e30]
-            zs = [1e30, -1e30]
-            off = 84
-            for _ in range(ntri):
-                # 12 floats: normal(3) + v1(3) + v2(3) + v3(3), dann 2 Byte attr.
-                vals = struct.unpack_from("<12f", data, off)
-                for k in range(3):
-                    vx, vy, vz = vals[3 + 3 * k], vals[4 + 3 * k], vals[5 + 3 * k]
-                    xs[0] = min(xs[0], vx); xs[1] = max(xs[1], vx)
-                    ys[0] = min(ys[0], vy); ys[1] = max(ys[1], vy)
-                    zs[0] = min(zs[0], vz); zs[1] = max(zs[1], vz)
-                off += 50
-            return ((xs[1] - xs[0]) / 2.0, (ys[1] - ys[0]) / 2.0, (zs[1] - zs[0]) / 2.0)
+            # 12 floats: normal(3) + v1(3) + v2(3) + v3(3), dann 2 Byte attr.
+            # Spaltenweise per Slicing statt Dreieck fuer Dreieck - bei
+            # CAD-Meshes mit 100000 Dreiecken sonst sekundenlang.
+            vals = [v for t in struct.iter_unpack("<12fH", data[84:expected])
+                    for v in t[3:12]]
+            xs, ys, zs = vals[0::3], vals[1::3], vals[2::3]
+            return ((max(xs) - min(xs)) / 2.0, (max(ys) - min(ys)) / 2.0,
+                    (max(zs) - min(zs)) / 2.0)
     # ASCII-STL-Fallback: Zeilen "vertex x y z" auswerten.
     try:
         text = data.decode("ascii", errors="ignore")
@@ -194,9 +201,26 @@ def _collect_mesh_assets(root, scene_dir: Path):
             meshes[name] = {
                 "file": str(mesh_path),
                 "basename": os.path.basename(file_),
+                "resource": mesh_resource_path(mesh_path),
                 "scale": tuple(scale[:3]),
             }
     return meshes
+
+
+def mesh_resource_path(mesh_path) -> str:
+    """Pfad eines Meshes relativ zu scene_editor/ (mit '/').
+
+    Genau dieser Ordner ist im ROS-Container als /scene_editor gemountet
+    (docker-compose.yml) - RViz braucht also den Pfad DARUNTER, nicht nur den
+    Dateinamen: Umgebungen bringen ihre Meshes in scenes/<name>/meshes/ mit,
+    aeltere Umgebungen nutzen die Bibliothek meshes/. Liegt das Mesh woanders,
+    bleibt es beim Dateinamen.
+    """
+    parts = Path(mesh_path).parts
+    for i in range(len(parts) - 2, -1, -1):
+        if parts[i] == "scene_editor":
+            return "/".join(parts[i + 1:])
+    return os.path.basename(str(mesh_path))
 
 
 def _geom_spec(geom_el, meshes: dict, base_pos, base_quat):
@@ -231,6 +255,7 @@ def _geom_spec(geom_el, meshes: dict, base_pos, base_quat):
         "rgba": list(rgba[:4]),
         "size": None,
         "mesh_basename": None,
+        "mesh_resource": None,
         "aabb_half": None,
     }
 
@@ -240,6 +265,7 @@ def _geom_spec(geom_el, meshes: dict, base_pos, base_quat):
         if info is None:
             return None
         spec["mesh_basename"] = info["basename"]
+        spec["mesh_resource"] = info["resource"]
         spec["size"] = list(info["scale"])  # MJCF-Mesh-Skalierung (fuers Rendering)
         local_half = _mesh_local_aabb_half(Path(info["file"]))
         if local_half is not None:
