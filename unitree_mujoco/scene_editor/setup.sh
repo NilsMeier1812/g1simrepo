@@ -11,7 +11,23 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-PY="${PYTHON:-python3}"
+# mujoco-scene-editor verlangt Python 3.10-3.12. Neuere Distributionen
+# (z.B. Ubuntu 26.04: 3.14) bringen ein zu neues python3 mit - dann ein
+# passendes pythonX.Y nehmen, falls installiert, sonst klar abbrechen.
+py_ok() { "$1" -c 'import sys; sys.exit(0 if (3, 10) <= sys.version_info[:2] < (3, 13) else 1)' 2>/dev/null; }
+PY="${PYTHON:-}"
+if [[ -z "$PY" ]]; then
+  for c in python3 python3.12 python3.11 python3.10; do
+    if command -v "$c" >/dev/null 2>&1 && py_ok "$c"; then PY="$c"; break; fi
+  done
+fi
+if [[ -z "$PY" ]] || ! py_ok "$PY"; then
+  echo "FEHLER: kein passendes Python gefunden (gebraucht: 3.10-3.12, vorhanden:" >&2
+  echo "        $(python3 --version 2>&1))." >&2
+  echo "  - python3.12 installieren und  PYTHON=python3.12 ./setup.sh" >&2
+  echo "  - oder den Editor im Container nutzen:  cd g1pilot && make editor" >&2
+  exit 1
+fi
 # Ort des venv: Default .venv/ hier im Ordner. Das Docker-Image
 # (g1pilot/docker/Dockerfile.scene_editor) legt es nach /opt, damit es nicht im
 # gemounteten Repo landet.

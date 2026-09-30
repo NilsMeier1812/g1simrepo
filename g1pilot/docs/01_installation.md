@@ -96,9 +96,20 @@ dagegen nicht zuverlässig. GPU/CUDA wird nicht gebraucht.
 Empfohlen: Windows 11 (WSLg für die GUIs ist eingebaut).
 
 ```powershell
-# In PowerShell (als Administrator): WSL2 + Ubuntu installieren, dann neu starten
-wsl --install -d Ubuntu
+# In PowerShell: WSL2 + Ubuntu 24.04 installieren (ggf. danach neu starten)
+wsl --install -d Ubuntu-24.04
 ```
+
+Bewusst **Ubuntu-24.04** und nicht `Ubuntu`: `Ubuntu` ist immer die neueste
+Version (26.04, Python 3.14) – damit laesst sich der Scene Editor nicht
+einrichten (braucht Python < 3.13). Gestartet wird sie danach mit
+`wsl -d Ubuntu-24.04` bzw. ueber „Ubuntu 24.04" im Startmenue.
+
+Ist **Docker Desktop** installiert: es haengt sich standardmaessig in die
+*Standard*-WSL-Distribution ein und kollidiert dort mit der nativen
+Docker-Engine. Entweder Ubuntu nicht zur Standard-Distribution machen oder in
+Docker Desktop unter *Settings → Resources → WSL integration* die Integration
+fuer Ubuntu-24.04 ausschalten.
 
 Danach im Ubuntu-Terminal (WSL) weiter — ab hier identisch zur
 Linux-Anleitung oben:
