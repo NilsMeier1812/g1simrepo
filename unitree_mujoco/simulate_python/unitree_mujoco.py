@@ -12,9 +12,15 @@ from hold_base import HoldBase
 from push_listener import PushListener
 from grasp_box import GraspBox
 from scene_state_publisher import SceneStatePublisher
+import low_gfx
 
 
 locker = threading.Lock()
+
+_LOW_GFX = bool(getattr(config, "LOW_GFX", False))
+
+if getattr(config, "GRASP_BOX", False) or _LOW_GFX:
+    _spec = mujoco.MjSpec.from_file(config.ROBOT_SCENE)
 
 if getattr(config, "GRASP_BOX", False):
     # Greifbare Test-Kugel fest in jede Inspire-Handflaeche (base_link) einfuegen.
@@ -23,7 +29,6 @@ if getattr(config, "GRASP_BOX", False):
     # Gelenke/Aktuatoren haben, bleiben nu/qpos und alle Bridge-Mappings unveraendert.
     # Wird IMMER eingefuegt (damit der Streamdeck-Toggle sie live schalten kann), aber
     # nur bei GRASP_TEST direkt AN; sonst inert (keine Kollision, unsichtbar, ~6 g).
-    _spec = mujoco.MjSpec.from_file(config.ROBOT_SCENE)
     _on = bool(getattr(config, "GRASP_TEST", False))
     _added = 0
     for _b in list(_spec.bodies):
@@ -46,9 +51,19 @@ if getattr(config, "GRASP_BOX", False):
             _added += 1
     print(f"[SIM] Greif-Box: {_added} Kugel(n) eingefuegt (Start {'AN' if _on else 'AUS'}; "
           f"Streamdeck-Button 'GRASP BOX' schaltet live).", flush=True)
+
+if _LOW_GFX:
+    # Sparsame Grafik (G1_LOW_GFX=1): nur Anzeige -- vereinfachte Visual-Meshes,
+    # Kollisions-Meshes unsichtbar, kein Schatten/keine Spiegelung. Physik und
+    # Kollision bleiben bitgenau gleich (siehe low_gfx.py).
+    low_gfx.apply_to_spec(_spec, config.ROBOT_SCENE)
+
+if getattr(config, "GRASP_BOX", False) or _LOW_GFX:
     mj_model = _spec.compile()
 else:
     mj_model = mujoco.MjModel.from_xml_path(config.ROBOT_SCENE)
+if _LOW_GFX:
+    low_gfx.apply_to_model(mj_model)
 mj_data = mujoco.MjData(mj_model)
 
 # HOLD_BASE: Oberkoerper fuer Arm-Tests ruhig halten (bis ein Loco-Controller

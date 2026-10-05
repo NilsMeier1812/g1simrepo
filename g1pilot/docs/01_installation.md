@@ -14,7 +14,9 @@ liegen mit im Baum.
 Zwei Betriebsarten:
 
 - **Simulation** — MuJoCo-Physik statt echtem Roboter, läuft auf jedem
-  halbwegs aktuellen Rechner, keine GPU nötig.
+  halbwegs aktuellen Rechner. Eine GPU ist nicht nötig, macht die Fenster
+  (MuJoCo, RViz) aber um ein Vielfaches flüssiger — siehe
+  [Grafik-Performance](#grafik-performance-gpu--sparsame-grafik).
 - **Echter Roboter** — siehe zusätzlich
   [70_echtroboter_anleitung.md](70_echtroboter_anleitung.md), bevor der Stack
   gegen Hardware gestartet wird.
@@ -26,7 +28,9 @@ Zwei Betriebsarten:
 - Ein laufendes X11-Display (für RViz und die MuJoCo-/Teleop-Fenster).
   Unter Wayland hilft in der Regel `xhost` über den XWayland-Layer; über SSH
   mit `ssh -X` verbinden.
-- Keine GPU/CUDA nötig — die Simulation ist rein CPU-basiert.
+- Keine GPU/CUDA nötig — die Physik ist rein CPU-basiert. Für flüssige
+  Fenster wird eine vorhandene GPU automatisch genutzt (siehe
+  [Grafik-Performance](#grafik-performance-gpu--sparsame-grafik)).
 
 ## Schritt für Schritt (Linux)
 
@@ -84,6 +88,63 @@ Beim ersten `make sim` wird zusätzlich `xhost +local:docker` gesetzt, damit
 die Container auf das Display zugreifen dürfen. Erscheinen das MuJoCo-Fenster
 und der Streamdeck, steht die Umgebung. Der Roboter steht dabei zunächst nur
 — siehe [30_loco_anleitung.md](30_loco_anleitung.md) für die Bedienung.
+
+## Grafik-Performance (GPU + Sparsame Grafik)
+
+MuJoCo-Viewer und RViz laufen in Docker-Containern. Ohne durchgereichte GPU
+zeichnen beide **per Software auf der CPU** (llvmpipe) — das ist auf
+schwächeren Rechnern der Hauptgrund für ruckelnde Fenster (1–2 fps) und nimmt
+der Physik zusätzlich CPU-Kerne weg (die Sim läuft dann langsamer als
+Echtzeit; dank Lockstep bleibt die Regelung trotzdem korrekt).
+
+**GPU (automatisch).** `start.sh`, `run_sim*.sh` und `make sim` binden über
+`docker/compose_gpu.sh` automatisch einen GPU-Zusatz ein:
+
+| Host | Was passiert | Einmalig nötig |
+|---|---|---|
+| NVIDIA mit proprietärem Treiber | `docker/compose.gpu-nvidia.yml` | NVIDIA Container Toolkit (s.u.) |
+| Intel/AMD (Mesa) oder NVIDIA mit `nouveau` | `docker/compose.gpu-dri.yml` (`/dev/dri`) | nichts |
+| WSL2 / keine GPU | Software-Rendering wie bisher | — |
+
+Welcher Modus aktiv ist, steht beim Start als `[gpu] ...`-Zeile im Terminal.
+Erzwingen lässt er sich mit `G1_GPU=nvidia|dri|off`.
+
+NVIDIA Container Toolkit (nur bei NVIDIA mit proprietärem Treiber, braucht
+`sudo`; Paketquelle laut
+[NVIDIA-Anleitung](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+einrichten):
+
+```bash
+nvidia-smi                       # muss die Karte zeigen (proprietärer Treiber aktiv)
+sudo apt install -y nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+docker info | grep -i runtimes   # muss "nvidia" enthalten
+```
+
+**Sparsame Grafik (Schalter).** Im Startmenü „Sparsame Grafik" bzw.
+`G1_LOW_GFX=1`. Reine Anzeige-Optimierung, Physik und Kollision bleiben
+bitgenau gleich:
+
+- MuJoCo und RViz zeigen vereinfachte Meshes (Roboter ca. 1/5, Umgebungen
+  ca. 1/5 der Dreiecke); Kollisionen rechnen weiter mit den Originalen.
+- Kollisions-Meshes werden nicht mehr zusätzlich gezeichnet (am G1 lagen sie
+  deckungsgleich unter dem sichtbaren Modell).
+- Keine Schatten und keine Bodenspiegelung im MuJoCo-Fenster.
+- RViz öffnet mit normaler Fenstergröße (1600×900).
+
+Gemessen mit reinem Software-Rendering: Standardszene ca. 6× und
+DC-Demonstrator-Zelle ca. 12× mehr Bilder pro Sekunde.
+
+**Weitere Handgriffe ohne Code:**
+
+- MuJoCo-Fenster: Taste `0` blendet Umgebung und Boden aus (Physik läuft
+  weiter), `Tab`/`Shift+Tab` blendet die Seitenleisten aus, kleineres Fenster
+  = weniger Pixel.
+- RViz: Display „SceneMarkers" abhaken (Nav-Ansicht), wenn die Umgebung dort
+  nicht gebraucht wird.
+- Inspire-Hände, Navigation und RViz nur einschalten, wenn sie gebraucht
+  werden.
 
 ## Windows (WSL2)
 

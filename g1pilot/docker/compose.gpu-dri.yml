@@ -1,0 +1,13 @@
+# ══════════════════════════════════════════════════════════════════════
+# GPU-Zusatz fuer Mesa-Treiber (Intel/AMD, oder NVIDIA mit nouveau): reicht
+# /dev/dri in die Sim-Container durch. Wird von docker/compose_gpu.sh
+# automatisch eingebunden, wenn /dev/dri existiert und keine NVIDIA-Runtime
+# vorhanden ist. Ohne diese Datei rendern MuJoCo und RViz per Software (CPU).
+# ══════════════════════════════════════════════════════════════════════
+services:
+  mujoco-sim:
+    devices:
+      - /dev/dri:/dev/dri
+  g1pilot-sim:
+    devices:
+      - /dev/dri:/dev/dri

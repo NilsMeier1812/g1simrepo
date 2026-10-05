@@ -273,6 +273,14 @@ else
     "Nein — ohne Navigation (nur Teleop/Loco)|0"
   export G1_ENABLE_NAV="$REPLY_VALUE"
 
+  # ── 2e) Sparsame Grafik (schwache PCs) ───────────────────────────────
+  #   Reine Anzeige: vereinfachte Meshes in MuJoCo + RViz, keine Schatten/
+  #   Spiegelung, Kollisions-Meshes unsichtbar. Physik bleibt bitgenau gleich.
+  ask_menu "2e) Sparsame Grafik? (fuer schwache PCs; nur Optik, Physik unveraendert)" 2 "${G1_LOW_GFX:-}" \
+    "Ja  — vereinfachte Meshes, kein Schatten/keine Spiegelung|1" \
+    "Nein — volle Grafik|0"
+  export G1_LOW_GFX="$REPLY_VALUE"
+
   # ── 3) Rebuild ────────────────────────────────────────────────────────
   ask_menu "3) Docker-Images vor dem Start neu bauen?" 1 "" \
     "Nein — vorhandene Images nutzen (schnell)|0" \
@@ -302,6 +310,8 @@ else
   echo -e "   Loco-Policy    : ${G}g1_wholebody${R} ${DIM}(Stehen=cmd0; Laufen via Streamdeck)${R}"
   _nav_lbl=$( [ "${G1_ENABLE_NAV}" = "1" ] && echo "an (dijkstra + nav2point + Sim-Glue)" || echo "aus" )
   echo -e "   Navigation     : ${G}G1_ENABLE_NAV=${G1_ENABLE_NAV}${R} ${DIM}(${_nav_lbl})${R}"
+  _gfx_lbl=$( [ "${G1_LOW_GFX}" = "1" ] && echo "sparsam (vereinfachte Meshes, kein Schatten)" || echo "voll" )
+  echo -e "   Grafik         : ${G}G1_LOW_GFX=${G1_LOW_GFX}${R} ${DIM}(${_gfx_lbl})${R}"
   [ "${#PASSTHRU[@]}" -gt 0 ] && echo -e "   compose-Args   : ${G}${PASSTHRU[*]}${R}"
   echo
 fi
@@ -406,9 +416,17 @@ if [ "$G1_INSPIRE_HANDS" = "1" ]; then
   ( gui_opener_daemon ) &
 fi
 
+# ── GPU fuer die Sim-Container (sonst rendern MuJoCo/RViz auf der CPU) ──
+#  docker/compose_gpu.sh waehlt NVIDIA-Runtime bzw. /dev/dri automatisch
+#  (erzwingen: G1_GPU=nvidia|dri|off). Real-Profil bleibt unveraendert.
+COMPOSE_FILES=()
+if [ "$PROFILE" = "sim" ]; then
+  read -ra COMPOSE_FILES <<< "$(bash docker/compose_gpu.sh)"
+fi
+
 # ── Reste eines frueheren Laufs sauber entfernen ────────────────────────
-docker compose --profile "$PROFILE" down --remove-orphans
+docker compose "${COMPOSE_FILES[@]}" --profile "$PROFILE" down --remove-orphans
 
 # ── Hochfahren ──────────────────────────────────────────────────────────
-echo -e "${G}[start] docker compose --profile ${PROFILE} up ${PASSTHRU[*]}${R}"
-exec docker compose --profile "$PROFILE" up "${PASSTHRU[@]}"
+echo -e "${G}[start] docker compose ${COMPOSE_FILES[*]} --profile ${PROFILE} up ${PASSTHRU[*]}${R}"
+exec docker compose "${COMPOSE_FILES[@]}" --profile "$PROFILE" up "${PASSTHRU[@]}"

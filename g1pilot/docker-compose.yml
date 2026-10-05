@@ -33,9 +33,17 @@ services:
       dockerfile: g1pilot/docker/Dockerfile.mujoco
     image: g1pilot-mujoco:v1.0
     network_mode: host
+    # Shared Memory mit dem Host teilen: X11 (MIT-SHM) uebergibt die Bilder dann
+    # per Speicher statt durch den Socket -> deutlich schneller, v.a. ohne GPU.
+    # GPU-Zugriff selbst kommt per Zusatzdatei (docker/compose.gpu-*.yml), die
+    # start.sh/run_sim*.sh/make sim automatisch einbinden (docker/compose_gpu.sh).
+    ipc: host
     environment:
       - DISPLAY=${DISPLAY}
       - MUJOCO_GL=glfw
+      # Sparsame Grafik (Start-Menue): vereinfachte Meshes, keine Schatten/
+      # Spiegelung. Reine Anzeige, Physik bitgenau gleich. Siehe low_gfx.py.
+      - G1_LOW_GFX=${G1_LOW_GFX:-0}
       # weld = Arm-only (Basis fix), off = Loco-Modus (Basis frei). Siehe run_sim_loco.sh.
       - HOLD_BASE_MODE=${HOLD_BASE_MODE:-weld}
       # Realtime-Faktor (1.0 = Echtzeit). Nur OHNE Lockstep relevant.
@@ -71,8 +79,11 @@ services:
       context: .
       dockerfile: docker/Dockerfile.sim
     image: g1pilot-sim:v1.1.0
+    ipc: host                     # X11-MIT-SHM fuer RViz (siehe mujoco-sim)
     environment:
       - DISPLAY=${DISPLAY}
+      # Sparsame Grafik: RViz zeigt vereinfachte Meshes (g1pilot/utils/lowpoly.py).
+      - G1_LOW_GFX=${G1_LOW_GFX:-0}
       - G1_SIM_MODE=true          # ← Aktiviert Simulation in Python-Code
       # ROS-Graph-Domain MUSS sich von der Unitree-DDS-Domain (1 im Sim)
       # unterscheiden, sonst kollidieren rmw_cyclonedds und unitree_sdk2py

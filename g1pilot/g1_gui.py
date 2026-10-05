@@ -641,6 +641,7 @@ class SimFrame(tk.Frame):
         self.v_hands = tk.BooleanVar(value=False)
         self.v_open_guis = tk.BooleanVar(value=True)
         self.v_nav = tk.BooleanVar(value=False)
+        self.v_lowgfx = tk.BooleanVar(value=False)
         self.v_rebuild = tk.BooleanVar(value=False)
         self.v_env = tk.StringVar(value=DEFAULT_ENV_LABEL)
         self.v_rt = tk.StringVar(value="1.0")
@@ -664,6 +665,9 @@ class SimFrame(tk.Frame):
                    "CoM-/TF-Visualisierung (MuJoCo-Fenster kommt immer)")
         toggle_row(s, "Navigation mitstarten", self.v_nav,
                    "dijkstra_planner + nav2point + Sim-Glue")
+        toggle_row(s, "Sparsame Grafik (schwache PCs)", self.v_lowgfx,
+                   "vereinfachte Meshes, kein Schatten/keine Spiegelung — nur Optik, "
+                   "Physik unveraendert")
 
         s = section(b, "Inspire-FTP-Haende")
         toggle_row(s, "Inspire-Haende (Finger steuerbar + GUIs)", self.v_hands,
@@ -735,6 +739,7 @@ class SimFrame(tk.Frame):
         env["G1_INSPIRE_HANDS"] = "1" if self.v_hands.get() else "0"
         env["OPEN_GUIS"] = "true" if (self.v_hands.get() and self.v_open_guis.get()) else "false"
         env["G1_ENABLE_NAV"] = "1" if self.v_nav.get() else "0"
+        env["G1_LOW_GFX"] = "1" if self.v_lowgfx.get() else "0"
         env["G1_ENV"] = env_name
         rt = self.v_rt.get().strip() or "1.0"
         try:

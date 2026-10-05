@@ -1,15 +1,64 @@
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
-from launch_ros.substitutions import FindPackageShare
+from launch.substitutions import LaunchConfiguration
 from launch_ros.parameter_descriptions import ParameterValue
 import os
+import re
 
 package_name = "g1pilot"
 urdf_file_name = "g1_29dof_inspire_ftp.urdf"
+
+
+def _low_gfx_robot(urdf, robot_desc):
+    """Sparsame Grafik (G1_LOW_GFX=1): <visual>-Meshes des URDF auf vereinfachte
+    Kopien umstellen (nur RViz-Anzeige; <collision> bleibt original, die IK liest
+    ihr URDF ohnehin selbst). -> (urdf-Pfad, robot_description)."""
+    try:
+        from g1pilot.utils import lowpoly
+        if not lowpoly.enabled():
+            return urdf, robot_desc
+        desc, n = lowpoly.lowpoly_urdf(robot_desc, get_package_share_directory)
+        os.makedirs(lowpoly.CACHE_DIR, exist_ok=True)
+        out = os.path.join(lowpoly.CACHE_DIR, "robot_lowgfx.urdf")
+        with open(out, "w") as f:
+            f.write(desc)
+        print(f"[LOW_GFX] RViz-Robotermodell: {n} Visual-Mesh(es) vereinfacht.")
+        return out, desc
+    except Exception as e:   # Anzeige-Optimierung darf den Start nie verhindern
+        print(f"[LOW_GFX] WARN: Robotermodell bleibt original ({e}).")
+        return urdf, robot_desc
+
+
+def _rviz_node(context):
+    """RViz mit der gewaehlten Config. Bei Sparsamer Grafik eine Kopie mit
+    normaler Fenstergroesse (die Configs oeffnen sonst 2560x1403 auf einem
+    zweiten Monitor -- bei schwacher Grafik kostet jedes Pixel)."""
+    name = LaunchConfiguration("rviz_config").perform(context)
+    path = os.path.join(get_package_share_directory(package_name), "config", name)
+    if os.environ.get("G1_LOW_GFX", "0").strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            with open(path) as f:
+                cfg = f.read()
+            for key, val in (("Width", 1600), ("Height", 900), ("X", 0), ("Y", 0)):
+                cfg = re.sub(rf"(\nWindow Geometry:(?:\n  .*)*?\n  {key}: )-?\d+",
+                             rf"\g<1>{val}", cfg, count=1)
+            out_dir = os.environ.get("G1_LOW_GFX_CACHE", "/tmp/g1_lowpoly")
+            os.makedirs(out_dir, exist_ok=True)
+            path = os.path.join(out_dir, "lowgfx_" + name)
+            with open(path, "w") as f:
+                f.write(cfg)
+        except OSError as e:
+            print(f"[LOW_GFX] WARN: RViz-Config bleibt original ({e}).")
+    return [Node(
+        package="rviz2",
+        executable="rviz2",
+        name="rviz2",
+        arguments=["-d", path],
+    )]
+
 
 def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
@@ -20,13 +69,13 @@ def generate_launch_description():
     sim_rate_hz = LaunchConfiguration("sim_rate_hz")
     use_rviz = LaunchConfiguration("use_rviz")
     enable_mola = LaunchConfiguration("enable_mola")
-    rviz_config = LaunchConfiguration("rviz_config")
 
     urdf = os.path.join(
         get_package_share_directory(package_name), "description_files/urdf", urdf_file_name
     )
     with open(urdf, "r") as infp:
         robot_desc = infp.read()
+    urdf, robot_desc = _low_gfx_robot(urdf, robot_desc)
 
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="false",
@@ -131,16 +180,5 @@ def generate_launch_description():
             arguments=[urdf],
         ),
 
-        Node(
-            package="rviz2",
-            executable="rviz2",
-            name="rviz2",
-            condition=IfCondition(use_rviz),
-            arguments=[
-                "-d",
-                PathJoinSubstitution([
-                    FindPackageShare(package_name), "config", rviz_config,
-                ]),
-            ],
-        ),
+        OpaqueFunction(function=_rviz_node, condition=IfCondition(use_rviz)),
     ])

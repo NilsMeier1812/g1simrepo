@@ -13,7 +13,10 @@ cd "$(dirname "$0")"
 xhost +local:root >/dev/null 2>&1 || \
   echo "[run_sim_loco] WARN: 'xhost' nicht verfuegbar - laeuft hier ein X-Server?"
 
-docker compose --profile sim down --remove-orphans
+# GPU-Zusatz automatisch (NVIDIA-Runtime bzw. /dev/dri), siehe docker/compose_gpu.sh.
+read -ra COMPOSE_FILES <<< "$(bash docker/compose_gpu.sh)"
+
+docker compose "${COMPOSE_FILES[@]}" --profile sim down --remove-orphans
 
 export HOLD_BASE_MODE=off
 echo "[run_sim_loco] HOLD_BASE_MODE=off -> Basis ist FREI (Loco-Modus)."
@@ -31,4 +34,4 @@ export SIM_REALTIME_FACTOR=${SIM_REALTIME_FACTOR:-1.0}
 echo "[run_sim_loco] SIM_LOCKSTEP=$SIM_LOCKSTEP (1=deterministische 50-Hz-Regelrate, auf Echtzeit gedeckelt; SIM_REALTIME_FACTOR=$SIM_REALTIME_FACTOR)."
 
 G1_SIM_MODE=true HOLD_BASE_MODE=off SIM_LOCKSTEP=$SIM_LOCKSTEP SIM_REALTIME_FACTOR=$SIM_REALTIME_FACTOR \
-  docker compose --profile sim up "$@"
+  docker compose "${COMPOSE_FILES[@]}" --profile sim up "$@"
