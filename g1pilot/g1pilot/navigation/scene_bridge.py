@@ -34,6 +34,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 from g1pilot.navigation import scene_markers as sm
 from g1pilot.navigation.scene_protocol import SnapshotAssembler
+from g1pilot.utils import lowpoly
 
 
 class SceneBridge(Node):
@@ -69,6 +70,12 @@ class SceneBridge(Node):
         self._published_version = -1
         self._last_publish_time = 0.0
         self._published_ids = set()  # fuer sauberes DELETE verschwundener Objekte
+
+        # Sparsame Grafik (G1_LOW_GFX=1): RViz zeigt vereinfachte Mesh-Kopien.
+        # Nur mesh_resource aendert sich -- IK und Nav-Karte lesen ausschliesslich
+        # Pose/Scale/AABB (scene_markers.py) und sehen exakt dieselben Marker.
+        self._low_gfx = lowpoly.enabled()
+        self._lowpoly_uri = {}       # (mesh, scale) -> URI fuer RViz
 
         self._sock = None
         self._thread = threading.Thread(target=self._listen, daemon=True)
@@ -131,11 +138,26 @@ class SceneBridge(Node):
             float(rgba[0]), float(rgba[1]), float(rgba[2]), float(rgba[3]))
 
         if obj.get("type") == "mesh" and obj.get("mesh"):
-            m.mesh_resource = self.mesh_prefix + str(obj["mesh"])
+            m.mesh_resource = self._mesh_uri(str(obj["mesh"]), sx)
             m.mesh_use_embedded_materials = False
 
         m.text = sm.encode_text(obj["name"], obj.get("aabb_half"))
         return m
+
+    def _mesh_uri(self, mesh: str, scale: float) -> str:
+        uri = self.mesh_prefix + mesh
+        if not self._low_gfx or not uri.startswith("file://"):
+            return uri
+        key = (mesh, scale)
+        if key not in self._lowpoly_uri:
+            out = None
+            try:
+                out = lowpoly.lowpoly_file(uri[len("file://"):], lowpoly.ENV_CELL_M,
+                                           scale=scale, subdir="scene")
+            except Exception as e:   # Anzeige-Optimierung, nie ein harter Fehler
+                self.get_logger().warn(f"LOW_GFX: '{mesh}' bleibt original ({e}).")
+            self._lowpoly_uri[key] = ("file://" + out) if out else uri
+        return self._lowpoly_uri[key]
 
     def _publish(self):
         with self._lock:

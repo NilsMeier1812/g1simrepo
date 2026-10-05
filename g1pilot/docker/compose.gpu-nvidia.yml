@@ -1,0 +1,31 @@
+# ══════════════════════════════════════════════════════════════════════
+# GPU-Zusatz fuer NVIDIA (proprietaerer Treiber + nvidia-container-toolkit).
+# Wird von docker/compose_gpu.sh automatisch eingebunden, wenn Docker die
+# NVIDIA-Runtime kennt. Ohne diese Datei rendern MuJoCo und RViz im Container
+# per Software (llvmpipe) auf der CPU.
+#
+# Einmalig auf dem Host (braucht sudo):
+#   sudo apt install nvidia-container-toolkit
+#   sudo nvidia-ctk runtime configure --runtime=docker
+#   sudo systemctl restart docker
+# ══════════════════════════════════════════════════════════════════════
+x-nvidia-gpu: &nvidia-gpu
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+  environment:
+    - NVIDIA_VISIBLE_DEVICES=all
+    # "graphics" (OpenGL/GLX) ist nicht im Default (compute,utility) enthalten.
+    - NVIDIA_DRIVER_CAPABILITIES=all
+    # glvnd soll die NVIDIA-GLX-Bibliothek nehmen, nicht Mesa.
+    - __GLX_VENDOR_LIBRARY_NAME=nvidia
+
+services:
+  mujoco-sim:
+    <<: *nvidia-gpu
+  g1pilot-sim:
+    <<: *nvidia-gpu

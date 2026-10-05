@@ -20,6 +20,9 @@ DISPLAY         ?= :0
 # Argumente fuer launch.sh im Editor-Container (leer = Menue), z.B.
 #   make editor ARGS="new"   |   make editor ARGS="import /import/zelle.stp"
 ARGS            ?=
+# Compose-Dateien fuer die Sim: Basis + GPU-Zusatz (NVIDIA/dri), automatisch
+# erkannt von docker/compose_gpu.sh. Erzwingen: make sim G1_GPU=off|dri|nvidia
+SIM_COMPOSE      = $(shell bash docker/compose_gpu.sh)
 
 .PHONY: sim sim-bg real real-full stop \
         build-sim build-real build-real-full \
@@ -31,12 +34,12 @@ ARGS            ?=
 sim: build-g1pilot-sim build-mujoco
 	@echo "🔵 Starte G1Pilot SIMULATION..."
 	@xhost +local:docker 2>/dev/null || true
-	DISPLAY=$(DISPLAY) docker compose --profile sim up
+	DISPLAY=$(DISPLAY) docker compose $(SIM_COMPOSE) --profile sim up
 
 sim-bg: build-g1pilot-sim build-mujoco
 	@echo "🔵 Starte SIMULATION (Hintergrund)..."
 	@xhost +local:docker 2>/dev/null || true
-	DISPLAY=$(DISPLAY) docker compose --profile sim up -d
+	DISPLAY=$(DISPLAY) docker compose $(SIM_COMPOSE) --profile sim up -d
 
 # ─── ECHTER ROBOTER ─────────────────────────────────────────
 real: build-g1pilot-real

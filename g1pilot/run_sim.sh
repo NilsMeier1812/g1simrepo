@@ -14,6 +14,9 @@ xhost +local:root >/dev/null 2>&1 || \
   echo "[run_sim] WARN: 'xhost' nicht verfuegbar - laeuft hier ueberhaupt ein X-Server?"
 
 # Reste eines frueheren Laufs entfernen (Strg+C laesst Container sonst stehen).
-docker compose --profile sim down --remove-orphans
+# GPU-Zusatz automatisch (NVIDIA-Runtime bzw. /dev/dri), siehe docker/compose_gpu.sh.
+read -ra COMPOSE_FILES <<< "$(bash docker/compose_gpu.sh)"
 
-G1_SIM_MODE=true docker compose --profile sim up "$@"
+docker compose "${COMPOSE_FILES[@]}" --profile sim down --remove-orphans
+
+G1_SIM_MODE=true docker compose "${COMPOSE_FILES[@]}" --profile sim up "$@"

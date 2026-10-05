@@ -162,6 +162,15 @@ LOCO_RESET_PELVIS_Z = 0.78   # Pelvis-Hoehe beim Aufstehen in die Stand-Pose (Fu
 # === LOCO MANAGED WELD END ===
 
 
+# === SPARSAME GRAFIK ===
+# Opt-in fuer schwache PCs (G1_LOW_GFX=1, Start-Menue "Sparsame Grafik"): der
+# Viewer zeichnet vereinfachte Meshes, keine Kollisions-Meshes, keine Schatten und
+# keine Bodenspiegelung. Reine Anzeige -- Physik/Kollision/Regelung bleiben
+# bitgenau gleich. Details: low_gfx.py.
+LOW_GFX = _env_truthy("G1_LOW_GFX", False)
+# === SPARSAME GRAFIK END ===
+
+
 # === SZENEN-BRUECKE (Objekte -> RViz/Nav/IK) ===
 # Sendet die Umgebungs-Objekte (Hindernisse + greifbare Objekte) periodisch per
 # UDP an den ROS-Container (scene_bridge liest sie und baut daraus /scene_markers
